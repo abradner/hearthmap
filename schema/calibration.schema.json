@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/abradner/hearthmap/main/schema/calibration.schema.json",
+  "title": "hearthmap calibration proposals",
+  "description": "calibration.json: per-sensor soil calibration ranges proposed by tools/calibrate from history, for review and import in the editor. A sensor's calibration object has exactly the shape of a pin's calibration in hearthmap.schema.json. Field meanings: tools/calibrate/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "generator", "parameters", "sensors"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "generated_at": {
+      "description": "When the proposals were computed, ISO 8601 UTC.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "generator": { "type": "string", "minLength": 1 },
+    "parameters": {
+      "description": "The analysis parameters used, for reproducibility. Informational: importers must not depend on its keys.",
+      "type": "object"
+    },
+    "sensors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sensor" }
+    }
+  },
+  "$defs": {
+    "sensor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity_id",
+        "status",
+        "confidence",
+        "polarity",
+        "watering_events",
+        "drying_rate_per_day",
+        "drying_fraction_per_day",
+        "warnings",
+        "evidence"
+      ],
+      "properties": {
+        "entity_id": {
+          "description": "The Home Assistant entity id; matched against pins' entities.moisture on import.",
+          "type": "string",
+          "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"
+        },
+        "status": {
+          "description": "ok: calibration present. Every other status: cannot calibrate, message says why.",
+          "enum": ["ok", "no_valid_samples", "no_variation", "insufficient_history", "too_narrow"]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "calibration": {
+          "description": "Same shape and units as a pin's calibration. happy_min/happy_max are always present and are defaults unless happy_is_default is false.",
+          "allOf": [
+            { "$ref": "hearthmap.schema.json#/$defs/calibration" },
+            { "required": ["dry", "wet", "happy_min", "happy_max"] }
+          ]
+        },
+        "happy_is_default": {
+          "description": "True: happy_min/happy_max are the tool's stated fraction of the range (parameters), not species knowledge. Tune per species.",
+          "type": "boolean"
+        },
+        "confidence": { "enum": ["high", "medium", "low", "none"] },
+        "polarity": {
+          "description": "normal: higher reading is wetter. inverted: higher is drier (dry > wet in calibration). null when no range was computed far enough to decide.",
+          "enum": ["normal", "inverted", null]
+        },
+        "watering_events": { "type": "integer", "minimum": 0 },
+        "drying_rate_per_day": {
+          "description": "Raw units per day in the drying direction (always positive), or null if no drying trend was seen.",
+          "anyOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "drying_fraction_per_day": {
+          "description": "drying_rate_per_day / |wet - dry|, or null.",
+          "anyOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string", "pattern": "^[a-z_]+$" },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "evidence": {
+          "description": "Counts and intermediate values behind the proposal (samples, unavailable, impossible, outliers, flatlined, history_days, methods, percentiles). Informational.",
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "ok" } } },
+          "then": {
+            "required": ["calibration", "happy_is_default"],
+            "not": { "required": ["message"] },
+            "properties": { "confidence": { "enum": ["high", "medium", "low"] } }
+          },
+          "else": {
+            "required": ["message"],
+            "not": { "anyOf": [{ "required": ["calibration"] }, { "required": ["happy_is_default"] }] },
+            "properties": { "confidence": { "const": "none" } }
+          }
+        }
+      ]
+    }
+  }
+}

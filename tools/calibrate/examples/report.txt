@@ -1,0 +1,45 @@
+hearthmap calibration report
+5 sensors: 4 calibrated, 1 cannot be calibrated
+
+happy range is a DEFAULT: 30% to 100% of the way from dry to wet. Tune it per species in the editor.
+
+sensor.example_monstera_moisture  (confidence: high)
+  range:     dry 7  ->  wet 56  (higher is wetter)
+  happy:     21.7 .. 56  (default, tune per species)
+  waterings: 4
+  drying:    7.415 units/day (15% of the range per day, about 6.6 days from wet to dry)
+  method:    dry from median of 4 pre-watering troughs; wet from median of 4 post-watering plateaus
+  data:      28 days, 241 samples (5 unavailable, 0 impossible, 1 outliers, 0 flat-lined)
+  warning:   5 unavailable samples ignored
+  warning:   1 isolated outliers removed
+
+sensor.example_basil_moisture  (confidence: medium)
+  range:     dry 0  ->  wet 50  (higher is wetter)
+  happy:     15 .. 50  (default, tune per species)
+  waterings: 4
+  drying:    9.684 units/day (19% of the range per day, about 5.2 days from wet to dry)
+  method:    dry from median of 4 pre-watering troughs; wet from median of 4 post-watering plateaus
+  data:      35.83 days, 213 samples (0 unavailable, 0 impossible, 0 outliers, 0 flat-lined)
+  warning:   reads 0 unchanged for over 72 h at its dry end: the probe may saturate there, so the true dry end may lie beyond it
+
+sensor.example_pothos_moisture_raw  (confidence: high)
+  range:     dry 2884  ->  wet 1368  (inverted probe: lower is wetter)
+  happy:     2429.2 .. 1368  (default, tune per species)
+  waterings: 5
+  drying:    266.29 units/day (18% of the range per day, about 5.7 days from wet to dry)
+  method:    dry from median of 5 pre-watering troughs; wet from 95th wetness percentile (wetter than the median of 5 post-watering plateaus)
+  data:      28 days, 327 samples (0 unavailable, 0 impossible, 0 outliers, 0 flat-lined)
+
+sensor.example_snake_moisture  (confidence: low)
+  range:     dry 5  ->  wet 36  (higher is wetter)
+  happy:     14.3 .. 36  (default, tune per species)
+  waterings: 0
+  drying:    1.213 units/day (4% of the range per day, about 25.5 days from wet to dry)
+  method:    dry from 5th wetness percentile; wet from 95th wetness percentile
+  data:      27.67 days, 35 samples (0 unavailable, 0 impossible, 0 outliers, 0 flat-lined)
+  warning:   no sharp rises or falls: polarity (normal) inferred from the drying trend
+  warning:   no watering events seen: wet is the wettest reading seen, not a post-watering reading; water thoroughly and re-run
+
+sensor.example_lavender_moisture
+  cannot calibrate: no variation (every valid reading is 0)
+  data:      0 days, 1 samples (0 unavailable, 0 impossible, 0 outliers, 0 flat-lined)
