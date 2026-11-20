@@ -299,7 +299,8 @@ struct ConfigIssue {
 ///   version != kSchemaVersion; canvas width or height outside 1..4096; map_area x or y < 0,
 ///   width or height < 1, or not inside the canvas; no rooms, more than 64 rooms, more than 256
 ///   pins; a room or pin id not matching ^[a-z][a-z0-9_]*$ or longer than 48 characters; a room
-///   or pin name empty or longer than 48 characters (counted in bytes); a polygon with fewer
+///   or pin name that is not valid UTF-8, is empty, or is longer than 48 characters (counted in
+///   Unicode code points, as the schema's maxLength counts them); a polygon with fewer
 ///   than 3 or more than 64 vertices; a polygon vertex or pin position with x or y outside 0..1
 ///   (or non-finite); an entity id not matching ^[a-z0-9_]+\.[a-z0-9_]+$; a photo on a pin
 ///   that is not a Plant, or a photo id not matching ^[a-z0-9][a-z0-9_-]{0,47}$; stale_after or

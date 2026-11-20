@@ -435,7 +435,7 @@ TEST_CASE("ids: pattern and length") {
   check_only_error(p, "/pins/0/id");
 }
 
-TEST_CASE("names: 1..48 bytes") {
+TEST_CASE("names: 1..48 Unicode code points of valid UTF-8, as the schema counts them") {
   Config c = flat_config();
   c.rooms[0].name = "";
   check_only_error(c, "/rooms/0/name");
@@ -443,16 +443,65 @@ TEST_CASE("names: 1..48 bytes") {
   CHECK(validate(c).empty());
   c.rooms[0].name = std::string(49, 'x');
   check_only_error(c, "/rooms/0/name");
-  std::string accented;
-  for (int i = 0; i < 24; ++i) accented += "\xC3\xA9";  // 24 x U+00E9: 48 bytes, allowed
-  c.rooms[0].name = accented;
-  CHECK(validate(c).empty());
-  accented += "\xC3\xA9";  // 25 code points, 50 bytes: counted in bytes, too long
-  c.rooms[0].name = accented;
-  check_only_error(c, "/rooms/0/name");
-  Config p = flat_config();
-  p.pins[2].name = "";
-  check_only_error(p, "/pins/2/name");
+
+  SUBCASE("two-byte characters count once each") {
+    std::string accented;
+    for (int i = 0; i < 25; ++i) accented += "\xC3\xA9";  // 25 x U+00E9: 50 bytes, allowed
+    c.rooms[0].name = accented;
+    CHECK(validate(c).empty());
+    accented.clear();
+    for (int i = 0; i < 48; ++i) accented += "\xC3\xA9";  // 48 code points, 96 bytes: allowed
+    c.rooms[0].name = accented;
+    CHECK(validate(c).empty());
+    accented += "\xC3\xA9";  // 49 code points: too long
+    c.rooms[0].name = accented;
+    check_only_error(c, "/rooms/0/name");
+  }
+
+  SUBCASE("three- and four-byte characters count once each") {
+    std::string wide;
+    for (int i = 0; i < 24; ++i) wide += "\xE2\x82\xAC";      // U+20AC
+    for (int i = 0; i < 24; ++i) wide += "\xF0\x9F\x8C\xBF";  // U+1F33F
+    c.rooms[0].name = wide;                                   // 48 code points, 168 bytes
+    CHECK(validate(c).empty());
+    c.rooms[0].name = wide + "x";
+    check_only_error(c, "/rooms/0/name");
+  }
+
+  SUBCASE("invalid UTF-8 is an error, whatever its length") {
+    const char* bad[] = {
+        "\x80",              // a lone continuation byte
+        "Bad\xC3",           // truncated two-byte sequence
+        "\xE2\x82",          // truncated three-byte sequence
+        "\xC3\x28",          // a lead byte followed by a non-continuation
+        "\xC0\xAF",          // overlong "/"
+        "\xE0\x80\xAF",      // overlong "/" in three bytes
+        "\xED\xA0\x80",      // U+D800, a surrogate
+        "\xF4\x90\x80\x80",  // U+110000, above the Unicode range
+        "\xFF",              // never valid
+    };
+    for (const char* name : bad) {
+      INFO("name bytes: " << name);
+      c.rooms[0].name = name;
+      check_only_error(c, "/rooms/0/name");
+    }
+    c.rooms[0].name = "\xF4\x8F\xBF\xBF";  // U+10FFFF, the last code point: valid
+    CHECK(validate(c).empty());
+  }
+
+  SUBCASE("pins follow the same rule") {
+    Config p = flat_config();
+    p.pins[2].name = "";
+    check_only_error(p, "/pins/2/name");
+    std::string accented;
+    for (int i = 0; i < 48; ++i) accented += "\xC3\xA9";
+    p.pins[2].name = accented;
+    CHECK(validate(p).empty());
+    p.pins[2].name = accented + "\xC3\xA9";
+    check_only_error(p, "/pins/2/name");
+    p.pins[2].name = "Bad\xC3";
+    check_only_error(p, "/pins/2/name");
+  }
 }
 
 TEST_CASE("positions and vertices within 0..1") {
