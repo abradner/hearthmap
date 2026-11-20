@@ -772,12 +772,10 @@ def emit_photos(photos: dict[str, Path], sizes: tuple[int, ...] = PHOTO_SIZES) -
 LIB_DIR = "hearthmap_lib"  # library .cpp files (and private headers next to them)
 GEN_DIR = "hearthmap_gen"  # generated tables and photos
 _SOURCE_SUFFIXES = (".cpp", ".c", ".h", ".hpp")
-HOST_SHARED_FILES = ("summary.h", "summary.cpp")
 
 
 def library_files(repo_root: Path) -> dict[str, Path]:
-    """Build-tree path (relative to src/) -> file in this repo, for core and ui_lvgl (plus the
-    host's summary stopgap, see below).
+    """Build-tree path (relative to src/) -> file in this repo, for core and ui_lvgl.
 
     Each library's public `include/` tree is mirrored to the root of src/ (ESPHome's src
     component has "." on its include path, so `#include "hearthmap/config.h"` resolves with no
@@ -794,13 +792,6 @@ def library_files(repo_root: Path) -> dict[str, Path]:
             for f in sorted(tree.rglob("*")):
                 if f.is_file() and f.suffix in _SOURCE_SUFFIXES:
                     out[prefix + f.relative_to(tree).as_posix()] = f
-    # Stopgap, docs/decisions.md D-030: the top bar's house summary is computed in host/ until
-    # core grows a view-model field for it. The device uses the same two files rather than a
-    # second implementation; they depend on core only.
-    for name in HOST_SHARED_FILES:
-        f = repo_root / "host" / "src" / name
-        if f.is_file():
-            out[f"{LIB_DIR}/host/{name}"] = f
     return out
 
 

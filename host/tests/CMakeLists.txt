@@ -1,7 +1,7 @@
 # Host tests: unit tests for the JSON source, the fixture parser and the top-bar text, and the
 # golden images (host/README.md, "Golden images").
 
-add_executable(hearthmap_host_tests main.cpp json_config_test.cpp summary_test.cpp app_test.cpp)
+add_executable(hearthmap_host_tests main.cpp json_config_test.cpp top_bar_test.cpp app_test.cpp)
 target_link_libraries(hearthmap_host_tests PRIVATE hearthmap_host hearthmap_doctest)
 target_compile_definitions(hearthmap_host_tests PRIVATE
   HEARTHMAP_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")

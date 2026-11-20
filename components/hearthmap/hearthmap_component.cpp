@@ -10,9 +10,9 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "hearthmap/ui/fonts.h"
+#include "hearthmap/ui/format.h"
 #include "hearthmap/ui/theme.h"
 #include "hearthmap_gen/photos.h"
-#include "hearthmap_lib/host/summary.h"
 #include "readings_ingest.h"
 
 namespace esphome::hearthmap_panel {
@@ -284,8 +284,6 @@ void HearthmapComponent::refresh_view_(uint32_t start_ms, bool connected) {
   // R8: confirmed while the HA connection that subscribed to states is up; aging otherwise.
   hearthmap_device::restamp(this->readings_, connected, now);
   this->pipeline_->update(this->readings_, now, this->ui_state_, start_ms);
-  // The top bar's summary from the same readings and time as the view model.
-  this->summary_ = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
   this->connected_ = connected;
   this->dirty_ = false;
   this->last_view_ms_ = start_ms;
@@ -296,7 +294,7 @@ void HearthmapComponent::refresh_view_(uint32_t start_ms, bool connected) {
 void HearthmapComponent::show_view_() {
   hm::ui::HeaderText header;
   header.clock = this->clock_->now().strftime("%H:%M");
-  header.summary = this->summary_;
+  header.summary = hm::ui::summary_text(this->pipeline_->view().summary);
   hm::ui::SourceStatus status;
   status.offline = !this->connected_;
   status.restamped = this->connected_;  // restamp() runs exactly while connected (D-046)

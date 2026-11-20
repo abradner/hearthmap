@@ -4,11 +4,19 @@
 #include <sstream>
 #include <string>
 
+#include "clock_text.h"
+#include "hearthmap/ui/format.h"
+#include "hearthmap/view_model.h"
 #include "json_config.h"
-#include "summary.h"
 
 using namespace hearthmap;
 using namespace hearthmap::host;
+
+// The house summary through the shared path the host and the device both use (D-049): core's
+// house_summary() worded by ui_lvgl's summary_text(), on the example's JSON fixtures.
+static std::string house_summary_text(const Config& c, const Readings& r, Timestamp now) {
+  return ui::summary_text(house_summary(c, r, now));
+}
 
 namespace {
 
@@ -39,13 +47,13 @@ TEST_CASE("house summary averages fresh indoor readings that feed their layer") 
   // Temperatures feeding the layer indoors: 21.5, 22.0, 20.5, 20.0, 19.5 and the bathroom's
   // 22.5 (a humidity pin's temperature feeds; the fiddle's pot probe does not; the balcony is
   // outdoor) -> 21.0. Humidity: 48, 45, 52, 58 -> 50.75. PM2.5: 6.
-  CHECK(house_summary(f.config, f.fixture.readings, f.fixture.now) ==
+  CHECK(house_summary_text(f.config, f.fixture.readings, f.fixture.now) ==
         "House 21.0\xC2\xB0   51% RH   PM2.5 6");
 }
 
 TEST_CASE("stale readings drop out of the summary") {
   const Flat f = load("stale-sensors");
-  const std::string s = house_summary(f.config, f.fixture.readings, f.fixture.now);
+  const std::string s = house_summary_text(f.config, f.fixture.readings, f.fixture.now);
   CHECK(s.rfind("House ", 0) == 0);
   // Kitchen and study temperatures are too old; the rest still average.
   CHECK(s.find("\xC2\xB0") != std::string::npos);
@@ -53,12 +61,12 @@ TEST_CASE("stale readings drop out of the summary") {
 
 TEST_CASE("no fresh readings at all says so") {
   const Flat f = load("all-ok");
-  CHECK(house_summary(f.config, Readings{}, f.fixture.now) == "House: no data");
+  CHECK(house_summary_text(f.config, Readings{}, f.fixture.now) == "House: no data");
   // Only PM2.5 present: no leading separator.
   Readings only_pm;
   only_pm.by_entity["sensor.example_living_pm25"] =
       Reading{ReadingState::Value, 12.0, "", f.fixture.now};
-  CHECK(house_summary(f.config, only_pm, f.fixture.now) == "House PM2.5 12");
+  CHECK(house_summary_text(f.config, only_pm, f.fixture.now) == "House PM2.5 12");
 }
 
 TEST_CASE("clock text in UTC with an offset, wrapping at midnight") {

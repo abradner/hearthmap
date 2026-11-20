@@ -22,7 +22,7 @@ add_library(hearthmap_host STATIC
   src/app.cpp
   src/json_config.cpp
   src/photos.cpp
-  src/summary.cpp
+  src/clock_text.cpp
 )
 target_include_directories(hearthmap_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(hearthmap_host

@@ -165,9 +165,8 @@ declares), a `HeatRasterizer` writing into a heat image buffer the glue allocate
 asks) and the generated photos as the `ImageProvider`. The heat image is redrawn only when the
 active layer or the heat samples changed (D-047). The glue tells the `Screen` what the view model
 does not carry through `hm::ui::SourceStatus`: offline, re-stamped timestamps, and a heat image
-behind the active layer (D-046). The top bar's house summary uses the host's
-`house_summary()` (`host/src/summary.cpp`, copied into the build like the libraries): a stopgap
-until core has a view-model field for it (docs/decisions.md D-030).
+behind the active layer (D-046). The top bar's house summary is core's `ViewModel::summary`
+worded by ui_lvgl's `summary_text()`, the same path as the host (D-049).
 
 ## Memory and cost (example config, 1280 x 800, measured from the build and the headers)
 

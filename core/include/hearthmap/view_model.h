@@ -169,6 +169,23 @@ struct OverlayView {
   std::vector<OverlayRow> rows;
 };
 
+/// The top bar's house summary as numbers (D-030, D-049); ui_lvgl's summary_text() words it
+/// ("House 21.4°   52% RH   PM2.5 6"). Each part is the mean over pins in indoor rooms (a pin
+/// whose room id is unknown counts as outdoor) of Fresh assessments (assess()):
+/// - temperature, humidity: of that role, only where it feeds its layer on that pin kind
+///   (feeds_layer(): a plant's pot probe does not);
+/// - pm25: of every PM2.5 binding (any kind; no layer reads PM2.5 yet, D-003).
+/// A part with no fresh reading is nullopt. Independent of the active layer and of whether a
+/// layer is enabled. Allocates nothing.
+struct HouseSummary {
+  std::optional<double> temperature;
+  std::optional<double> humidity;
+  std::optional<double> pm25;
+};
+
+/// house_summary() for (config, readings, now).
+HouseSummary house_summary(const Config& config, const Readings& readings, Timestamp now);
+
 struct ViewModel {
   /// The layer actually shown: ui_state.active_layer when enabled, else config.default_layer
   /// (D-020). Never the requested layer when that one is disabled.
@@ -179,6 +196,8 @@ struct ViewModel {
   Hud hud;
   /// Present when ui_state.overlay_pin names a pin in config; an unknown id yields nullopt.
   std::optional<OverlayView> overlay;
+  /// house_summary(config, readings, now).
+  HouseSummary summary;
 };
 
 /// Everything the screen shows for (config, readings, now, ui_state), written into `out`,

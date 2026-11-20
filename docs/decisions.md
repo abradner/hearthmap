@@ -324,7 +324,7 @@ indoor PM2.5, using core's `assess()` and `feeds_layer()`. A part with no fresh 
 out. **Why:** keeps ui_lvgl free of logic and unblocks the screen tonight. This is a principle-2
 stopgap: averaging is logic a test could check, so it belongs in core. **Would change if:** core
 grows a `ViewModel` summary field (then the host function goes, and the device gets the same
-numbers).
+numbers). **Superseded by D-049.**
 
 ### D-031 Choices the UI made where the spec was silent (provisional)
 
@@ -602,3 +602,19 @@ a second guard: every fold-back is also caught by the edge-touch test or the zer
 removing it fails no test. **Would change if:** the editor gains a WebAssembly build of core, at
 which point the editor would call `validate()` itself and the table would test one
 implementation.
+
+### D-049 The house summary is core's; ui_lvgl words it (provisional)
+
+**Question:** D-030's stopgap computed the top bar's averages in `host/src/summary.cpp`, and the
+component copied that host file into the firmware build, so the device depended on `host/`
+(against the layering rule, AGENTS.md §4). **Default:** core's `house_summary(config, readings,
+now)` returns a `HouseSummary` of three optional means with exactly D-030's rules (fresh
+temperature and humidity that feed their layers on indoor pins; fresh PM2.5 on any indoor pin; a
+part with nothing fresh is empty), and `build_view_model()` fills `ViewModel::summary` with it.
+ui_lvgl's `summary_text()` words it ("House 21.0°   51% RH   PM2.5 6", "House: no data"), the
+same `printf` formats as before, so every golden image is unchanged. The host and the component
+both use `summary_text(vm.summary)`; the build no longer copies any host file. The host's clock
+formatting stays in `host/src/clock_text.cpp`. Additive to core's API: no signature changed.
+**Why numbers in core and words in ui_lvgl:** averaging is logic a test can check (principle 2);
+wording is presentation, like every other string on screen. **Would change if:** the summary
+gains judgement (a colour for a hot house), which would be core's too.

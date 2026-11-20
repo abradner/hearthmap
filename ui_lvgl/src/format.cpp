@@ -108,4 +108,26 @@ std::string thirst_verdict(const Assessment& moisture) {
   return pct;
 }
 
+std::string summary_text(const HouseSummary& summary) {
+  std::string out = "House";
+  char buf[64];
+  bool any = false;
+  if (summary.temperature) {
+    std::snprintf(buf, sizeof buf, " %.1f\xC2\xB0", *summary.temperature);
+    out += buf;
+    any = true;
+  }
+  if (summary.humidity) {
+    std::snprintf(buf, sizeof buf, "%s%.0f%% RH", any ? "   " : " ", *summary.humidity);
+    out += buf;
+    any = true;
+  }
+  if (summary.pm25) {
+    std::snprintf(buf, sizeof buf, "%sPM2.5 %.0f", any ? "   " : " ", *summary.pm25);
+    out += buf;
+    any = true;
+  }
+  return any ? out : "House: no data";
+}
+
 }  // namespace hearthmap::ui

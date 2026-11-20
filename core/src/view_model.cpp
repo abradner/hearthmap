@@ -191,8 +191,41 @@ UiState apply(const Config& config, const UiState& state, const UiEvent& event) 
   return next;
 }
 
+HouseSummary house_summary(const Config& config, const Readings& readings, Timestamp now) {
+  struct Mean {
+    double sum = 0.0;
+    int count = 0;
+    std::optional<double> value() const {
+      return count > 0 ? std::optional<double>(sum / count) : std::nullopt;
+    }
+  };
+  Mean temp;
+  Mean hum;
+  Mean pm;
+  for (const Pin& pin : config.pins) {
+    bool indoor = false;
+    for (const Room& r : config.rooms) {
+      if (r.id == pin.room_id) {
+        indoor = !r.outdoor;
+        break;
+      }
+    }
+    if (!indoor) continue;
+    for (Role role : {Role::Temperature, Role::Humidity, Role::Pm25}) {
+      if (role != Role::Pm25 && !feeds_layer(pin.kind, role)) continue;
+      const std::optional<Assessment> a = assess(config, pin, role, readings, now);
+      if (!a || a->freshness != Freshness::Fresh || !a->value) continue;
+      Mean& m = role == Role::Temperature ? temp : role == Role::Humidity ? hum : pm;
+      m.sum += *a->value;
+      ++m.count;
+    }
+  }
+  return HouseSummary{temp.value(), hum.value(), pm.value()};
+}
+
 void build_view_model(const Config& config, const Readings& readings, Timestamp now,
                       const UiState& ui_state, ViewModel& out) {
+  out.summary = house_summary(config, readings, now);
   out.active_layer = shown_layer(config, ui_state.active_layer);
   const bool layer_enabled = config.layer(out.active_layer).enabled;
   out.tabs.clear();

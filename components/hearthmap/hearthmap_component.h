@@ -84,7 +84,6 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool dimmed_ = false;       ///< The last Screen update dimmed the heat image.
   uint32_t heat_started_ms_ = 0;
   uint32_t last_view_ms_ = 0;
-  std::string summary_;  ///< The top bar's summary, from the same readings as the view model.
 
   hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
   hm::Rgb565* heat_back_ = nullptr;    ///< The second buffer frames render into.
