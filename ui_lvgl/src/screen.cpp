@@ -650,7 +650,7 @@ struct Screen::Impl {
     lv_obj_set_pos(w.hud_empty, theme::kHudX, theme::kHudY + kHudTitleHeight);
     lv_obj_set_hidden(w.hud_empty, true);
 
-    const auto cap = static_cast<std::size_t>(std::max(0, config.hud.max_items));
+    const auto cap = static_cast<std::size_t>(std::max<std::int32_t>(0, config.hud.max_items));
     hud_pin_ids.assign(cap, std::string());
     // Gap between cards: the spec's 10 px, reduced (never the cards) so `cap` cards plus the
     // "+N more" line end kHudBottomMargin above the screen's bottom edge. Below 4 px it stops
