@@ -44,7 +44,9 @@ int main(int argc, char** argv) {
                                    expected.rgb.begin() + static_cast<std::ptrdiff_t>(i + 3),
                                    actual.rgb.begin() + static_cast<std::ptrdiff_t>(i));
       if (same) {
-        for (int c = 0; c < 3; ++c) diff.rgb[i + static_cast<std::size_t>(c)] /= 4;
+        for (std::size_t c = 0; c < 3; ++c) {
+          diff.rgb[i + c] = static_cast<std::uint8_t>(diff.rgb[i + c] / 4);
+        }
         continue;
       }
       ++differing;

@@ -14,6 +14,12 @@
 using namespace hearthmap;
 using namespace hearthmap::ui;
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+// lv_image_header_t is a set of bit-fields; GCC's -Wconversion flags every write to them.
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
+
 namespace {
 
 struct RecordingSink : EventSink {
@@ -88,6 +94,10 @@ struct Rig {
 };
 
 }  // namespace
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 TEST_CASE("the tree has one widget per room and pin, and the HUD pool is the config's cap") {
   Rig rig;
