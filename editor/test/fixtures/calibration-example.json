@@ -40,7 +40,7 @@
       "confidence": "high",
       "polarity": "normal",
       "watering_events": 4,
-      "drying_rate_per_day": 7.42,
+      "drying_rate_per_day": 7.415,
       "drying_fraction_per_day": 0.1513,
       "warnings": [
         {
@@ -81,7 +81,7 @@
       "confidence": "medium",
       "polarity": "normal",
       "watering_events": 4,
-      "drying_rate_per_day": 9.68,
+      "drying_rate_per_day": 9.684,
       "drying_fraction_per_day": 0.1937,
       "warnings": [
         {
@@ -150,8 +150,8 @@
       "confidence": "low",
       "polarity": "normal",
       "watering_events": 0,
-      "drying_rate_per_day": 1.21,
-      "drying_fraction_per_day": 0.0391,
+      "drying_rate_per_day": 1.213,
+      "drying_fraction_per_day": 0.03914,
       "warnings": [
         {
           "code": "polarity_from_trend",
