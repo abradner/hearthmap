@@ -1,29 +1,28 @@
 // hearthmap_component.h — the ESPHome glue: Home Assistant states and the clock in, core in the
 // middle, ui_lvgl's Screen out. Thin by design: every decision is core's (AGENTS.md principle 2),
-// every pixel is ui_lvgl's. host/src/app.cpp is the same composition on the host.
+// every pixel is ui_lvgl's, and the heavy work is PanelPipeline's, done in bounded slices from
+// loop() so setup() returns at once (docs/decisions.md D-038). host/src/app.cpp is the same
+// composition on the host.
 #pragma once
 
-#include <array>
 #include <memory>
 #include <vector>
 
 #include "esphome/components/lvgl/lvgl_esphome.h"
 #include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
-#include "hearthmap/colour_scale.h"
-#include "hearthmap/config.h"
-#include "hearthmap/heat_field.h"
 #include "hearthmap/readings.h"
-#include "hearthmap/ui/heat_image.h"
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/view_model.h"
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
 
 namespace esphome::hearthmap_panel {
 
 namespace hm = ::hearthmap;
 
-/// Plant photos from the generated tables, as LVGL descriptors built once at boot.
+/// Plant photos from the generated tables, as LVGL descriptors built once.
 class GeneratedPhotos final : public hm::ui::ImageProvider {
  public:
   void init();
@@ -51,11 +50,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void on_ui_event(const hm::UiEvent& event) override { pending_.push_back(event); }
 
  private:
-  enum class Phase : uint8_t { ConfigError, WaitingForTime, Running };
+  enum class Phase : uint8_t { Booting, Failed, WaitingForTime, Running };
 
-  bool start_ui_();
+  void boot_slice_();
+  bool start_screen_();
   void subscribe_();
-  void rebuild_(hm::Timestamp now);
+  void frame_slice_();
   void show_status_(const char* text);
   void hide_status_();
 
@@ -64,27 +64,23 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t refresh_interval_ms_ = 30000;
   uint32_t min_redraw_interval_ms_ = 500;
 
-  Phase phase_ = Phase::ConfigError;
-  hm::Config config_;
+  Phase phase_ = Phase::Booting;
+  hearthmap_gen::GeneratedConfigSource source_;
+  std::unique_ptr<hearthmap_device::PanelPipeline> pipeline_;
+  uint32_t boot_started_ms_ = 0;
+  uint32_t stage_started_ms_ = 0;
+  uint32_t stage_slices_ = 0;
+
   hm::Readings readings_;
   hm::UiState ui_state_;
   std::vector<hm::UiEvent> pending_;
   bool dirty_ = true;
-  uint32_t last_build_ms_ = 0;
+  bool frame_active_ = false;
+  bool first_frame_logged_ = false;
+  uint32_t frame_started_ms_ = 0;
+  uint32_t last_frame_ms_ = 0;
 
-  // Reuse buffers: once warm, a rebuild allocates nothing in core (D-022).
-  hm::ViewModel view_;
-  hm::RoomMask mask_;
-  hm::HeatField field_;
-  hm::HeatField shown_field_;  ///< The field the heat image was last drawn from.
-  bool heat_valid_ = false;
-  hm::Layer shown_layer_ = hm::Layer::Temperature;
-  std::vector<hm::HeatSample> samples_;
-  std::vector<hm::Rgb565> cell_colours_;
-  std::array<hm::ColourLut, hm::kLayerCount> luts_;
-
-  std::unique_ptr<hm::ui::HeatRasterizer> raster_;
-  hm::Rgb565* heat_pixels_ = nullptr;  ///< raster_->pixel_count() pixels, in PSRAM.
+  hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
   lv_image_dsc_t heat_dsc_{};
   GeneratedPhotos photos_;
   std::unique_ptr<hm::ui::Screen> screen_;

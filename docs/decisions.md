@@ -417,6 +417,29 @@ more than the ESP32-P4's internal RAM can spare, and with exceptions off a faile
 The heat image itself is allocated explicitly in PSRAM. **Would change if:** ui_lvgl takes an
 allocator for its working set, after which this global setting can go.
 
+### D-038 Nothing on the device blocks: scanline room maps and sliced boot and frame work (provisional)
+
+**Question:** how much work may one call do on the panel? **What happened:** the first hardware
+run with a larger config (18 rooms, a 920 x 736 map) boot-looped. `HeatRasterizer`'s constructor,
+called from the component's `setup()`, tested every map pixel against every room with
+`point_in_polygon()`, which also re-checked each polygon for zero area on every call, all in
+double precision, which the ESP32-P4 does in software (ROM routines). It ran for 7+ seconds and
+the task watchdog fired at 12 s on every boot. **Default:** (1) room ownership for any grid is
+computed by scanline (`RoomScanner`, `build_room_mask()`): per row, only the edges crossing it do
+double-precision work, with exactly `point_in_polygon()`'s arithmetic (shared in
+`core/src/polygon_edges.h`), so the answer is identical at every centre, ties included; (2)
+`validate()`'s edge-pair test rejects disjoint bounding boxes with comparisons first (exact); (3)
+the device does all boot and frame work in bounded steps from `loop()`, about 20 ms of steps per
+call: load (with `validate()`), mask rows, rasterizer rows (`HeatRasterizer::Deferred` and
+`build_rows()`), then per frame one heat-field row (`compute_heat_field_rows()`) or eight
+heat-image rows (`HeatRasterizer::render_rows()`) per step; `setup()` only subscribes and shows
+"Starting". Each boot stage logs its start and its elapsed time. **Why:** a watchdog reset is the
+one failure the screen cannot report, and the cost scaled with pixels x rooms x vertices, so a
+bigger house would only have made it worse. **Guard:** `components/hearthmap/tests/test_cpp.py`
+drives the device's pipeline on fictional configs at the schema's maximums and fails if any one
+step exceeds 5 ms on the host; the pre-fix construction took 7.2 s there, 37 ms per step.
+**Would change if:** a step proves too slow on the panel, in which case the step size shrinks.
+
 ### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
 
 **Question:** the editor must "validate with the real schema and show errors next to the item",

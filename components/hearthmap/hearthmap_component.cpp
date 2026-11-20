@@ -1,5 +1,6 @@
 #include "hearthmap_component.h"
 
+#include <algorithm>
 #include <string>
 
 #include "esphome/components/api/api_server.h"
@@ -8,7 +9,6 @@
 #include "esphome/core/log.h"
 #include "hearthmap/ui/fonts.h"
 #include "hearthmap/ui/theme.h"
-#include "hearthmap_gen/generated_config.h"
 #include "hearthmap_gen/photos.h"
 #include "hearthmap_lib/host/summary.h"
 #include "readings_ingest.h"
@@ -18,6 +18,14 @@ namespace esphome::hearthmap_panel {
 static const char* const TAG = "hearthmap";
 
 namespace {
+
+// Work per loop() call: steps run until this much time has gone, then loop() returns so the
+// watchdog, Wi-Fi, the API and LVGL get the CPU. One step is a few rows (core's RoomScanner,
+// the rasterizer's build, heat-field rows), small enough that a slice overruns the budget by at
+// most one step even at the schema's maximums (components/hearthmap/README.md, "Cost").
+constexpr uint32_t kSliceBudgetMs = 20;
+constexpr std::int32_t kBootRowsPerStep = 4;
+constexpr std::int32_t kFieldRowsPerStep = 1;
 
 // Issues shown on screen when the config is refused; the rest go to the log only.
 constexpr std::size_t kIssuesOnScreen = 8;
@@ -32,16 +40,6 @@ lv_image_dsc_t rgb565_dsc(const uint8_t* pixels, uint32_t w, uint32_t h) {
   d.data_size = w * h * 2U;
   d.data = pixels;
   return d;
-}
-
-bool same_field(const hm::HeatField& a, const hm::HeatField& b) {
-  if (a.cols != b.cols || a.rows != b.rows || a.cells.size() != b.cells.size()) return false;
-  for (std::size_t i = 0; i < a.cells.size(); ++i) {
-    if (a.cells[i].state != b.cells[i].state) return false;
-    if (a.cells[i].state == hm::CellState::Value && a.cells[i].value != b.cells[i].value)
-      return false;
-  }
-  return true;
 }
 
 }  // namespace
@@ -62,69 +60,17 @@ const lv_image_dsc_t* GeneratedPhotos::plant_photo(std::string_view photo_id) co
 }
 
 void HearthmapComponent::setup() {
-  hm::ConfigLoadResult loaded = hearthmap_gen::GeneratedConfigSource{}.load();
-  for (const hm::ConfigIssue& issue : loaded.issues) {
-    if (issue.severity == hm::IssueSeverity::Error) {
-      ESP_LOGE(TAG, "config %s: %s", issue.path.c_str(), issue.message.c_str());
-    } else {
-      ESP_LOGW(TAG, "config %s: %s", issue.path.c_str(), issue.message.c_str());
-    }
-  }
-  if (!loaded.config.has_value()) {
-    // Never render a config core refused: say why, on screen and in the log, and stop.
-    std::string text = "hearthmap: the config was refused\n\n";
-    std::size_t shown = 0;
-    for (const hm::ConfigIssue& issue : loaded.issues) {
-      if (issue.severity != hm::IssueSeverity::Error) continue;
-      if (shown++ == kIssuesOnScreen) {
-        text += "...and more: see the device log\n";
-        break;
-      }
-      text += issue.path + ": " + issue.message + "\n";
-    }
-    this->phase_ = Phase::ConfigError;
-    this->show_status_(text.c_str());
-    this->status_set_error(LOG_STR("config refused by validate()"));
-    return;
-  }
-  this->config_ = std::move(*loaded.config);
-  this->ui_state_ = hm::initial_ui_state(this->config_);
-  if (!this->start_ui_()) return;
+  // Nothing heavy here: boot work runs in slices from loop(). Subscriptions must exist before
+  // Home Assistant connects (it asks for the list once per connection), so they are made now;
+  // states that arrive early simply wait in readings_.
+  this->boot_started_ms_ = millis();
+  this->stage_started_ms_ = this->boot_started_ms_;
+  this->pipeline_ =
+      std::make_unique<hearthmap_device::PanelPipeline>(this->source_, hm::ui::theme::kHeatPalette);
   this->subscribe_();
-  this->phase_ = Phase::WaitingForTime;
-  this->show_status_("Waiting for time");
-}
-
-bool HearthmapComponent::start_ui_() {
-  hm::build_room_mask(this->config_, this->mask_);
-  for (std::size_t i = 0; i < hm::kLayerCount; ++i) {
-    hm::build_colour_lut(this->config_.layers[i].band, hm::ui::theme::kHeatPalette,
-                         hm::kDefaultColourLutSize, this->luts_[i]);
-  }
-  this->photos_.init();
-  this->raster_ = std::make_unique<hm::ui::HeatRasterizer>(this->config_);
-  RAMAllocator<hm::Rgb565> allocator;  // PSRAM when present
-  this->heat_pixels_ = allocator.allocate(this->raster_->pixel_count());
-  if (this->heat_pixels_ == nullptr) {
-    ESP_LOGE(TAG, "no memory for the %ux%u heat image",
-             static_cast<unsigned>(this->raster_->width()),
-             static_cast<unsigned>(this->raster_->height()));
-    this->phase_ = Phase::ConfigError;
-    this->show_status_("hearthmap: not enough memory for the heat image");
-    this->mark_failed();
-    return false;
-  }
-  std::fill_n(this->heat_pixels_, this->raster_->pixel_count(), hm::Rgb565{0});
-  this->heat_dsc_ = rgb565_dsc(reinterpret_cast<const uint8_t*>(this->heat_pixels_),
-                               static_cast<uint32_t>(this->raster_->width()),
-                               static_cast<uint32_t>(this->raster_->height()));
-  hm::ui::ScreenDeps deps;
-  deps.fonts = hm::ui::builtin_fonts();
-  deps.sink = this;
-  deps.photos = &this->photos_;
-  this->screen_ = std::make_unique<hm::ui::Screen>(this->lvgl_->get_screen_active(), this->config_,
-                                                   &this->heat_dsc_, deps);
-  return true;
+  this->show_status_("Starting");
+  ESP_LOGI(TAG, "boot: load started (config %s, %u entities)", hearthmap_gen::kConfigSourceName,
+           static_cast<unsigned>(hearthmap_gen::kSubscribedEntityCount));
 }
 
 void HearthmapComponent::subscribe_() {
@@ -149,7 +95,12 @@ void HearthmapComponent::subscribe_() {
 }
 
 void HearthmapComponent::loop() {
-  if (this->phase_ == Phase::ConfigError) return;
+  switch (this->phase_) {
+    case Phase::Booting: this->boot_slice_(); return;
+    case Phase::Failed: return;
+    case Phase::WaitingForTime:
+    case Phase::Running: break;
+  }
   if (!this->clock_->now().is_valid()) {
     if (this->phase_ != Phase::WaitingForTime) {
       this->phase_ = Phase::WaitingForTime;
@@ -158,52 +109,146 @@ void HearthmapComponent::loop() {
     this->pending_.clear();
     return;  // Before time is valid nothing is judged: no "everything is stale" screen.
   }
-  const uint32_t ms = millis();
   if (this->phase_ == Phase::WaitingForTime) {
+    ESP_LOGI(TAG, "time is valid: drawing");
     this->phase_ = Phase::Running;
     this->hide_status_();
     this->dirty_ = true;
   }
-  bool touched = false;
-  for (const hm::UiEvent& e : this->pending_) {
-    this->ui_state_ = hm::apply(this->config_, this->ui_state_, e);
-    touched = true;
-  }
-  this->pending_.clear();
-  const uint32_t since = ms - this->last_build_ms_;
-  if (touched || (this->dirty_ && since >= this->min_redraw_interval_ms_) ||
-      since >= this->refresh_interval_ms_) {
-    this->rebuild_(this->clock_->timestamp_now());
-    this->last_build_ms_ = ms;
-  }
+  this->frame_slice_();
 }
 
-void HearthmapComponent::rebuild_(hm::Timestamp now) {
-  // R8: confirmed while the HA connection that subscribed to states is up; aging otherwise.
-  hearthmap_device::restamp(this->readings_,
-                            api::global_api_server->is_connected_with_state_subscription(), now);
-  hm::build_view_model(this->config_, this->readings_, now, this->ui_state_, this->view_);
+void HearthmapComponent::boot_slice_() {
+  using Stage = hearthmap_device::PanelPipeline::Stage;
+  const uint32_t start = millis();
+  ++this->stage_slices_;
+  do {
+    const Stage before = this->pipeline_->stage();
+    const Stage after = this->pipeline_->boot_step(kBootRowsPerStep);
+    if (after != before) {
+      const uint32_t now = millis();
+      ESP_LOGI(TAG, "boot: %s done in %u ms over %u loop slices",
+               hearthmap_device::PanelPipeline::stage_name(before),
+               static_cast<unsigned>(now - this->stage_started_ms_),
+               static_cast<unsigned>(this->stage_slices_));
+      this->stage_started_ms_ = now;
+      this->stage_slices_ = 0;
+      if (after == Stage::Mask || after == Stage::Raster) {
+        ESP_LOGI(TAG, "boot: %s started (%d rows)",
+                 hearthmap_device::PanelPipeline::stage_name(after),
+                 static_cast<int>(this->pipeline_->stage_rows_total()));
+      }
+    }
+    if (after == Stage::Refused) {
+      std::string text = "hearthmap: the config was refused\n\n";
+      std::size_t shown = 0;
+      for (const hm::ConfigIssue& issue : this->pipeline_->issues()) {
+        if (issue.severity == hm::IssueSeverity::Error) {
+          ESP_LOGE(TAG, "config %s: %s", issue.path.c_str(), issue.message.c_str());
+          if (shown++ < kIssuesOnScreen) text += issue.path + ": " + issue.message + "\n";
+        } else {
+          ESP_LOGW(TAG, "config %s: %s", issue.path.c_str(), issue.message.c_str());
+        }
+      }
+      if (shown > kIssuesOnScreen) text += "...and more: see the device log\n";
+      // Never render a config core refused: say why, on screen and in the log, and stop.
+      this->phase_ = Phase::Failed;
+      this->show_status_(text.c_str());
+      this->status_set_error(LOG_STR("config refused by validate()"));
+      return;
+    }
+    if (after == Stage::Ready) {
+      for (const hm::ConfigIssue& issue : this->pipeline_->issues()) {
+        ESP_LOGW(TAG, "config %s: %s", issue.path.c_str(), issue.message.c_str());
+      }
+      if (!this->start_screen_()) return;
+      ESP_LOGI(TAG, "boot: complete in %u ms",
+               static_cast<unsigned>(millis() - this->boot_started_ms_));
+      this->ui_state_ = hm::initial_ui_state(this->pipeline_->config());
+      this->phase_ = Phase::WaitingForTime;
+      this->show_status_("Waiting for time");
+      return;
+    }
+  } while (millis() - start < kSliceBudgetMs);
+}
 
-  // The heat image is the expensive part (one pass over every map pixel): redraw it only when
-  // the layer or the field actually changed.
-  const hm::Layer layer = this->view_.active_layer;
-  hm::heat_samples(this->config_, this->readings_, now, layer, this->samples_);
-  hm::compute_heat_field(this->config_, this->mask_, this->samples_, this->field_);
-  if (!this->heat_valid_ || layer != this->shown_layer_ ||
-      !same_field(this->field_, this->shown_field_)) {
-    hm::ui::colour_cells(this->field_, this->luts_[hm::index_of(layer)], this->cell_colours_);
-    this->raster_->render(this->field_, this->cell_colours_, this->heat_pixels_);
-    this->screen_->invalidate_heat();
-    std::swap(this->shown_field_, this->field_);
-    this->shown_layer_ = layer;
-    this->heat_valid_ = true;
+bool HearthmapComponent::start_screen_() {
+  const uint32_t start = millis();
+  ESP_LOGI(TAG, "boot: screen started");
+  const hm::ui::HeatRasterizer& raster = this->pipeline_->rasterizer();
+  RAMAllocator<hm::Rgb565> allocator;  // PSRAM when present
+  this->heat_pixels_ = allocator.allocate(raster.pixel_count());
+  if (this->heat_pixels_ == nullptr) {
+    ESP_LOGE(TAG, "no memory for the %dx%d heat image", static_cast<int>(raster.width()),
+             static_cast<int>(raster.height()));
+    this->phase_ = Phase::Failed;
+    this->show_status_("hearthmap: not enough memory for the heat image");
+    this->status_set_error(LOG_STR("no memory for the heat image"));
+    return false;
   }
+  std::fill_n(this->heat_pixels_, raster.pixel_count(), hm::Rgb565{0});
+  this->pipeline_->set_heat_buffer(this->heat_pixels_);
+  this->heat_dsc_ =
+      rgb565_dsc(reinterpret_cast<const uint8_t*>(this->heat_pixels_),
+                 static_cast<uint32_t>(raster.width()), static_cast<uint32_t>(raster.height()));
+  this->photos_.init();
+  hm::ui::ScreenDeps deps;
+  deps.fonts = hm::ui::builtin_fonts();
+  deps.sink = this;
+  deps.photos = &this->photos_;
+  this->screen_ = std::make_unique<hm::ui::Screen>(
+      this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
+  ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, %u bytes; rasterizer %u bytes)",
+           static_cast<unsigned>(millis() - start), static_cast<int>(raster.width()),
+           static_cast<int>(raster.height()), static_cast<unsigned>(raster.pixel_count() * 2U),
+           static_cast<unsigned>(raster.working_bytes()));
+  return true;
+}
 
+void HearthmapComponent::frame_slice_() {
+  const uint32_t start = millis();
+  if (!this->frame_active_) {
+    const bool touched = !this->pending_.empty();
+    for (const hm::UiEvent& e : this->pending_) {
+      this->ui_state_ = hm::apply(this->pipeline_->config(), this->ui_state_, e);
+    }
+    this->pending_.clear();
+    const uint32_t since = start - this->last_frame_ms_;
+    const bool due = !this->first_frame_logged_ || touched || since >= this->refresh_interval_ms_ ||
+                     (this->dirty_ && since >= this->min_redraw_interval_ms_);
+    if (!due) return;
+    const hm::Timestamp now = this->clock_->timestamp_now();
+    // R8: confirmed while the HA connection that subscribed to states is up; aging otherwise.
+    hearthmap_device::restamp(this->readings_,
+                              api::global_api_server->is_connected_with_state_subscription(), now);
+    this->pipeline_->begin_frame(this->readings_, now, this->ui_state_);
+    this->dirty_ = false;
+    this->frame_active_ = true;
+    this->frame_started_ms_ = start;
+    this->last_frame_ms_ = start;
+    if (!this->first_frame_logged_) ESP_LOGI(TAG, "first frame started");
+  }
+  bool done = false;
+  do {
+    done = this->pipeline_->frame_step(kFieldRowsPerStep);
+  } while (!done && millis() - start < kSliceBudgetMs);
+  if (!done) return;
+
+  const hm::Timestamp now = this->clock_->timestamp_now();
+  if (this->pipeline_->heat_redrawn()) this->screen_->invalidate_heat();
   hm::ui::HeaderText header;
   header.clock = this->clock_->now().strftime("%H:%M");
-  header.summary = hm::host::house_summary(this->config_, this->readings_, now);
-  this->screen_->update(this->view_, header, now);
-  this->dirty_ = false;
+  header.summary = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
+  this->screen_->update(this->pipeline_->view(), header, now);
+  this->frame_active_ = false;
+  const uint32_t took = millis() - this->frame_started_ms_;
+  if (!this->first_frame_logged_) {
+    ESP_LOGI(TAG, "first frame done in %u ms", static_cast<unsigned>(took));
+    this->first_frame_logged_ = true;
+  } else {
+    ESP_LOGD(TAG, "frame done in %u ms (heat image %s)", static_cast<unsigned>(took),
+             this->pipeline_->heat_redrawn() ? "redrawn" : "unchanged");
+  }
 }
 
 void HearthmapComponent::show_status_(const char* text) {
@@ -215,14 +260,14 @@ void HearthmapComponent::show_status_(const char* text) {
     lv_obj_set_style_text_color(this->status_, lv_color_hex(hm::ui::theme::kTextPrimary), 0);
     lv_obj_set_style_text_font(this->status_, &lv_font_montserrat_24, 0);
     lv_obj_set_style_pad_all(this->status_, 48, 0);
-    lv_obj_add_flag(this->status_, LV_OBJ_FLAG_CLICKABLE);  // swallow taps while shown
+    lv_obj_set_clickable(this->status_, true);  // swallow taps while shown
   }
   lv_label_set_text(this->status_, text);
-  lv_obj_remove_flag(this->status_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(this->status_, false);
 }
 
 void HearthmapComponent::hide_status_() {
-  if (this->status_ != nullptr) lv_obj_add_flag(this->status_, LV_OBJ_FLAG_HIDDEN);
+  if (this->status_ != nullptr) lv_obj_set_hidden(this->status_, true);
 }
 
 void HearthmapComponent::dump_config() {
@@ -237,15 +282,8 @@ void HearthmapComponent::dump_config() {
                 static_cast<unsigned>(hearthmap_gen::kSubscribedEntityCount),
                 hearthmap_gen::kPhotoCount, static_cast<unsigned>(this->refresh_interval_ms_),
                 static_cast<unsigned>(this->min_redraw_interval_ms_));
-  if (this->raster_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Heat image: %dx%d (%u bytes), rasterizer working set %u bytes",
-                  static_cast<int>(this->raster_->width()),
-                  static_cast<int>(this->raster_->height()),
-                  static_cast<unsigned>(this->raster_->pixel_count() * 2U),
-                  static_cast<unsigned>(this->raster_->working_bytes()));
-  }
-  if (this->phase_ == Phase::ConfigError)
-    ESP_LOGCONFIG(TAG, "  Config REFUSED or out of memory: see errors above");
+  if (this->phase_ == Phase::Failed)
+    ESP_LOGCONFIG(TAG, "  FAILED: config refused or out of memory, see errors above");
 }
 
 }  // namespace esphome::hearthmap_panel

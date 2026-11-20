@@ -68,9 +68,18 @@ config is proven to be refused, and the example proven to load.
   readings age into TooOld honestly.
 - **Time**: until the `time_id` source is valid the screen says "Waiting for time" and nothing is
   judged, rather than marking every sensor stale.
-- A rebuild (view model, heat samples, heat field for the active layer only, all through core's
-  reuse forms) runs on a state change, at most every `min_redraw_interval`, at least every
-  `refresh_interval`, and immediately on a touch.
+- **Nothing blocks** (D-038). `setup()` only subscribes and shows "Starting". All heavy work is
+  `PanelPipeline`'s (`panel_pipeline.h`, pure C++, host-tested), run from `loop()` in slices of
+  about 20 ms of small steps, then `loop()` returns so the watchdog, Wi-Fi, the API and LVGL run:
+  - boot: load (generated tables plus `validate()`), mask rows (core's `RoomScanner`, 4 per
+    step), rasterizer rows (`HeatRasterizer::build_rows()`, 4 per step), then the `Screen` is
+    built. Each stage logs `boot: <stage> started` and `boot: <stage> done in N ms over K loop
+    slices` at INFO, then `boot: complete in N ms`;
+  - frames: on a state change (at most every `min_redraw_interval`), at least every
+    `refresh_interval`, and right after a touch: view model and heat samples, then one heat-field
+    row per step (`compute_heat_field_rows()`), then, only if the field or layer changed, eight
+    heat-image rows per step (`HeatRasterizer::render_rows()`), then `Screen::update()`. The first
+    frame logs its time at INFO, later ones at DEBUG.
 
 ## How core and ui_lvgl reach the firmware
 
@@ -134,9 +143,26 @@ until core has a view-model field for it (docs/decisions.md D-030).
 The board has 32 MiB of PSRAM, so the total (about 6 MiB) fits with room to spare; internal RAM
 use after the build was 15.6 % of 576 KiB (static only: the heap is not measured until it runs).
 
-Cost per rebuild: core's view model, heat samples and 48 x 40 heat field (host: well under 1 ms
-for a larger grid; device not yet measured) plus, only when the field or layer changed, one
-integer pass of the rasterizer over 622,080 pixels and a full redraw of the map region by LVGL.
-On a 360 MHz P4 that pass is expected in the tens of milliseconds; it has not been measured on
-the panel. Unchanged data costs a view model and the Screen's diff, which touches LVGL only where
-something differs.
+## Cost
+
+The first hardware run boot-looped on the task watchdog: the heat image's per-pixel room map
+was built with `point_in_polygon()` per pixel per room, in software double precision, inside
+`setup()` (D-038). Now room maps are scanlines (double-precision work only for edges crossing a
+row, exactly the same answer) and the work is sliced. `tests/test_cpp.py` drives the device's
+pipeline on the host (-O2) and fails if any single step exceeds 5 ms:
+
+| Fictional config | Boot, host total | Worst boot step | Worst frame step | Frame, host total |
+|---|---|---|---|---|
+| Panel-sized: 18 rooms, 22 pins, 131 x 105 grid, 920 x 736 map | 1.6 ms | 0.15 ms (load) | 0.08 ms | 5 ms |
+| Schema maximum, 64 comb rooms of 64 vertices, 256 pins, 256 x 256 grid, 1280 x 800 map | 22 ms | 0.8 ms (load) | 0.25 ms | 14 ms |
+| Schema maximum, all 256 pins in one room (heat-field worst case) | 20 ms | 0.7 ms (load) | 0.26 ms | 40 ms |
+
+The pre-fix construction took 74 ms on the host for the panel-sized config and over 7 s on the
+panel, so double-heavy code here runs at least about 100 times slower on the device. Applying
+100-150x to the double-heavy boot steps and 20-40x to the float and integer frame steps gives,
+on the device (estimates, not yet measured): panel-sized boot about 0.2 s in total, schema
+maximum about 2-3 s spread over many slices; the worst single step is the load step
+(`validate()`, not divisible) at roughly 80-120 ms at the schema maximum; a frame step stays
+around 10 ms. A full heat-image redraw after a change also makes LVGL redraw the map region,
+which is ESPHome's LVGL's own work and not sliced by this component. The boot logs above are how
+to check these numbers on the panel.
