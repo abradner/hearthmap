@@ -6,7 +6,6 @@ add_executable(hearthmap_ui_tests
   format_test.cpp
   heat_image_test.cpp
   screen_test.cpp
-  core_stubs_until_merge.cpp
 )
 target_link_libraries(hearthmap_ui_tests PRIVATE
   hearthmap::ui_lvgl hearthmap_lvgl_headless hearthmap_doctest)
