@@ -11,6 +11,7 @@
 #include "esphome/components/lvgl/lvgl_esphome.h"
 #include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
+#include "generated_photos.h"
 #include "hearthmap/readings.h"
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/ui/screen.h"
@@ -21,17 +22,6 @@
 namespace esphome::hearthmap_panel {
 
 namespace hm = ::hearthmap;
-
-/// Plant photos from the generated tables, as LVGL descriptors built once.
-class GeneratedPhotos final : public hm::ui::ImageProvider {
- public:
-  void init();
-  /// nullptr for an id with no photo: ui_lvgl then draws its placeholder leaf.
-  const lv_image_dsc_t* plant_photo(std::string_view photo_id) const override;
-
- private:
-  std::vector<lv_image_dsc_t> photos_;
-};
 
 class HearthmapComponent : public Component, public hm::ui::EventSink {
  public:
@@ -82,7 +72,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
 
   hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
   lv_image_dsc_t heat_dsc_{};
-  GeneratedPhotos photos_;
+  hearthmap_device::GeneratedPhotos photos_;
   std::unique_ptr<hm::ui::Screen> screen_;
   lv_obj_t* status_ = nullptr;
 };

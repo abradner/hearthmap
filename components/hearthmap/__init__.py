@@ -77,6 +77,12 @@ def _validate_document(config: dict) -> dict:
         gen.check_photos(doc, Path(config[CONF_PHOTOS]) if CONF_PHOTOS in config else None)
     except gen.ConfigError as e:
         raise cv.Invalid(f"hearthmap config {path.name}: {e}", [CONF_PHOTOS]) from e
+    try:
+        # Anything C++ cannot hold (an integer outside its field's type) fails here, at config
+        # time, rather than in to_code.
+        gen.emit_config_source(doc, _load_schema(), path.name)
+    except gen.ConfigError as e:
+        raise cv.Invalid(f"hearthmap config {path.name}: {e}", [CONF_CONFIG]) from e
     return config
 
 

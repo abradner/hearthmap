@@ -44,21 +44,6 @@ lv_image_dsc_t rgb565_dsc(const uint8_t* pixels, uint32_t w, uint32_t h) {
 
 }  // namespace
 
-void GeneratedPhotos::init() {
-  photos_.reserve(hearthmap_gen::kPhotoCount);
-  for (unsigned i = 0; i < hearthmap_gen::kPhotoCount; ++i) {
-    const hearthmap_gen::PhotoData& p = hearthmap_gen::kPhotos[i];
-    photos_.push_back(rgb565_dsc(p.pixels, p.size, p.size));
-  }
-}
-
-const lv_image_dsc_t* GeneratedPhotos::plant_photo(std::string_view photo_id) const {
-  for (unsigned i = 0; i < hearthmap_gen::kPhotoCount; ++i) {
-    if (photo_id == hearthmap_gen::kPhotos[i].id) return &photos_[i];
-  }
-  return nullptr;
-}
-
 void HearthmapComponent::setup() {
   // Nothing heavy here: boot work runs in slices from loop(). Subscriptions must exist before
   // Home Assistant connects (it asks for the list once per connection), so they are made now;

@@ -262,3 +262,63 @@ def test_sync_tree_writes_changed_and_removes_stale_only_in_owned_dirs(gen, tmp_
     assert not (tmp_path / "hearthmap_lib/old.cpp").exists()
     assert (tmp_path / "esphome/keep.cpp").read_text() == "not ours"
     assert gen.sync_tree(tmp_path, {"hearthmap_lib/new.cpp": b"new"}, {"hearthmap_lib"}) == []
+
+
+# ---- integers --------------------------------------------------------------------------------
+
+
+def test_integral_floats_are_accepted_as_integers(gen, schema, minimal):
+    minimal["canvas"].update(width=1280.0, height=8e2)
+    minimal["heat"] = {"grid_cols": 4.8e1}
+    minimal["stale_after_s"] = 3600.0
+    assert gen.check_schema(schema, minimal) == []
+    src = gen.emit_config_source(minimal, schema, "m.json").source
+    assert "c.canvas.width = 1280;" in src
+    assert "c.canvas.height = 800;" in src
+    assert "c.heat.grid_cols = 48;" in src
+    assert "c.stale_after = Seconds{3600};" in src
+    assert "c.canvas.map_area = CanvasRect{0, 0, 1280, 800};" in src
+
+
+@pytest.mark.parametrize("value", [1280.5, float("nan"), float("inf"), "1280", True])
+def test_non_integers_are_refused_at_their_path(gen, schema, minimal, value):
+    minimal["canvas"]["width"] = value
+    with pytest.raises(gen.ConfigError) as e:
+        gen.emit_config_source(minimal, schema, "m.json")
+    assert e.value.path == "/canvas/width"
+    if not isinstance(value, str):  # the schema refuses these too, before the generator runs
+        assert gen.check_schema(schema, minimal) != []
+
+
+@pytest.mark.parametrize(
+    "mutate,path",
+    [
+        (lambda d: d["canvas"].update(map_area={"x": 0, "y": 0, "width": 2**31, "height": 800}),
+         "/canvas/map_area/width"),
+        (lambda d: d["canvas"].update(map_area={"x": 2**40, "y": 0, "width": 1, "height": 800}),
+         "/canvas/map_area/x"),
+        (lambda d: d.update(stale_after_s=2**63), "/stale_after_s"),
+        (lambda d: d.update(stale_after_s=1e19), "/stale_after_s"),
+    ],
+)
+def test_integers_outside_the_cpp_type_are_refused_not_narrowed(gen, schema, minimal, mutate, path):
+    mutate(minimal)
+    assert gen.check_schema(schema, minimal) == []  # the schema has no upper bound here
+    with pytest.raises(gen.ConfigError) as e:
+        gen.emit_config_source(minimal, schema, "m.json")
+    assert e.value.path == path
+
+
+def test_integer_limits_themselves_are_accepted(gen, schema, minimal):
+    minimal["canvas"]["map_area"] = {"x": 0, "y": 0, "width": 2**31 - 1, "height": 800}
+    minimal["stale_after_s"] = 2**63 - 1
+    src = gen.emit_config_source(minimal, schema, "m.json").source
+    assert f"CanvasRect{{0, 0, {2**31 - 1}, 800}}" in src
+    assert f"Seconds{{{2**63 - 1}}}" in src
+
+
+def test_pin_stale_after_is_range_checked_at_its_path(gen, schema, example):
+    example["pins"][2]["stale_after_s"] = 2**64
+    with pytest.raises(gen.ConfigError) as e:
+        gen.emit_config_source(example, schema, "e.json")
+    assert e.value.path == "/pins/2/stale_after_s"

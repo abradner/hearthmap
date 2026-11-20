@@ -424,3 +424,64 @@ def test_entity_that_stays_unknown_without_a_unit_renders_as_unknown(gen, schema
     # Freshness::Unknown == 3, Severity::Stale == 3; no value, no raw, empty unit, time as given.
     assert "MOISTURE freshness=3 severity=3 has_value=0 has_raw=0 unit='' last=5000 verdict='no data'" in text, text
     assert "PIN severity=3 hud_items=0" in text, text
+
+
+# A stand-in for lvgl.h: just the types GeneratedPhotos and ports.h touch.
+LVGL_STUB = r"""
+#pragma once
+#include <cstdint>
+#define LV_IMAGE_HEADER_MAGIC 0x19
+#define LV_COLOR_FORMAT_RGB565 0x12
+typedef struct {
+  uint32_t magic : 8; uint32_t cf : 8; uint32_t flags : 16;
+  uint32_t w : 16; uint32_t h : 16; uint32_t stride : 16; uint32_t reserved_2 : 16;
+} lv_image_header_t;
+typedef struct { lv_image_header_t header; uint32_t data_size; const uint8_t* data; } lv_image_dsc_t;
+"""
+
+PHOTOS_TEST = r"""
+#include <cstdio>
+#include "generated_photos.h"
+int main() {
+  hearthmap_device::GeneratedPhotos photos;
+  int fail = 0;
+  if (photos.plant_photo("fern") != nullptr) { std::printf("FAIL before init\n"); ++fail; }
+  photos.init();
+  const lv_image_dsc_t* fern = photos.plant_photo("fern");
+  const lv_image_dsc_t* moss = photos.plant_photo("moss");
+  if (!fern || !moss || fern->header.w != 8 || fern->header.stride != 16 || fern->data_size != 128 ||
+      fern->header.magic != LV_IMAGE_HEADER_MAGIC || fern->header.cf != LV_COLOR_FORMAT_RGB565) {
+    std::printf("FAIL descriptors\n"); ++fail;
+  }
+  photos.init();  // must be a no-op: the Screen already holds these pointers
+  if (photos.plant_photo("fern") != fern || photos.plant_photo("moss") != moss) {
+    std::printf("FAIL pointers moved\n"); ++fail;
+  }
+  if (photos.plant_photo("cactus") != nullptr) { std::printf("FAIL unknown id\n"); ++fail; }
+  std::printf("photos checks done, %d failures\n", fail);
+  return fail;
+}
+"""
+
+
+def test_generated_photos_init_once_keeps_descriptors_stable(gen, tmp_path):
+    from PIL import Image
+
+    files = {}
+    for pid, colour in (("fern", (0, 255, 0)), ("moss", (0, 128, 0))):
+        f = tmp_path / f"{pid}.png"
+        Image.new("RGB", (8, 8), colour).save(f)
+        files[pid] = f
+    header, source = gen.emit_photos(files, size=8)
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/photos.h").write_text(header)
+    (tmp_path / "hearthmap_gen/photos.cpp").write_text(source)
+    (tmp_path / "lvgl.h").write_text(LVGL_STUB)
+    (tmp_path / "t.cpp").write_text(PHOTOS_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/photos.cpp"),
+         str(COMPONENT / "generated_photos.cpp")],
+        [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
+    )
+    assert "0 failures" in out, out
