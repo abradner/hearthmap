@@ -261,8 +261,8 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
 - **esphome-config**: `esphome config` on `examples/flat/esphome/flat-panel.yaml` with the
   digest-pinned `ghcr.io/esphome/esphome:2026.11.0` image, plus a negative control (a broken config
   must fail it). A full firmware compile is the manual `esphome-compile` workflow
-  (`workflow_dispatch`), too slow for every PR; it has not been run on `main` yet (an open
-  issue), so the firmware compile is checked by hand, with the same pinned image, before a PR
+  (`workflow_dispatch`), too slow for every PR; it has not been run on `main` yet (issue
+  23), so the firmware compile is checked by hand, with the same pinned image, before a PR
   that changes device code is opened.
 
 Every action is pinned by commit SHA. There are no path filters: every job runs on every PR.

@@ -1,6 +1,6 @@
 # Test dependencies of the ESPHome component, every package pinned, transitive ones included, so
 # a fresh install resolves to exactly this set (CI runs Python 3.13; resolved in a clean venv).
-# Versions only, no hashes yet (an open issue).
+# Versions only, no hashes yet (issue 22).
 pytest==9.2.0
 iniconfig==2.3.1      # pytest
 packaging==26.3       # pytest

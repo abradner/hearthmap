@@ -647,5 +647,5 @@ can be badged "water soon" in a room drawn neutral, or the reverse. Two plants i
 blended by distance like any other samples. **Accepted for the first version:** the pin, the
 badge and the HUD are the judgement; the room colour is a picture of how dry the soil is overall.
 **Would change if:** the room colour should agree with the pins, by giving each soil sample a
-value already normalised against its own band (an open issue), which would make the field's
+value already normalised against its own band (issue 17), which would make the field's
 domain "fraction of the way out of the happy range" rather than raw thirst.
