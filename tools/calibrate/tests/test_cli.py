@@ -179,3 +179,22 @@ def test_fetch_and_propose_from_ha_never_print_the_token(tmp_path, monkeypatch, 
 def test_entry_script_runs():
     r = subprocess.run([sys.executable, str(TOOL / "calibrate.py"), "--version"], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.startswith("hearthmap-calibrate ")
+
+
+def test_a_newline_in_the_token_never_reaches_any_output(monkeypatch, capsys, tmp_path):
+    # Review finding: http.client quotes an invalid header value, token included, in its
+    # ValueError. The run must fail cleanly and the token must appear nowhere.
+    import traceback
+
+    secret = "first-half-7f3a9c\nsecond-half-SECRETPART"
+    monkeypatch.setenv("HASS_TOKEN", secret)
+    out = tmp_path / "c.json"
+    try:
+        code = run("propose", "--ha-url", "http://127.0.0.1:9", "--entity", "sensor.example_a", "--out", out)
+        trace = ""
+    except BaseException:  # noqa: BLE001 - the point is to see any escaping exception's text
+        code, trace = None, traceback.format_exc()
+    captured = capsys.readouterr()
+    for blob in (trace, captured.out, captured.err):
+        assert "first-half" not in blob and "SECRETPART" not in blob
+    assert code == 2 and not out.exists()

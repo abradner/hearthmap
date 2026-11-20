@@ -16,6 +16,8 @@ from hearthmap_calibrate.analysis import (
     TOO_NARROW,
     Params,
     analyse,
+    decimals_for,
+    rounded_range,
     weighted_percentile,
 )
 from hearthmap_calibrate.history import Sample
@@ -309,3 +311,33 @@ def test_output_is_finite_everywhere():
         p = analyse("sensor.example_a", s)
         for x in (p.dry, p.wet, p.happy_min, p.happy_max, p.drying_rate_per_day):
             assert x is None or math.isfinite(x)
+
+
+def test_a_range_that_collapses_when_rounded_is_refused():
+    # Review finding: tiny raw units (here 1e-5 scale) passed the noise check and then rounded
+    # to dry == wet == 0.0 with status ok.
+    s = [Sample(x.t, x.v / 100000) for x in sawtooth()]
+    p = analyse("sensor.example_tiny", s)
+    assert not (p.status == OK and p.dry == p.wet)
+    if p.status == OK:  # precision follows the data's scale, so the range survives rounding
+        assert p.dry == pytest.approx(10 / 100000, rel=0.15) and p.wet == pytest.approx(60 / 100000, rel=0.05)
+        assert p.dry != p.wet and p.happy_min != p.dry
+
+
+@pytest.mark.parametrize("scale", [1e-5, 1e-3, 1.0, 1e3, 1e6])
+def test_rounding_keeps_the_range_at_every_scale(scale):
+    p = analyse("sensor.example_scaled", [Sample(x.t, x.v * scale) for x in sawtooth()])
+    assert p.status == OK
+    assert p.wet / scale == pytest.approx(57.92, rel=0.01) and p.dry / scale == pytest.approx(10.6, rel=0.02)
+
+
+def test_rounded_range_refuses_a_collapse_or_a_flip():
+    assert rounded_range(0.001, 0.004, 2) is None  # both round to 0.0
+    assert rounded_range(0.004, 0.001, 2) is None  # inverted, same collapse
+    assert rounded_range(10.0, 60.0, 2) == (10.0, 60.0)
+    assert rounded_range(2900.0, 1300.0, 2) == (2900.0, 1300.0)
+
+
+@pytest.mark.parametrize("scale,expected", [(50.0, 2), (5.0, 3), (5e-4, 7), (1e6, 2), (0.0, 2), (float("nan"), 2)])
+def test_decimals_follow_the_scale(scale, expected):
+    assert decimals_for(scale) == expected

@@ -7,6 +7,8 @@ import os
 import stat
 import sys
 
+from .history import HistoryError, check_token
+
 # Outputs can hold private data (entity ids, a house's config), so they are written owner-only,
 # never with the process umask (AGENTS.md §8, Configuration).
 OUTPUT_MODE = 0o600
@@ -36,6 +38,10 @@ def read_token(env_name: str | None, token_file: str | None, environ=os.environ)
     # token is the likely failure, and it must stop here, not become an HTTP 401 later.
     if not token:
         raise ToolError(f"no Home Assistant token: {source} is empty or unset")
+    try:
+        check_token(token)
+    except HistoryError as e:
+        raise ToolError(f"{e} ({source})") from None
     return token
 
 

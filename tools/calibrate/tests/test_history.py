@@ -202,3 +202,93 @@ def test_http_401_names_the_token_but_never_prints_it(server):
 def test_unreachable_host_is_a_history_error():
     with pytest.raises(HistoryError, match="cannot reach"):
         fetch_ha_history("http://127.0.0.1:9", TOKEN, ["sensor.example_a"], START, END, timeout=2)
+
+
+# --- review findings: no path may carry the token ---------------------------------------------
+
+
+class _Recorder(BaseHTTPRequestHandler):
+    """Second origin: records whatever reaches it."""
+
+    seen: list = []
+
+    def do_GET(self):  # noqa: N802
+        _Recorder.seen.append(dict(self.headers))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(HA_RESPONSE).encode())
+
+    def log_message(self, *args):
+        pass
+
+
+def _serve(handler):
+    srv = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_a_redirect_to_another_origin_is_refused_and_gets_no_token(code):
+    _Recorder.seen = []
+    other = _serve(_Recorder)
+    target = f"http://localhost:{other.server_port}/api/history/period/x"
+
+    class Redirector(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(code)
+            self.send_header("Location", target)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    first = _serve(Redirector)
+    try:
+        with pytest.raises(HistoryError) as err:
+            fetch_ha_history(f"http://127.0.0.1:{first.server_port}", TOKEN, ["sensor.example_a"], START, END, timeout=5)
+    finally:
+        first.shutdown(), other.shutdown(), first.server_close(), other.server_close()
+    assert _Recorder.seen == []  # the second origin was never contacted, so it saw no token
+    message = str(err.value)
+    assert f"http://localhost:{other.server_port}" in message and "redirect" in message
+    assert TOKEN not in message
+
+
+def test_a_same_origin_redirect_is_refused_too():
+    class Redirector(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = _serve(Redirector)
+    try:
+        with pytest.raises(HistoryError, match="refused a redirect"):
+            fetch_ha_history(f"http://127.0.0.1:{srv.server_port}", TOKEN, ["sensor.example_a"], START, END, timeout=5)
+    finally:
+        srv.shutdown(), srv.server_close()
+
+
+@pytest.mark.parametrize("bad", ["abc\ndef-SECRETPART", "abc\rdef-SECRETPART", "abc def-SECRETPART", "abc\tdef-SECRETPART", "abc\x00def-SECRETPART", "abcé-SECRETPART"])
+def test_a_token_with_whitespace_or_control_characters_is_refused_without_echo(bad):
+    with pytest.raises(HistoryError) as err:
+        fetch_ha_history("https://ha.example.test", bad, ["sensor.example_a"], START, END, fetch=lambda r, t: b"[]")
+    assert "SECRETPART" not in str(err.value) and "abc" not in str(err.value)
+    assert err.value.__cause__ is None and err.value.__context__ is None  # raised fresh, nothing chained
+
+
+def test_transport_errors_never_carry_header_text(server):
+    """Whatever the transport raises (here: a ValueError quoting the header, as http.client
+    does for an invalid header value), only a fixed message comes out."""
+
+    def explode(request, timeout):
+        raise ValueError(f"Invalid header value {request.get_header('Authorization')!r}")
+
+    with pytest.raises(HistoryError) as err:
+        fetch_ha_history(server, TOKEN, ["sensor.example_a"], START, END, fetch=explode)
+    assert TOKEN not in str(err.value) and err.value.__cause__ is None and err.value.__suppress_context__

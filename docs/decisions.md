@@ -222,7 +222,7 @@ otherwise.
 800 of a 1280 x 800 canvas, a default that only made sense for one panel. The example sets it
 explicitly. **Why:** a default should not encode one layout's HUD width.
 
-### D-024 Calibration proposals: method defaults (provisional, PR 8)
+### D-027 Calibration proposals: method defaults (provisional, PR 8)
 
 **Default:** `tools/calibrate` takes `wet` as the wetter of the median post-watering plateau and
 the 95th time-weighted wetness percentile, and `dry` as the drier of the median pre-watering
@@ -237,7 +237,7 @@ method, with defaults chosen against synthetic series; the README states each on
 change if:** real histories show a different watering signature (slow bottom watering, for
 one), which would need a different event detector rather than retuned numbers.
 
-### D-025 Default happy range is 30% to 100% of dry to wet (provisional, PR 8)
+### D-028 Default happy range is 30% to 100% of dry to wet (provisional, PR 8)
 
 **Default:** the proposed `happy_min` is 30% of the way from `dry` to `wet` and `happy_max` is
 `wet` itself, both labelled defaults (`happy_is_default: true`) to be tuned per species.
@@ -247,7 +247,7 @@ holds no evidence of over-watering. 30% gives thirst 0.7, the soil layer's defau
 adding the default changes no plant's warning point. **Would change if:** per-species presets
 arrive in the editor.
 
-### D-026 calibration.json lists sensors as an array (provisional, PR 8)
+### D-029 calibration.json lists sensors as an array (provisional, PR 8)
 
 **Default:** `schema/calibration.schema.json`: `sensors` is an array of objects keyed by
 `entity_id`, each carrying `status`; only `status: "ok"` carries a `calibration`, whose shape is

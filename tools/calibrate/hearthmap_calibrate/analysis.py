@@ -127,8 +127,26 @@ def slope_per_day(points: list[tuple[float, float]]) -> float | None:
     return sum((t - mt) * (v - mv) for t, v in points) / sxx * DAY
 
 
-def _round(x: float) -> float:
-    return round(x, 2) + 0.0  # + 0.0 turns -0.0 into 0.0
+def decimals_for(scale: float) -> int:
+    """Decimal places that keep about four significant digits of `scale` (a span or a width),
+    and never fewer than two: a fixed precision would round a sensor with tiny raw units to 0."""
+    if not math.isfinite(scale) or scale <= 0:
+        return 2
+    return max(2, 3 - math.floor(math.log10(scale)))
+
+
+def _round(x: float, decimals: int = 2) -> float:
+    return round(x, decimals) + 0.0  # + 0.0 turns -0.0 into 0.0
+
+
+def rounded_range(dry: float, wet: float, decimals: int) -> tuple[float, float] | None:
+    """dry and wet as exported, or None when rounding would collapse or flip the range. With
+    decimals_for(width) this cannot happen; the check keeps a zero-width calibration impossible
+    by construction rather than by that arithmetic."""
+    r_dry, r_wet = _round(dry, decimals), _round(wet, decimals)
+    if (r_wet - r_dry) * (wet - dry) <= 0:
+        return None
+    return r_dry, r_wet
 
 
 # --- pipeline steps ---------------------------------------------------------------------------
@@ -361,7 +379,8 @@ def analyse(entity_id: str, samples: list[Sample], unit: str | None = None, para
         return Proposal(entity_id, NO_VALID_SAMPLES, "cannot calibrate: no valid samples", evidence=evidence, warnings=tuple(findings))
     vmin, vmax = min(s.v for s in valid), max(s.v for s in valid)
     days = (valid[-1].t - valid[0].t) / DAY
-    evidence.update(min=_round(vmin), max=_round(vmax), history_days=round(days, 2))
+    ev_dp = decimals_for(vmax - vmin)
+    evidence.update(min=_round(vmin, ev_dp), max=_round(vmax, ev_dp), history_days=round(days, 2))
     if vmax - vmin <= 1e-9:
         return Proposal(
             entity_id, NO_VARIATION, f"cannot calibrate: no variation (every valid reading is {vmin:g})", evidence=evidence, warnings=tuple(findings)
@@ -429,7 +448,7 @@ def analyse(entity_id: str, samples: list[Sample], unit: str | None = None, para
             dry, dry_method = statistics.median(troughs), f"median of {len(troughs)} pre-watering troughs"
         else:
             dry_method += f" (drier than the median of {len(troughs)} pre-watering troughs)"
-    evidence.update(dry_method=dry_method, wet_method=wet_method, percentile_dry=_round(pct_dry), percentile_wet=_round(pct_wet))
+    evidence.update(dry_method=dry_method, wet_method=wet_method, percentile_dry=_round(pct_dry, ev_dp), percentile_wet=_round(pct_wet, ev_dp))
 
     rate = drying_rate(held, events, sign, params)
     common = dict(polarity=polarity, watering_events=len(events), evidence=evidence)
@@ -455,19 +474,30 @@ def analyse(entity_id: str, samples: list[Sample], unit: str | None = None, para
     if rate is None:
         findings.append(Finding("no_drying_trend", "no drying trend seen between waterings"))
 
+    dp = decimals_for(width)
+    exported = rounded_range(dry, wet, dp)
+    if exported is None:
+        return Proposal(
+            entity_id,
+            TOO_NARROW,
+            f"cannot calibrate: dry {dry:g} and wet {wet:g} round to a zero-width range",
+            warnings=tuple(findings),
+            **common,
+        )
     happy_min = dry + params.happy_min_fraction * (wet - dry)
     happy_max = dry + params.happy_max_fraction * (wet - dry)
     fraction = rate / abs(wet - dry) if rate is not None else None
+    rate_out = _round(rate, decimals_for(rate)) if rate is not None else None
     return Proposal(
         entity_id,
         OK,
-        dry=_round(dry),
-        wet=_round(wet),
-        happy_min=_round(happy_min),
-        happy_max=_round(happy_max),
+        dry=exported[0],
+        wet=exported[1],
+        happy_min=_round(happy_min, dp),
+        happy_max=_round(happy_max, dp),
         confidence=confidence(len(events), days, params, findings),
-        drying_rate_per_day=_round(rate) if rate is not None else None,
-        drying_fraction_per_day=round(fraction, 4) if fraction is not None else None,
+        drying_rate_per_day=rate_out,
+        drying_fraction_per_day=_round(fraction, decimals_for(fraction)) if fraction is not None else None,
         warnings=tuple(findings),
         **common,
     )

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -131,9 +132,41 @@ def history_to_json(history: History) -> dict:
 
 Fetch = Callable[[urllib.request.Request, float], bytes]
 
+# A bearer token is printable ASCII with no whitespace. Anything else (a newline from two pasted
+# credentials, a stray space) would make http.client raise an error quoting the whole header.
+_TOKEN_RE = re.compile(r"[\x21-\x7e]+")
+
+
+def check_token(token: str) -> None:
+    """Refuse an unusable token before it reaches a header. The message never echoes it."""
+    if not token:
+        raise HistoryError("Home Assistant token is empty")
+    if not _TOKEN_RE.fullmatch(token):
+        raise HistoryError("Home Assistant token contains whitespace, control or non-ASCII characters (not shown); check its source")
+
+
+def _origin(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib's default handler re-sends the Authorization header to wherever a redirect points,
+    another origin or plain http included. The API needs no redirect, so every one is refused."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = _origin(urllib.parse.urljoin(req.full_url, newurl))
+        raise HistoryError(
+            f"Home Assistant answered HTTP {code} with a redirect to {target}: refused a redirect, so the token"
+            " goes nowhere but --ha-url. Pass the final address as --ha-url."
+        )
+
+
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
 
 def _urlopen(request: urllib.request.Request, timeout: float) -> bytes:
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (scheme checked)
+    with _OPENER.open(request, timeout=timeout) as response:
         return response.read()
 
 
@@ -196,17 +229,29 @@ def fetch_ha_history(
     fetch: Fetch = _urlopen,
     timeout: float = 60.0,
 ) -> History:
-    if not token:
-        raise HistoryError("Home Assistant token is empty")
+    check_token(token)
     request = ha_history_request(base_url, token, entity_ids, start, end)
+    # Every failure below becomes a fixed message built from non-secret parts only (a status
+    # code, an exception type, an OS error string). The original exception is never chained or
+    # printed: its text can quote the request's headers, token included.
+    error: str | None = None
     try:
         body = fetch(request, timeout)
+    except HistoryError:
+        raise  # our own redirect refusal: already secret-free
     except urllib.error.HTTPError as e:
         hint = " (check the token)" if e.code in (401, 403) else ""
-        raise HistoryError(f"Home Assistant answered HTTP {e.code}{hint}") from None
-    except (urllib.error.URLError, OSError) as e:
-        reason = getattr(e, "reason", e)
-        raise HistoryError(f"cannot reach Home Assistant: {reason}") from None
+        error = f"Home Assistant answered HTTP {e.code}{hint}"
+    except urllib.error.URLError as e:
+        reason = e.reason
+        detail = reason.strerror if isinstance(reason, OSError) and reason.strerror else type(reason).__name__
+        error = f"cannot reach Home Assistant: {detail}"
+    except OSError as e:
+        error = f"cannot reach Home Assistant: {e.strerror or type(e).__name__}"
+    except Exception as e:  # noqa: BLE001 - anything else may quote the header
+        error = f"request to Home Assistant failed ({type(e).__name__})"
+    if error is not None:
+        raise HistoryError(error) from None
     try:
         doc = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):

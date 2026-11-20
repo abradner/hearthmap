@@ -53,7 +53,10 @@ The tool reads a long-lived access token from an environment variable (`--token-
 default `HASS_TOKEN`) or a file (`--token-file PATH`, which should be mode 0600). There is no
 command-line option for the token: anything on a command line is visible to every user of the
 machine and stays in shell history. The token goes only into the request's `Authorization`
-header; it is never logged, put in a URL, or written to an output. The tool never calls a
+header; it is never logged, put in a URL, or written to an output. A token with whitespace, control or
+non-ASCII characters is refused before any request (without echoing it), any redirect from
+Home Assistant is refused rather than followed (urllib would re-send the header to the new
+address), and transport errors are reported from non-secret parts only. The tool never calls a
 secrets manager itself.
 
 Feeding it from a secrets manager for one command, with the 1Password CLI as the example (the
@@ -134,10 +137,13 @@ once, for the last `--days` days (default 28).
 9. **Judge.** A range not wider than 4x the noise is `too_narrow`. Confidence: `high` with 3+
    waterings over 14+ days and no saturation or flat-line; `medium` with 1+ watering over 7+
    days; `low` otherwise (no waterings, or under 7 days).
+    Values are rounded to about four significant digits of the range's width (never fewer than
+    two decimals), so tiny raw units keep their range; a range that would still round to zero
+    width is `too_narrow`.
 10. **Happy range.** `happy_min` = dry + 30% of (wet - dry); `happy_max` = wet. A **default**,
     labelled as such in both outputs, to be tuned per species: `happy_max` below `wet` would warn
     "too wet" after every watering, and 30% matches the soil layer's default warn edge
-    (`docs/decisions.md` D-025).
+    (`docs/decisions.md` D-028).
 
 Each step is a function in `hearthmap_calibrate/analysis.py`; tuning knobs are the `Params`
 fields there.
