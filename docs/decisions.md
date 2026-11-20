@@ -254,10 +254,15 @@ Each is the reversible reading; each has a test that would change with it.
 
 - **A non-finite number in a `Value` reading is `Unknown`** (`assess_freshness`), though sources
   promise never to send one: showing it would print `nan`.
+- **A calibration span is usable** only when dry, wet and wet - dry are finite and |wet - dry|
+  is at least `kMinCalibrationWidth`: one predicate, `calibration_span_usable()`, used by both
+  `validate()` and `moisture_fraction()`, so a valid config never reports `BadCalibration`.
 - **Moisture on a pin with no calibration** (only possible in an invalid config) is treated like
   a degenerate calibration: `BadCalibration`, in the D-012 precedence.
 - **Polygon simplicity**: a zero-length edge (a repeated vertex, including the first vertex
-  repeated at the end) or an edge that folds back over its neighbour makes a polygon non-simple.
+  repeated at the end), zero area (every vertex on one line, by the same test
+  `point_in_polygon()` uses to enclose nothing), or an edge that folds back over its neighbour
+  makes a polygon non-simple. Both are checked explicitly, not left to the crossing tests.
   When a vertex is out of range, only the per-vertex error is reported (`/rooms/i/polygon/j`),
   not also "not simple"; when a pin's position is out of range, the outside-its-room warning is
   skipped. `validate()` reports every problem in one pass.

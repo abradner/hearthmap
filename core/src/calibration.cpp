@@ -7,11 +7,15 @@
 
 namespace hearthmap {
 
-std::optional<double> moisture_fraction(const Calibration& calibration, double raw) {
+bool calibration_span_usable(const Calibration& calibration) {
   const double width = calibration.wet - calibration.dry;
-  // Written as !(>=) so a NaN width counts as degenerate too.
-  if (!(std::fabs(width) >= kMinCalibrationWidth)) return std::nullopt;
-  if (!std::isfinite(raw) || !std::isfinite(width)) return std::nullopt;  // also inf dry/wet
+  // isfinite(width) is false when dry or wet is infinite or NaN, and when finite ends overflow.
+  return std::isfinite(width) && std::fabs(width) >= kMinCalibrationWidth;
+}
+
+std::optional<double> moisture_fraction(const Calibration& calibration, double raw) {
+  if (!calibration_span_usable(calibration) || !std::isfinite(raw)) return std::nullopt;
+  const double width = calibration.wet - calibration.dry;
   const double f = (raw - calibration.dry) / width;
   return std::clamp(f, 0.0, 1.0);
 }

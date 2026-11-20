@@ -307,11 +307,13 @@ struct ConfigIssue {
 ///   a pin's stale_after < 1; grid_cols or grid_rows outside 2..256; idw_power not in (0, 8]
 ///   (or non-finite); hud.max_items outside 1..20; a non-finite band value.
 /// Errors, semantic rules:
-///   duplicate room or pin ids; a pin naming an unknown room; a self-intersecting polygon; a pin
+///   duplicate room or pin ids; a pin naming an unknown room; a polygon that is not simple
+///   (edges cross or overlap, a zero-length edge, or zero area); a pin
 ///   missing its primary role, binding a role twice, binding Moisture when it is not Soil or
 ///   Plant (D-018), or (Soil/Plant) missing its calibration, or (other kinds) carrying one; a
-///   zero-width calibration (|wet - dry| < kMinCalibrationWidth, calibration.h); a happy_min or
-///   happy_max outside the dry..wet span (endpoints count as inside), or happy_min wetter than
+///   calibration whose span is unusable (calibration_span_usable() false, calibration.h:
+///   zero-width, non-finite, or overflowing); a happy_min or happy_max that is non-finite or
+///   outside the dry..wet span (endpoints count as inside), or happy_min wetter than
 ///   happy_max; band ordering violated (see Band) on any layer, enabled or not; a landscape
 ///   canvas with width <= height or portrait with height <= width; default_layer disabled;
 ///   temperature_unit Fahrenheit while layers[Temperature].present != kAllBandFields, reported

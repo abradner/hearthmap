@@ -92,8 +92,11 @@ struct HeatField {
 /// - Weighting: w = 1 / d^power, d = distance from cell centre to sample in canvas pixels
 ///   (map space scaled by config.canvas.map_area width and height), power = config.heat
 ///   .idw_power. value = sum(w * v) / sum(w), evaluated as base + sum(w * (v - base)) / sum(w)
-///   with base = the room's first usable sample value, so one sample (or several equal ones)
-///   yields its value exactly. All in float. When idw_power == 2 exactly, w is
+///   with base = the room's first usable sample value, so one sample yields its value exactly,
+///   and with values pre-scaled by 2^-20 so that v - base cannot overflow for finite samples
+///   (scaling by a power of two is exact for normal floats, so ordinary results are unchanged).
+///   A cell whose result is still not finite (every weight underflowed: 0/0) is NoData.
+///   All in float. When idw_power == 2 exactly, w is
 ///   1 / (dx*dx + dy*dy): multiply-only, no sqrt, no powf. Other integer powers 1..8 use
 ///   multiplication and at most one sqrtf; non-integer powers use powf.
 /// - Coincidence: a cell takes a sample's value exactly only when that sample is in the cell's

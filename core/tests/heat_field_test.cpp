@@ -480,6 +480,64 @@ TEST_CASE("compute_heat_field: unusable samples are ignored, leaving NoData") {
   }
 }
 
+TEST_CASE("build_room_mask: a collinear room claims no cells (review finding)") {
+  Config config;
+  config.heat.grid_cols = 10;
+  config.heat.grid_rows = 50;
+  Room line;
+  line.id = "line";
+  line.polygon = {{0.0, 0.0}, {0.3125, 0.4375}, {0.625, 0.875}};
+  config.rooms.push_back(line);
+  config.rooms.push_back(rect_room("all", 0.0, 0.0, 1.0, 1.0));
+  const RoomMask mask = build_room_mask(config);
+  CHECK(mask.room_index[mask.index(3, 24)] == 1);
+  for (const std::int16_t index : mask.room_index) CHECK(index == 1);
+}
+
+TEST_CASE("compute_heat_field: huge opposite-signed samples do not overflow (review finding)") {
+  Config config;  // default canvas
+  config.rooms.push_back(rect_room("only", 0.0, 0.0, 1.0, 1.0));
+  config.heat.grid_cols = 2;
+  config.heat.grid_rows = 2;
+  const RoomMask mask = build_room_mask(config);
+  const HeatField field =
+      compute_heat_field(config, mask, {{{0.0F, 0.0F}, 0, 3e38F}, {{0.5F, 0.5F}, 0, -3e38F}});
+  // Cell (0, 0) is equidistant from both: the mean is 0, not -inf.
+  REQUIRE(cell_at(field, 0, 0).state == CellState::Value);
+  CHECK(cell_at(field, 0, 0).value == 0.0F);
+  for (const HeatCell& cell : field.cells) {
+    REQUIRE(cell.state == CellState::Value);
+    CHECK(std::isfinite(cell.value));
+    CHECK(cell.value <= 3e38F);
+    CHECK(cell.value >= -3e38F);
+  }
+}
+
+TEST_CASE("compute_heat_field: extreme finite values keep the single-sample exactness") {
+  const Config config = two_rooms();
+  const RoomMask mask = build_room_mask(config);
+  for (const float v : {3.4e38F, -3.4e38F, 1e-40F, -1e-44F, 0.0F, 21.5F}) {
+    CAPTURE(v);
+    const HeatField field = compute_heat_field(config, mask, {{{0.2F, 0.3F}, 0, v}});
+    CHECK(cell_at(field, 4, 9).value == v);
+  }
+}
+
+TEST_CASE("compute_heat_field: a cell whose weights all underflow is NoData, not NaN") {
+  // An absurd map area (rejected by validate()) puts the samples ~10^6 px away; at power 8 every
+  // weight underflows to 0 and sum(w*v)/sum(w) would be 0/0.
+  Config config;
+  config.canvas.map_area = CanvasRect{0, 0, 2000000, 2000000};
+  config.rooms.push_back(rect_room("only", 0.0, 0.0, 1.0, 1.0));
+  config.heat.grid_cols = 2;
+  config.heat.grid_rows = 2;
+  config.heat.idw_power = 8.0;
+  const RoomMask mask = build_room_mask(config);
+  const HeatField field =
+      compute_heat_field(config, mask, {{{0.0F, 0.0F}, 0, 1.0F}, {{1.0F, 1.0F}, 0, 2.0F}});
+  for (const HeatCell& cell : field.cells) CHECK(cell.state == CellState::NoData);
+}
+
 TEST_CASE("compute_heat_field: a mask that is not a mask gives an empty field") {
   const Config config = two_rooms();
   RoomMask mask = build_room_mask(config);
