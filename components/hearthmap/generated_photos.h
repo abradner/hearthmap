@@ -21,9 +21,12 @@ class GeneratedPhotos final : public hearthmap::ui::ImageProvider {
  public:
   void init();
   bool initialised() const { return initialised_; }
-  /// nullptr for an id with no photo (ui_lvgl then draws its placeholder leaf), and for every
-  /// id before init().
+  /// The largest size of the photo; nullptr for an id with no photo (ui_lvgl then draws its
+  /// placeholder leaf), and for every id before init().
   const lv_image_dsc_t* plant_photo(std::string_view photo_id) const override;
+  /// The photo at exactly `diameter` pixels when the build generated that size (it generates
+  /// every disc size ui_lvgl uses, D-039), else nullptr.
+  const lv_image_dsc_t* plant_photo_sized(std::string_view photo_id, int diameter) const override;
 
  private:
   bool initialised_ = false;

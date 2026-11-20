@@ -23,6 +23,11 @@ namespace esphome::hearthmap_panel {
 
 namespace hm = ::hearthmap;
 
+/// Take over LVGL's log output (to ESPHome's log, as before) and count warnings and errors.
+void hook_lvgl_log();
+uint32_t lvgl_warnings();
+uint32_t lvgl_errors();
+
 class HearthmapComponent : public Component, public hm::ui::EventSink {
  public:
   void set_lvgl(lvgl::LvglComponent* lvgl) { lvgl_ = lvgl; }
@@ -46,6 +51,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool start_screen_();
   void subscribe_();
   void frame_slice_();
+  void invalidate_band_();
   void show_status_(const char* text);
   void hide_status_();
 
@@ -55,11 +61,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t min_redraw_interval_ms_ = 500;
 
   Phase phase_ = Phase::Booting;
-  hearthmap_gen::GeneratedConfigSource source_;
+  hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline
   std::unique_ptr<hearthmap_device::PanelPipeline> pipeline_;
   uint32_t boot_started_ms_ = 0;
   uint32_t stage_started_ms_ = 0;
   uint32_t stage_slices_ = 0;
+  uint32_t stage_worst_us_ = 0;
 
   hm::Readings readings_;
   hm::UiState ui_state_;
@@ -71,6 +78,9 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t last_frame_ms_ = 0;
 
   hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
+  hm::Rgb565* heat_back_ = nullptr;    ///< The second buffer frames render into.
+  int32_t band_row_ = 1 << 30;         ///< Next heat-image row to invalidate; past the end: none.
+  uint32_t last_band_ms_ = 0;
   lv_image_dsc_t heat_dsc_{};
   hearthmap_device::GeneratedPhotos photos_;
   std::unique_ptr<hm::ui::Screen> screen_;

@@ -1,6 +1,8 @@
 #include "hearthmap_component.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <string>
 
 #include "esphome/components/api/api_server.h"
@@ -24,6 +26,11 @@ namespace {
 // the rasterizer's build, heat-field rows), small enough that a slice overruns the budget by at
 // most one step even at the schema's maximums (components/hearthmap/README.md, "Cost").
 constexpr uint32_t kSliceBudgetMs = 20;
+// After a new heat image is swapped in, the map is invalidated in bands of this many rows, one
+// band per loop() call at most every kBandIntervalMs, so LVGL repaints it over several refreshes
+// instead of in one long one (a full 920 x 736 repaint took 645 ms on the panel).
+constexpr int32_t kHeatBandRows = 48;
+constexpr uint32_t kBandIntervalMs = 25;
 constexpr std::int32_t kBootRowsPerStep = 4;
 constexpr std::int32_t kFieldRowsPerStep = 1;
 
@@ -44,17 +51,58 @@ lv_image_dsc_t rgb565_dsc(const uint8_t* pixels, uint32_t w, uint32_t h) {
 
 }  // namespace
 
+namespace {
+
+uint32_t g_lvgl_warnings = 0;
+uint32_t g_lvgl_errors = 0;
+
+}  // namespace
+
+uint32_t lvgl_warnings() {
+  return g_lvgl_warnings;
+}
+uint32_t lvgl_errors() {
+  return g_lvgl_errors;
+}
+
+void hook_lvgl_log() {
+#if LV_USE_LOG
+  // Replaces ESPHome's own LVGL print callback (same output, tag "lvgl") to count warnings and
+  // errors for the frame log, so a run shows whether LVGL complains (D-039). Runs after the
+  // lvgl component's setup, which registered the callback this one takes over from.
+  lv_log_register_print_cb([](lv_log_level_t level, const char* buf) {
+    if (level == LV_LOG_LEVEL_WARN) ++g_lvgl_warnings;
+    if (level == LV_LOG_LEVEL_ERROR) ++g_lvgl_errors;
+    const char* next = strchr(buf, ')');
+    if (next != nullptr) buf = next + 1;
+    while (isspace(static_cast<unsigned char>(*buf))) buf++;
+    int len = static_cast<int>(strlen(buf));
+    if (len > 0 && buf[len - 1] == '\n') --len;
+    switch (level) {
+      case LV_LOG_LEVEL_TRACE: ESP_LOGD("lvgl", "%.*s", len, buf); break;
+      case LV_LOG_LEVEL_INFO: ESP_LOGI("lvgl", "%.*s", len, buf); break;
+      case LV_LOG_LEVEL_WARN: ESP_LOGW("lvgl", "%.*s", len, buf); break;
+      default: ESP_LOGE("lvgl", "%.*s", len, buf); break;
+    }
+  });
+#endif
+}
+
 void HearthmapComponent::setup() {
   // Nothing heavy here: boot work runs in slices from loop(). Subscriptions must exist before
   // Home Assistant connects (it asks for the list once per connection), so they are made now;
   // states that arrive early simply wait in readings_.
   this->boot_started_ms_ = millis();
   this->stage_started_ms_ = this->boot_started_ms_;
-  this->pipeline_ =
-      std::make_unique<hearthmap_device::PanelPipeline>(this->source_, hm::ui::theme::kHeatPalette);
+  hearthmap_device::PanelPipeline::Builder builder;
+  builder.steps = this->source_.build_steps();
+  builder.step = [this](hm::Config& c, std::size_t k) { this->source_.build_step(c, k); };
+  this->pipeline_ = std::make_unique<hearthmap_device::PanelPipeline>(std::move(builder),
+                                                                      hm::ui::theme::kHeatPalette);
+  hook_lvgl_log();  // after the lvgl component's setup, whose callback this takes over
   this->subscribe_();
   this->show_status_("Starting");
-  ESP_LOGI(TAG, "boot: load started (config %s, %u entities)", hearthmap_gen::kConfigSourceName,
+  ESP_LOGI(TAG, "boot: build started (config %s, %u entities)", hearthmap_gen::kConfigSourceName,
            static_cast<unsigned>(hearthmap_gen::kSubscribedEntityCount));
 }
 
@@ -109,19 +157,25 @@ void HearthmapComponent::boot_slice_() {
   ++this->stage_slices_;
   do {
     const Stage before = this->pipeline_->stage();
+    const uint32_t step_start = micros();
     const Stage after = this->pipeline_->boot_step(kBootRowsPerStep);
+    const uint32_t step_us = micros() - step_start;
+    if (step_us > this->stage_worst_us_) this->stage_worst_us_ = step_us;
     if (after != before) {
       const uint32_t now = millis();
-      ESP_LOGI(TAG, "boot: %s done in %u ms over %u loop slices",
+      ESP_LOGI(TAG, "boot: %s done in %u ms over %u loop slices (longest step %u.%03u ms)",
                hearthmap_device::PanelPipeline::stage_name(before),
                static_cast<unsigned>(now - this->stage_started_ms_),
-               static_cast<unsigned>(this->stage_slices_));
+               static_cast<unsigned>(this->stage_slices_),
+               static_cast<unsigned>(this->stage_worst_us_ / 1000),
+               static_cast<unsigned>(this->stage_worst_us_ % 1000));
       this->stage_started_ms_ = now;
       this->stage_slices_ = 0;
-      if (after == Stage::Mask || after == Stage::Raster) {
-        ESP_LOGI(TAG, "boot: %s started (%d rows)",
+      this->stage_worst_us_ = 0;
+      if (after != Stage::Ready && after != Stage::Refused) {
+        ESP_LOGI(TAG, "boot: %s started (%d units)",
                  hearthmap_device::PanelPipeline::stage_name(after),
-                 static_cast<int>(this->pipeline_->stage_rows_total()));
+                 static_cast<int>(this->pipeline_->stage_total()));
       }
     }
     if (after == Stage::Refused) {
@@ -172,7 +226,17 @@ bool HearthmapComponent::start_screen_() {
     return false;
   }
   std::fill_n(this->heat_pixels_, raster.pixel_count(), hm::Rgb565{0});
-  this->pipeline_->set_heat_buffer(this->heat_pixels_);
+  // A second buffer: frames render into the back one and swap it in whole (PanelPipeline).
+  this->heat_back_ = allocator.allocate(raster.pixel_count());
+  if (this->heat_back_ == nullptr) {
+    ESP_LOGE(TAG, "no memory for the second heat image buffer");
+    this->phase_ = Phase::Failed;
+    this->show_status_("hearthmap: not enough memory for the heat image");
+    this->status_set_error(LOG_STR("no memory for the heat image"));
+    return false;
+  }
+  std::fill_n(this->heat_back_, raster.pixel_count(), hm::Rgb565{0});
+  this->pipeline_->set_heat_buffers(this->heat_pixels_, this->heat_back_);
   this->heat_dsc_ =
       rgb565_dsc(reinterpret_cast<const uint8_t*>(this->heat_pixels_),
                  static_cast<uint32_t>(raster.width()), static_cast<uint32_t>(raster.height()));
@@ -183,14 +247,35 @@ bool HearthmapComponent::start_screen_() {
   deps.photos = &this->photos_;
   this->screen_ = std::make_unique<hm::ui::Screen>(
       this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
-  ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, %u bytes; rasterizer %u bytes)",
+  ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, 2 x %u bytes; rasterizer %u bytes)",
            static_cast<unsigned>(millis() - start), static_cast<int>(raster.width()),
            static_cast<int>(raster.height()), static_cast<unsigned>(raster.pixel_count() * 2U),
            static_cast<unsigned>(raster.working_bytes()));
   return true;
 }
 
+void HearthmapComponent::invalidate_band_() {
+  // Repaint the newly swapped-in heat image a band at a time (kHeatBandRows), paced so LVGL
+  // gets a refresh between bands. Every band shows the new image, consistent with the view
+  // model already applied; bands not yet repainted keep the previous pixels on the glass until
+  // their turn (well under a second).
+  lv_obj_t* image = this->screen_->widgets().heat_image;
+  const int32_t height = this->pipeline_->rasterizer().height();
+  const uint32_t now = millis();
+  if (image == nullptr || this->band_row_ >= height || now - this->last_band_ms_ < kBandIntervalMs)
+    return;
+  lv_area_t coords;
+  lv_obj_get_coords(image, &coords);
+  lv_area_t band = coords;
+  band.y1 = coords.y1 + this->band_row_;
+  band.y2 = std::min<int32_t>(coords.y1 + this->band_row_ + kHeatBandRows - 1, coords.y2);
+  lv_obj_invalidate_area(image, &band);
+  this->band_row_ += kHeatBandRows;
+  this->last_band_ms_ = now;
+}
+
 void HearthmapComponent::frame_slice_() {
+  this->invalidate_band_();
   const uint32_t start = millis();
   if (!this->frame_active_) {
     const bool touched = !this->pending_.empty();
@@ -220,7 +305,13 @@ void HearthmapComponent::frame_slice_() {
   if (!done) return;
 
   const hm::Timestamp now = this->clock_->timestamp_now();
-  if (this->pipeline_->heat_redrawn()) this->screen_->invalidate_heat();
+  if (this->pipeline_->published()) {
+    // The finished back buffer is now the front: point the screen's image at it, then repaint
+    // in bands (invalidate_band_), together with the view model applied below.
+    this->heat_dsc_.data = reinterpret_cast<const uint8_t*>(this->pipeline_->front());
+    this->band_row_ = 0;
+    this->last_band_ms_ = 0;
+  }
   hm::ui::HeaderText header;
   header.clock = this->clock_->now().strftime("%H:%M");
   header.summary = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
@@ -231,8 +322,9 @@ void HearthmapComponent::frame_slice_() {
     ESP_LOGI(TAG, "first frame done in %u ms", static_cast<unsigned>(took));
     this->first_frame_logged_ = true;
   } else {
-    ESP_LOGD(TAG, "frame done in %u ms (heat image %s)", static_cast<unsigned>(took),
-             this->pipeline_->heat_redrawn() ? "redrawn" : "unchanged");
+    ESP_LOGD(TAG, "frame done in %u ms (heat image %s); LVGL warnings %u, errors %u so far",
+             static_cast<unsigned>(took), this->pipeline_->published() ? "new" : "unchanged",
+             static_cast<unsigned>(lvgl_warnings()), static_cast<unsigned>(lvgl_errors()));
   }
 }
 
@@ -260,7 +352,7 @@ void HearthmapComponent::dump_config() {
                 "hearthmap:\n"
                 "  Config: %s\n"
                 "  Entities subscribed: %u\n"
-                "  Photos: %u\n"
+                "  Photo images (all sizes): %u\n"
                 "  Refresh interval: %u ms\n"
                 "  Min redraw interval: %u ms",
                 hearthmap_gen::kConfigSourceName,

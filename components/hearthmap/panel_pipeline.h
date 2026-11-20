@@ -3,20 +3,27 @@
 // Pure C++17 over core and ui_lvgl's HeatRasterizer: no ESPHome, no LVGL objects, no clock. The
 // ESPHome component drives it from loop(), doing steps until a time budget is spent and then
 // yielding, so the task watchdog, Wi-Fi and LVGL keep running (docs/decisions.md D-038). The
-// host test (tests/test_cpp.py) drives the same class on a config at the schema's maximums and
-// times every step.
+// host test (tests/test_cpp.py) drives the same class on configs at the schema's maximums and
+// bounds every step.
 //
-// Boot:   Load (ConfigSource::load(), which runs validate(); colour tables)
-//         -> Mask (core's RoomScanner, `rows` grid rows per step)
-//         -> Raster (HeatRasterizer::build_rows(), `rows` rows per step)
-//         -> Ready, or Refused when validate() reported an Error.
-// Frame:  begin_frame() builds the view model and heat samples (core, reuse forms), then
-//         frame_step() computes `rows` heat-field rows per step and, once the field is complete,
-//         redraws the heat image only if the field or the layer changed.
+// Boot, one unit per boot_step():
+//   Build     the generated tables into a Config, one room or pin per step (no validation yet)
+//   Validate  core's ConfigValidator: the header, then one room, then one pin per step
+//   Prepare   one layer's colour table per step, then the room scanner
+//   Mask      `rows` heat-grid rows per step (core's RoomScanner)
+//   Raster    `rows` rows per step (HeatRasterizer::build_rows())
+//   -> Ready, or Refused when validation reported an Error.
+// Frame: begin_frame() builds the view model and heat samples (core, reuse forms); frame_step()
+// computes `rows` heat-field rows per step, then, only if the field or the layer changed, the
+// cell colours and `rows` x kImageRowsPerFieldRow heat-image rows per step into the BACK buffer.
+// When the frame completes the buffers swap, so the image the screen shows is never half
+// written (published() says it happened).
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -31,15 +38,22 @@ namespace hearthmap_device {
 
 class PanelPipeline {
  public:
+  enum class Stage : std::uint8_t { Build, Validate, Prepare, Mask, Raster, Ready, Refused };
+
   /// Heat-image pixel rows per frame_step() for each field row it would compute: a pixel row
   /// is far cheaper than a field row (integer blending versus a weight per sample).
   static constexpr std::int32_t kImageRowsPerFieldRow = 8;
 
-  enum class Stage : std::uint8_t { Load, Mask, Raster, Ready, Refused };
+  /// How to build the unvalidated config a unit at a time (the generated tables' build_steps()
+  /// and build_step()).
+  struct Builder {
+    std::size_t steps = 0;
+    std::function<void(hearthmap::Config&, std::size_t)> step;
+  };
 
-  /// `source` and `palette` are used during Load only.
-  PanelPipeline(const hearthmap::ConfigSource& source, const hearthmap::Palette& palette)
-      : source_(&source), palette_(palette) {}
+  /// `palette` colours the heat field. Both are used during boot only.
+  PanelPipeline(Builder build, const hearthmap::Palette& palette)
+      : build_(std::move(build)), palette_(palette) {}
 
   Stage stage() const { return stage_; }
   static const char* stage_name(Stage stage);
@@ -47,11 +61,11 @@ class PanelPipeline {
   /// One bounded unit of boot work (see the file comment). `rows` >= 1. Returns the new stage.
   Stage boot_step(std::int32_t rows);
 
-  /// Rows the current boot stage has done and has in total (for progress logs).
-  std::int32_t stage_rows_done() const { return rows_done_; }
-  std::int32_t stage_rows_total() const;
+  /// Units the current boot stage has done and has in total (for progress logs).
+  std::int32_t stage_done() const { return done_; }
+  std::int32_t stage_total() const;
 
-  /// Load's issues (warnings, and the errors when Refused).
+  /// Validation's issues (warnings, and the errors when Refused).
   const std::vector<hearthmap::ConfigIssue>& issues() const { return issues_; }
 
   // Valid once Ready. The config lives here for the pipeline's lifetime.
@@ -59,46 +73,51 @@ class PanelPipeline {
   const hearthmap::RoomMask& mask() const { return mask_; }
   const hearthmap::ui::HeatRasterizer& rasterizer() const { return *raster_; }
 
-  /// The heat image: rasterizer().pixel_count() pixels the caller owns (PSRAM on the device).
-  void set_heat_buffer(hearthmap::Rgb565* pixels) { heat_pixels_ = pixels; }
+  /// Two heat-image buffers of rasterizer().pixel_count() pixels each, owned by the caller
+  /// (PSRAM on the device). front() is the one to show; frames render into the other.
+  void set_heat_buffers(hearthmap::Rgb565* a, hearthmap::Rgb565* b) {
+    front_ = a;
+    back_ = b;
+  }
+  hearthmap::Rgb565* front() const { return front_; }
 
   /// Start a frame: view model and heat samples for `now`. Ready only.
   void begin_frame(const hearthmap::Readings& readings, hearthmap::Timestamp now,
                    const hearthmap::UiState& state);
-  /// Continue the frame: up to `rows` heat-field rows per step, then (only if the field or the
-  /// layer changed) the cell colours and then `rows` * kImageRowsPerFieldRow heat-image rows per
-  /// step. Returns true when the frame is complete.
+  /// Continue the frame (see the file comment). Returns true when the frame is complete.
   bool frame_step(std::int32_t rows);
-  /// After frame_step() returned true: whether this frame rewrote the heat image.
-  bool heat_redrawn() const { return heat_redrawn_; }
+  /// After frame_step() returned true: whether this frame swapped in a new heat image.
+  bool published() const { return published_; }
   const hearthmap::ViewModel& view() const { return view_; }
 
  private:
-  const hearthmap::ConfigSource* source_;
+  Builder build_;
   hearthmap::Palette palette_;
-  Stage stage_ = Stage::Load;
-  std::int32_t rows_done_ = 0;
+  Stage stage_ = Stage::Build;
+  std::int32_t done_ = 0;
   std::vector<hearthmap::ConfigIssue> issues_;
 
   hearthmap::Config config_;
+  std::unique_ptr<hearthmap::ConfigValidator> validator_;
   hearthmap::RoomMask mask_;
   std::unique_ptr<hearthmap::RoomScanner> scanner_;
   std::unique_ptr<hearthmap::ui::HeatRasterizer> raster_;
   std::array<hearthmap::ColourLut, hearthmap::kLayerCount> luts_;
 
-  hearthmap::Rgb565* heat_pixels_ = nullptr;
+  hearthmap::Rgb565* front_ = nullptr;
+  hearthmap::Rgb565* back_ = nullptr;
   hearthmap::ViewModel view_;
   std::vector<hearthmap::HeatSample> samples_;
   hearthmap::HeatField field_;
-  hearthmap::HeatField shown_field_;  ///< The field the heat image was last drawn from.
+  hearthmap::HeatField shown_field_;  ///< The field the front image was drawn from.
   bool heat_valid_ = false;
   hearthmap::Layer shown_layer_ = hearthmap::Layer::Temperature;
   std::vector<hearthmap::Rgb565> cell_colours_;
   std::int32_t field_row_ = 0;
-  std::int32_t image_row_ = -1;  ///< -1: not started; then pixel rows of the heat image done.
+  std::int32_t image_row_ = -1;  ///< -1: not started; then back-buffer rows done.
   bool field_ok_ = false;
   bool frame_done_ = true;
-  bool heat_redrawn_ = false;
+  bool published_ = false;
 };
 
 }  // namespace hearthmap_device

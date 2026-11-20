@@ -39,9 +39,10 @@ A full example device is `examples/flat/esphome/flat-panel.yaml`.
 2. **Photos**: every photo id a pin names must exist as `<photos>/<id>.png`, or the build fails
    (the editor exports the folder with the config, so a missing file is a broken export). Each is
    centre-cropped, flattened onto the plant disc colour, resized to **128 x 128** (the overlay
-   disc; ui_lvgl scales it down for pins and HUD cards) and stored as RGB565 little-endian
-   (`LV_COLOR_FORMAT_RGB565`), 32 KiB each in flash. Plant pins with no photo id get ui_lvgl's
-   own placeholder leaf.
+   disc), 52 x 52 (HUD card) and 44 x 44 (pin), each stored as RGB565 little-endian
+   (`LV_COLOR_FORMAT_RGB565`), about 41 KiB per photo in flash. The panel's LVGL cannot scale
+   RGB565 images (D-039), so ui_lvgl takes each size through `ImageProvider::plant_photo_sized()`
+   and draws it unscaled. Plant pins with no photo id get ui_lvgl's own placeholder leaf.
 3. **Tables**: C++ that builds a `hearthmap::Config` (`hearthmap_gen::GeneratedConfigSource`,
    core's `ConfigSource` seam). Scalar defaults come from the schema's `default` keywords and an
    omitted `map_area` is the whole canvas (D-023); band defaults are left to core's
@@ -68,18 +69,24 @@ config is proven to be refused, and the example proven to load.
   readings age into TooOld honestly.
 - **Time**: until the `time_id` source is valid the screen says "Waiting for time" and nothing is
   judged, rather than marking every sensor stale.
-- **Nothing blocks** (D-038). `setup()` only subscribes and shows "Starting". All heavy work is
-  `PanelPipeline`'s (`panel_pipeline.h`, pure C++, host-tested), run from `loop()` in slices of
-  about 20 ms of small steps, then `loop()` returns so the watchdog, Wi-Fi, the API and LVGL run:
-  - boot: load (generated tables plus `validate()`), mask rows (core's `RoomScanner`, 4 per
-    step), rasterizer rows (`HeatRasterizer::build_rows()`, 4 per step), then the `Screen` is
-    built. Each stage logs `boot: <stage> started` and `boot: <stage> done in N ms over K loop
-    slices` at INFO, then `boot: complete in N ms`;
+- **Nothing blocks** (D-038). `setup()` only subscribes, takes over LVGL's log output (to count
+  warnings) and shows "Starting". All heavy work is `PanelPipeline`'s (`panel_pipeline.h`, pure
+  C++, host-tested), run from `loop()` in slices of about 20 ms of small steps; then `loop()`
+  returns so the watchdog, Wi-Fi, the API and LVGL run:
+  - boot: build (the generated tables, one room or pin per step), validate (core's
+    `ConfigValidator`, one room or pin per step), prepare (one colour table per step, then the
+    room scanner), mask rows and rasterizer rows (4 per step), then the `Screen`. Each stage logs
+    `boot: <stage> started (N units)` and `boot: <stage> done in N ms over K loop slices (longest
+    step X ms)` at INFO, then `boot: complete in N ms`;
   - frames: on a state change (at most every `min_redraw_interval`), at least every
-    `refresh_interval`, and right after a touch: view model and heat samples, then one heat-field
-    row per step (`compute_heat_field_rows()`), then, only if the field or layer changed, eight
-    heat-image rows per step (`HeatRasterizer::render_rows()`), then `Screen::update()`. The first
-    frame logs its time at INFO, later ones at DEBUG.
+    `refresh_interval`, and right after a touch: view model and heat samples, one heat-field row
+    per step, then, only if the field or layer changed, eight heat-image rows per step into a
+    back buffer, swapped in whole when complete; the screen then repaints the map in 48-row bands,
+    one per `loop()` call at most every 25 ms, instead of one long LVGL refresh. The first frame
+    logs its time at INFO; later ones log at DEBUG with the running count of LVGL warnings and
+    errors.
+- LVGL's image cache is off in ESPHome's build (`LV_CACHE_DEF_SIZE` 0), so pointing the heat
+  image descriptor at the other buffer is enough for LVGL to draw the new pixels.
 
 ## How core and ui_lvgl reach the firmware
 
@@ -133,9 +140,9 @@ until core has a view-model field for it (docs/decisions.md D-030).
 
 | Item | Size | Where |
 |---|---|---|
-| Heat image, map area 864 x 720 RGB565 | 1,244,160 B | PSRAM (`RAMAllocator`) |
+| Heat image, map area 864 x 720 RGB565, two buffers (front and back) | 2 x 1,244,160 B | PSRAM (`RAMAllocator`) |
 | `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM via malloc (D-037) |
-| Photos: 5 x 128 x 128 RGB565 | 163,840 B | flash (rodata) |
+| Photos: 5 photos x (128, 52, 44 px) RGB565 | 210,240 B | flash (rodata) |
 | `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, cell colours, 4 colour tables | about 37,000 B | heap |
 | LVGL draw buffer at the default `buffer_size: 100%` | 2,048,000 B | PSRAM (ESPHome's lvgl) |
 | Software rotation buffer (800 x 1280 panel shown landscape) | up to 2,048,000 B | ESPHome's lvgl / display driver |
@@ -145,24 +152,20 @@ use after the build was 15.6 % of 576 KiB (static only: the heap is not measured
 
 ## Cost
 
-The first hardware run boot-looped on the task watchdog: the heat image's per-pixel room map
-was built with `point_in_polygon()` per pixel per room, in software double precision, inside
-`setup()` (D-038). Now room maps are scanlines (double-precision work only for edges crossing a
-row, exactly the same answer) and the work is sliced. `tests/test_cpp.py` drives the device's
-pipeline on the host (-O2) and fails if any single step exceeds 5 ms:
+History: the first hardware run boot-looped on the task watchdog (a per-pixel
+`point_in_polygon()` loop inside `setup()`); the second booted, with a 216 ms load step and a
+645 ms LVGL repaint (D-038). `tests/test_cpp.py` drives the device's pipeline on the host (-O2,
+best of three boots) on fictional configs and checks, per stage, that the mean step scaled by
+the device's measured slowdown stays under 50 ms, and caps any single step:
 
-| Fictional config | Boot, host total | Worst boot step | Worst frame step | Frame, host total |
-|---|---|---|---|---|
-| Panel-sized: 18 rooms, 22 pins, 131 x 105 grid, 920 x 736 map | 1.6 ms | 0.15 ms (load) | 0.08 ms | 5 ms |
-| Schema maximum, 64 comb rooms of 64 vertices, 256 pins, 256 x 256 grid, 1280 x 800 map | 22 ms | 0.8 ms (load) | 0.25 ms | 14 ms |
-| Schema maximum, all 256 pins in one room (heat-field worst case) | 20 ms | 0.7 ms (load) | 0.26 ms | 40 ms |
+| Fictional config | Boot, host | Mean boot step (worst stage) | Frame, host |
+|---|---|---|---|
+| Panel-sized: 18 rooms, 22 pins, 131 x 105 grid, 920 x 736 map | 1.3 ms | 5 us (raster) | about 15 ms |
+| Schema maximum, 64 comb rooms of 64 vertices, 256 pins, 256 x 256 grid, 1280 x 800 map | 20 ms | 60-70 us (mask) | about 35 ms |
+| Schema maximum, all 256 pins in one room | 20 ms | 60 us (mask) | about 60 ms |
 
-The pre-fix construction took 74 ms on the host for the panel-sized config and over 7 s on the
-panel, so double-heavy code here runs at least about 100 times slower on the device. Applying
-100-150x to the double-heavy boot steps and 20-40x to the float and integer frame steps gives,
-on the device (estimates, not yet measured): panel-sized boot about 0.2 s in total, schema
-maximum about 2-3 s spread over many slices; the worst single step is the load step
-(`validate()`, not divisible) at roughly 80-120 ms at the schema maximum; a frame step stays
-around 10 ms. A full heat-image redraw after a change also makes LVGL redraw the map region,
-which is ESPHome's LVGL's own work and not sliced by this component. The boot logs above are how
-to check these numbers on the panel.
+Device estimates (the second run measured the panel-sized case's mask stage at 50 ms and its
+raster stage at 229 ms, about 200x the host; redraw frames at about 55x): every boot step about
+1-15 ms for the panel-sized config and under about 20 ms at the schema maximum; each colour
+table about 15 ms; frame steps a few milliseconds; a heat-image band repaint about 645 / 16 =
+40 ms. The boot logs report the longest step of each stage, which is how to check.

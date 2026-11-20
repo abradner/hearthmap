@@ -72,9 +72,12 @@ BAND_FIELDS = (
     ("scale_max", "scale_max", False),
 )
 
-# Plant photos are converted to this square size (pixels). 128 is the overlay's disc (radius 64,
-# hearthmap UI spec); the pin (radius 22) and HUD (radius 26) discs scale it down.
-PHOTO_SIZE = 128
+# Plant photos are converted to every disc diameter ui_lvgl draws them at (ui_lvgl/src/screen.cpp:
+# kPlantRadius 22, kHudDiscRadius 26, kOverlayDiscRadius 64), so the panel never scales an RGB565
+# image: its LVGL build has no software transform for RGB565 (docs/decisions.md D-039). A test
+# reads those constants from screen.cpp and fails if they drift from these.
+PHOTO_SIZES = (44, 52, 128)
+PHOTO_SIZE = max(PHOTO_SIZES)  # the size plant_photo() returns
 # Background a transparent photo is flattened onto: the plant disc fill from the UI spec.
 PHOTO_BACKGROUND = (0x16, 0x26, 0x1C)
 
@@ -282,6 +285,12 @@ def cpp_string(s: str) -> str:
     return "".join(out)
 
 
+def cpp_std_string(s: str) -> str:
+    """A std::string expression holding exactly `s`: built with an explicit byte length, so an
+    embedded NUL (schema-valid in a display name) is kept rather than ending the string."""
+    return f"std::string({cpp_string(s)}, {len(s.encode('utf-8'))})"
+
+
 def cpp_double(x: float | int) -> str:
     """A C++ double literal that round-trips exactly (repr is the shortest round-trip form)."""
     v = float(x)
@@ -326,6 +335,16 @@ namespace hearthmap_gen {
 /// static tables (schema defaults applied, LayerConfig::present recorded) and runs validate().
 class GeneratedConfigSource final : public ::hearthmap::ConfigSource {
  public:
+  /// The tables as a Config with schema defaults applied and present bits recorded, not yet
+  /// validated: for callers that run validate() in steps (core's ConfigValidator, D-038). Use it
+  /// only with a validation that refuses on Error, as load() does.
+  ::hearthmap::Config build() const;
+  /// build() a unit at a time, for callers that must not block: build_step(c, k) for every k in
+  /// 0 .. build_steps() - 1, in order, on a default-constructed Config gives build(). Units: a
+  /// head (canvas, reserves), one per room, one per pin, a tail (layers and scalars).
+  std::size_t build_steps() const;
+  void build_step(::hearthmap::Config &c, std::size_t k) const;
+  /// build(), then validate(); no Config when it reports an Error.
   ::hearthmap::ConfigLoadResult load() const override;
 };
 
@@ -375,9 +394,14 @@ def emit_config_source(document: dict, schema: dict, source_name: str) -> Genera
     w("")
     w(f"const char *const kConfigSourceName = {cpp_string(source_name)};")
     w("")
-    w("::hearthmap::ConfigLoadResult GeneratedConfigSource::load() const {")
-    w("  using namespace ::hearthmap;")
-    w("  Config c;")
+    # build() is split into one function per room and per pin plus a head and a tail, so the
+    # device can build the Config a unit at a time (build_step(), D-038).
+    steps: list[str] = ["build_head"]
+    w("namespace {")
+    w("")
+    w("using namespace ::hearthmap;")
+    w("")
+    w("void build_head(Config &c) {")
     w(f"  c.version = {cpp_int(document['version'], '/version')};")
 
     canvas = document["canvas"]
@@ -395,44 +419,49 @@ def emit_config_source(document: dict, schema: dict, source_name: str) -> Genera
     w(f"  c.temperature_unit = TemperatureUnit::{'Fahrenheit' if unit == 'F' else 'Celsius'};")
 
     rooms = document["rooms"]
+    pins = document["pins"]
     w(f"  c.rooms.reserve({len(rooms)});")
+    w(f"  c.pins.reserve({len(pins)});")
+    w("}")
+    w("")
     for i, room in enumerate(rooms):
         pts = ", ".join(
             f"MapPoint{{{cpp_double(x)}, {cpp_double(y)}}}" for x, y in room["polygon"]
         )
         outdoor = bool(room.get("outdoor", d["room.outdoor"]))
-        w("  {")
+        steps.append(f"build_room_{i}")
+        w(f"void build_room_{i}(Config &c) {{")
         w("    Room r;")
-        w(f"    r.id = {cpp_string(room['id'])};")
-        w(f"    r.name = {cpp_string(room['name'])};")
+        w(f"    r.id = {cpp_std_string(room['id'])};")
+        w(f"    r.name = {cpp_std_string(room['name'])};")
         w(f"    r.polygon = Polygon{{{pts}}};")
         w(f"    r.outdoor = {'true' if outdoor else 'false'};")
         w("    c.rooms.push_back(std::move(r));")
-        w("  }")
+        w("}")
+        w("")
 
     entity_ids: list[str] = []
-    pins = document["pins"]
-    w(f"  c.pins.reserve({len(pins)});")
     for i, pin in enumerate(pins):
         path = f"/pins/{i}"
-        w("  {")
+        steps.append(f"build_pin_{i}")
+        w(f"void build_pin_{i}(Config &c) {{")
         w("    Pin p;")
-        w(f"    p.id = {cpp_string(pin['id'])};")
+        w(f"    p.id = {cpp_std_string(pin['id'])};")
         w(f"    p.kind = PinKind::{KINDS[pin['kind']]};")
-        w(f"    p.name = {cpp_string(pin['name'])};")
+        w(f"    p.name = {cpp_std_string(pin['name'])};")
         x, y = pin["position"]
         w(f"    p.position = MapPoint{{{cpp_double(x)}, {cpp_double(y)}}};")
-        w(f"    p.room_id = {cpp_string(pin['room'])};")
+        w(f"    p.room_id = {cpp_std_string(pin['room'])};")
         ents = pin["entities"]
         bound = [(key, enum) for key, enum in ROLES if key in ents]
         w(f"    p.entities.reserve({len(bound)});")
         for key, enum in bound:  # Role enum order, whatever the JSON key order (D-019)
             eid = ents[key]
-            w(f"    p.entities.push_back(EntityBinding{{Role::{enum}, {cpp_string(eid)}}});")
+            w(f"    p.entities.push_back(EntityBinding{{Role::{enum}, {cpp_std_string(eid)}}});")
             if key not in UNSUBSCRIBED_ROLES and eid not in entity_ids:
                 entity_ids.append(eid)
         if "photo" in pin:
-            w(f"    p.photo = std::string({cpp_string(pin['photo'])});")
+            w(f"    p.photo = {cpp_std_string(pin['photo'])};")
         if "calibration" in pin:
             cal = pin["calibration"]
             w("    Calibration cal;")
@@ -448,8 +477,11 @@ def emit_config_source(document: dict, schema: dict, source_name: str) -> Genera
         if "stale_after_s" in pin:
             w(f"    p.stale_after = Seconds{{{cpp_int(pin['stale_after_s'], path + '/stale_after_s', INT64)}}};")
         w("    c.pins.push_back(std::move(p));")
-        w("  }")
+        w("}")
+        w("")
 
+    steps.append("build_tail")
+    w("void build_tail(Config &c) {")
     layers = document.get("layers", {})
     for key, enum in LAYERS:
         lc = layers.get(key, {})
@@ -486,8 +518,32 @@ def emit_config_source(document: dict, schema: dict, source_name: str) -> Genera
     w(f"  c.heat.idw_power = {cpp_double(heat.get('idw_power', d['heat.idw_power']))};")
     hud = document.get("hud", {})
     w(f"  c.hud.max_items = {cpp_int(hud.get('max_items', d['hud.max_items']), '/hud/max_items')};")
+    w("}")
     w("")
+    w("using BuildFn = void (*)(Config &);")
+    w("const BuildFn kBuildSteps[] = {")
+    for name in steps:
+        w(f"    {name},")
+    w("};")
+    w("")
+    w("}  // namespace")
+    w("")
+    w(f"std::size_t GeneratedConfigSource::build_steps() const {{ return {len(steps)}; }}")
+    w("")
+    w("void GeneratedConfigSource::build_step(::hearthmap::Config &c, std::size_t k) const {")
+    w("  if (k < build_steps()) kBuildSteps[k](c);")
+    w("}")
+    w("")
+    w("::hearthmap::Config GeneratedConfigSource::build() const {")
+    w("  ::hearthmap::Config c;")
+    w("  for (std::size_t k = 0; k < build_steps(); ++k) build_step(c, k);")
+    w("  return c;")
+    w("}")
+    w("")
+    w("::hearthmap::ConfigLoadResult GeneratedConfigSource::load() const {")
+    w("  using namespace ::hearthmap;")
     w("  // Every source runs validate() and refuses a config with an Error (config.h, D-017).")
+    w("  Config c = build();")
     w("  ConfigLoadResult result;")
     w("  result.issues = validate(c);")
     w("  if (usable(result.issues)) result.config = std::move(c);")
@@ -589,8 +645,9 @@ PHOTOS_HEADER = """\
 
 namespace hearthmap_gen {
 
-/// One converted plant photo: `size` x `size` pixels, RGB565 little-endian
-/// (LV_COLOR_FORMAT_RGB565), stride size * 2. Plain data, so this header needs no LVGL.
+/// One converted plant photo at one size: `size` x `size` pixels, RGB565 little-endian
+/// (LV_COLOR_FORMAT_RGB565), stride size * 2. Every photo appears once per size ui_lvgl draws
+/// discs at, largest first. Plain data, so this header needs no LVGL.
 struct PhotoData {
   const char *id;  ///< Photo id from the config.
   const std::uint8_t *pixels;
@@ -604,11 +661,13 @@ extern const unsigned kPhotoCount;
 """
 
 
-def emit_photos(photos: dict[str, Path], size: int = PHOTO_SIZE) -> tuple[str, str]:
-    """(header, source) for the converted photos. Pins with no photo get ui_lvgl's own
-    placeholder leaf (ui_lvgl/include/hearthmap/ui/ports.h), so none is generated here."""
+def emit_photos(photos: dict[str, Path], sizes: tuple[int, ...] = PHOTO_SIZES) -> tuple[str, str]:
+    """(header, source) for the converted photos, each at every size in `sizes` (largest first
+    in the table). Pins with no photo get ui_lvgl's own placeholder leaf
+    (ui_lvgl/include/hearthmap/ui/ports.h), so none is generated here."""
     from PIL import Image
 
+    order = sorted(set(sizes), reverse=True)
     lines = [
         "// Generated by the hearthmap ESPHome component (components/hearthmap). Do not edit.",
         '#include "hearthmap_gen/photos.h"',
@@ -617,21 +676,25 @@ def emit_photos(photos: dict[str, Path], size: int = PHOTO_SIZE) -> tuple[str, s
         "namespace {",
         "",
     ]
-    names = []
+    entries = []
     for i, (pid, path) in enumerate(photos.items()):
         with Image.open(path) as img:
-            data = to_rgb565_bytes(img, size)
-        names.append((pid, f"kPhoto{i}"))
-        lines += [f"// {pid}: {path.name}", f"alignas(4) const std::uint8_t kPhoto{i}[] = {{", _c_bytes(data), "};", ""]
+            img.load()
+            for size in order:
+                name = f"kPhoto{i}_{size}"
+                entries.append((pid, name, size))
+                lines += [f"// {pid}: {path.name} at {size} x {size}",
+                          f"alignas(4) const std::uint8_t {name}[] = {{",
+                          _c_bytes(to_rgb565_bytes(img, size)), "};", ""]
     lines += ["}  // namespace", ""]
-    if names:
+    if entries:
         lines.append("const PhotoData kPhotos[] = {")
-        lines += [f"    {{{cpp_string(pid)}, {arr}, {size}}}," for pid, arr in names]
+        lines += [f"    {{{cpp_string(pid)}, {arr}, {size}}}," for pid, arr, size in entries]
         lines.append("};")
     else:
         lines.append("const PhotoData kPhotos[] = {{nullptr, nullptr, 0}};")
     lines += [
-        f"const unsigned kPhotoCount = {len(names)};",
+        f"const unsigned kPhotoCount = {len(entries)};",
         "",
         "}  // namespace hearthmap_gen",
         "",

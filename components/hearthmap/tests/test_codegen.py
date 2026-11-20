@@ -108,7 +108,7 @@ def test_bindings_follow_role_enum_order_not_json_order(gen, schema, example):
     pin = next(p for p in example["pins"] if p["id"] == "plant_fiddle")
     pin["entities"] = dict(reversed(list(pin["entities"].items())))
     src = gen.emit_config_source(example, schema, "e.json").source
-    block = src[src.index('p.id = "plant_fiddle";'):]
+    block = src[src.index('p.id = std::string("plant_fiddle", 12);'):]
     roles = re.findall(r"Role::(\w+)", block[: block.index("c.pins.push_back")])
     assert roles == ["Temperature", "Humidity", "Moisture", "Battery"]
 
@@ -118,7 +118,7 @@ def test_subscriptions_are_distinct_and_skip_reserved_roles(gen, schema, example
     out = gen.emit_config_source(example, schema, "e.json")
     assert len(out.entity_ids) == len(set(out.entity_ids))
     assert "sensor.example_basil_predicted_dry_at" not in out.entity_ids
-    assert 'Role::PredictedDryAt, "sensor.example_basil_predicted_dry_at"' in out.source  # still bound
+    assert 'Role::PredictedDryAt, std::string("sensor.example_basil_predicted_dry_at", 37)' in out.source  # still bound
     assert f"kSubscribedEntityCount = {len(out.entity_ids)};" in out.source
 
 
@@ -130,7 +130,7 @@ def test_no_pins_still_emits_valid_cpp_tables(gen, schema, minimal):
 
 def test_optional_pin_fields(gen, schema, example):
     src = gen.emit_config_source(example, schema, "e.json").source
-    assert 'p.photo = std::string("monstera");' in src
+    assert 'p.photo = std::string("monstera", 8);' in src
     assert "p.stale_after = Seconds{21600};" in src
     assert "cal.happy_min = 25.0;" in src
     assert "cal.dry = 2900.0;" in src and "cal.wet = 1300.0;" in src  # inverted range kept
@@ -152,6 +152,11 @@ def test_validate_is_the_gate(gen, schema, minimal):
 )
 def test_cpp_string_escapes(gen, s, expected):
     assert gen.cpp_string(s) == expected
+
+
+def test_std_string_keeps_embedded_nul_and_utf8_length(gen):
+    assert gen.cpp_std_string("\x00Room") == 'std::string("\\000Room", 5)'
+    assert gen.cpp_std_string("Kök") == 'std::string("K\\303\\266k", 4)'
 
 
 @pytest.mark.parametrize("x", [0, 1, -3, 0.1, 1e-9, 2900, 1.2345678901234567e300, 0.4167])
@@ -219,16 +224,29 @@ def test_example_photos_are_complete(gen, example):
     assert set(found) == set(gen.photo_ids(example))
 
 
-def test_emit_photos_includes_placeholder_and_each_photo(gen, tmp_path):
+def test_emit_photos_writes_every_size_largest_first(gen, tmp_path):
     p = tmp_path / "fern.png"
     Image.new("RGB", (8, 8), (0, 255, 0)).save(p)
-    header, src = gen.emit_photos({"fern": p}, size=8)
+    header, src = gen.emit_photos({"fern": p}, sizes=(4, 8))
     assert "Placeholder" not in header + src  # ui_lvgl draws its own leaf for photo-less pins
-    assert '{"fern", kPhoto0, 8},' in src
-    assert "kPhotoCount = 1;" in src
-    assert src.count("0xE0, 0x07") >= 64  # 8x8 green pixels, little-endian 0x07E0
-    _, empty = gen.emit_photos({}, size=8)
+    assert src.index('{"fern", kPhoto0_8, 8},') < src.index('{"fern", kPhoto0_4, 4},')
+    assert "kPhotoCount = 2;" in src
+    assert src.count("0xE0, 0x07") >= 64 + 16  # 8x8 and 4x4 green pixels, little-endian 0x07E0
+    _, empty = gen.emit_photos({}, sizes=(4, 8))
     assert "kPhotoCount = 0;" in empty
+
+
+def test_photo_sizes_match_the_disc_sizes_ui_lvgl_draws(gen):
+    """The panel cannot scale RGB565 images (D-039), so every disc diameter in ui_lvgl's screen
+    must be one the build generates. Read from the source so a change there fails here."""
+    screen = (Path(__file__).resolve().parents[3] / "ui_lvgl/src/screen.cpp").read_text()
+    radii = {}
+    for name in ("kPlantRadius", "kHudDiscRadius", "kOverlayDiscRadius"):
+        m = re.search(rf"constexpr int {name} = (\d+);", screen)
+        assert m, f"{name} not found in screen.cpp"
+        radii[name] = int(m.group(1))
+    assert sorted(2 * r for r in radii.values()) == sorted(gen.PHOTO_SIZES)
+    assert gen.PHOTO_SIZE == max(gen.PHOTO_SIZES)
 
 
 # ---- library copy ----------------------------------------------------------------------------

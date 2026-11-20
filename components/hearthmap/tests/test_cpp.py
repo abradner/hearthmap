@@ -189,8 +189,6 @@ def test_fahrenheit_with_defaulted_band_is_refused_by_core(gen, schema, minimal,
 # well under the device's slice; the old per-pixel construction misses it by orders of magnitude.
 # ---------------------------------------------------------------------------------------------
 
-STEP_BUDGET_MS = 5.0  # per step, host, -O2
-
 
 def _comb(x0: float, x1: float, teeth: int) -> list[list[float]]:
     """A comb inside [x0, x1]: a bar along the bottom and `teeth` teeth reaching up. 16 teeth is
@@ -234,64 +232,95 @@ def _max_config(one_big_room: bool) -> dict:
 
 
 PIPELINE_DRIVER = r"""
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include "hearthmap_gen/generated_config.h"
 #include "panel_pipeline.h"
 using namespace hearthmap;
 using Clock = std::chrono::steady_clock;
+using Stage = hearthmap_device::PanelPipeline::Stage;
 static double ms(Clock::time_point a, Clock::time_point b) {
   return std::chrono::duration<double, std::milli>(b - a).count();
 }
 int main() {
   hearthmap_gen::GeneratedConfigSource source;
-  hearthmap_device::PanelPipeline p(source, Palette{});
-  double worst = 0, total = 0;
-  std::string worst_stage;
-  int steps = 0;
-  auto t_boot = Clock::now();
-  while (p.stage() != hearthmap_device::PanelPipeline::Stage::Ready &&
-         p.stage() != hearthmap_device::PanelPipeline::Stage::Refused) {
-    const char* name = hearthmap_device::PanelPipeline::stage_name(p.stage());
-    auto a = Clock::now();
-    p.boot_step(4);  // the device's kBootRowsPerStep
-    double d = ms(a, Clock::now());
-    if (d > worst) { worst = d; worst_stage = name; }
-    ++steps;
+  hearthmap_device::PanelPipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  // Boot three times and keep, per stage, the fastest run's total and worst step: timing on a
+  // shared machine is noisy, and the work per step is the same every run.
+  std::map<std::string, double> total, worst;
+  std::map<std::string, int> steps;
+  int all_steps = 0;
+  std::unique_ptr<hearthmap_device::PanelPipeline> keep;
+  for (int run = 0; run < 3; ++run) {
+    auto p = std::make_unique<hearthmap_device::PanelPipeline>(builder, Palette{});
+    std::map<std::string, double> t, w;
+    std::map<std::string, int> n;
+    int count = 0;
+    while (p->stage() != Stage::Ready && p->stage() != Stage::Refused) {
+      const std::string name = hearthmap_device::PanelPipeline::stage_name(p->stage());
+      auto a = Clock::now();
+      p->boot_step(4);  // the device's kBootRowsPerStep
+      const double d = ms(a, Clock::now());
+      t[name] += d;
+      if (d > w[name]) w[name] = d;
+      ++n[name];
+      ++count;
+    }
+    if (p->stage() != Stage::Ready) {
+      for (const auto& i : p->issues()) std::printf("ISSUE %s: %s\n", i.path.c_str(), i.message.c_str());
+      std::printf("REFUSED\n");
+      return 1;
+    }
+    for (const auto& kv : t) {
+      if (run == 0 || kv.second < total[kv.first]) total[kv.first] = kv.second;
+      if (run == 0 || w[kv.first] < worst[kv.first]) worst[kv.first] = w[kv.first];
+    }
+    steps = n;
+    all_steps = count;
+    keep = std::move(p);
   }
-  total = ms(t_boot, Clock::now());
-  if (p.stage() != hearthmap_device::PanelPipeline::Stage::Ready) {
-    for (const auto& i : p.issues()) std::printf("ISSUE %s: %s\n", i.path.c_str(), i.message.c_str());
-    std::printf("REFUSED\n");
-    return 1;
+  hearthmap_device::PanelPipeline& p = *keep;
+  std::printf("BOOT steps=%d\n", all_steps);
+  for (const auto& kv : total) {
+    std::printf("STAGE_%s steps=%d total_ms=%.4f worst_step_ms=%.4f\n", kv.first.c_str(), steps[kv.first],
+                kv.second, worst[kv.first]);
   }
-  std::printf("BOOT steps=%d total_ms=%.2f worst_step_ms=%.3f worst_stage=%s\n", steps, total, worst,
-              worst_stage.c_str());
-  std::vector<Rgb565> heat(p.rasterizer().pixel_count());
-  p.set_heat_buffer(heat.data());
+  std::vector<Rgb565> a(p.rasterizer().pixel_count()), b(p.rasterizer().pixel_count());
+  p.set_heat_buffers(a.data(), b.data());
   Readings readings;
   for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
     Reading r; r.state = ReadingState::Value; r.value = 18.0 + double(i % 9); r.last_updated = 1000;
     readings.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
   }
-  double fworst = 0, ftotal = 0; int fsteps = 0;
+  double fworst = 0, ftotal = 0; int fsteps = 0, published = 0;
+  bool front_untouched = true;
   for (int frame = 0; frame < 3; ++frame) {
-    auto a = Clock::now();
+    const Rgb565* shown = p.front();
+    const std::vector<Rgb565> before(shown, shown + p.rasterizer().pixel_count());
+    auto t0 = Clock::now();
     p.begin_frame(readings, 1000, initial_ui_state(p.config()));
-    double d = ms(a, Clock::now()); if (d > fworst) fworst = d; ++fsteps;
+    double d = ms(t0, Clock::now()); if (d > fworst) fworst = d; ++fsteps;
     bool done = false;
     while (!done) {
-      auto b = Clock::now();
+      auto t = Clock::now();
       done = p.frame_step(1);  // the device's kFieldRowsPerStep
-      double e = ms(b, Clock::now()); if (e > fworst) fworst = e; ++fsteps;
+      double e = ms(t, Clock::now()); if (e > fworst) fworst = e; ++fsteps;
+      // The image on screen must not change until the frame publishes (Codex P1, D-038).
+      if (!done && !std::equal(before.begin(), before.end(), shown)) front_untouched = false;
     }
-    ftotal += ms(a, Clock::now());
+    ftotal += ms(t0, Clock::now());
+    published += p.published() ? 1 : 0;
     readings.by_entity.begin()->second.value += 1.0;  // force a field change, so a redraw
   }
-  std::printf("FRAME steps=%d total_ms=%.2f worst_step_ms=%.3f redrawn=%d\n", fsteps, ftotal, fworst,
-              int(p.heat_redrawn()));
+  std::printf("FRAME steps=%d total_ms=%.2f worst_step_ms=%.3f published=%d front_untouched=%d\n", fsteps,
+              ftotal, fworst, published, int(front_untouched));
   return 0;
 }
 """
@@ -354,23 +383,54 @@ def _panel_like_config() -> dict:
     }
 
 
+def _boot_steps(doc: dict, rows_per_step: int = 4) -> int:
+    """Steps the pipeline must take: build 2 + rooms + pins, validate 3 + rooms + pins, prepare 5
+    (four colour tables and the scanner), then mask and rasterizer rows `rows_per_step` at a
+    time."""
+    grid_rows = doc["heat"]["grid_rows"]
+    height = doc["canvas"]["map_area"]["height"]
+    ceil = lambda n: -(-n // rows_per_step)  # noqa: E731
+    units = len(doc["rooms"]) + len(doc["pins"])
+    return (2 + units) + (3 + units) + 5 + ceil(grid_rows) + ceil(grid_rows + height)
+
+
 CASES = {
-    "64-combs": (lambda: _max_config(False), 1 + 256 // 4 + (256 + 800) // 4),
-    "one-room-256-pins": (lambda: _max_config(True), 1 + 256 // 4 + (256 + 800) // 4),
-    "panel-sized": (_panel_like_config, 1 + -(-105 // 4) + -(-(105 + 736) // 4)),
+    "64-combs": lambda: _max_config(False),
+    "one-room-256-pins": lambda: _max_config(True),
+    "panel-sized": _panel_like_config,
 }
+
+# Device calibration, from the second hardware run (ESP32-P4 at 360 MHz, a config shaped like
+# the "panel-sized" case): its mask stage took 50 ms there against 0.24 ms here, its raster
+# stage 229 ms against 1.25 ms, a redraw frame about 825 ms against about 15 ms. So boot work
+# (double-heavy) runs about 200x slower on the panel and frame work (float and integer) about
+# 55x. A step should stay under ~50 ms there (ESPHome warns past 50 ms per loop call). The
+# bounds use the mean step per stage, robust to one cold-cache outlier, with headroom (300x and
+# 100x), plus a hard cap on any single step that a whole-config unit (the pre-fix load step,
+# one validate() of everything, about 1 ms here at the schema maximum) would break.
+BOOT_SLOWDOWN = 300
+FRAME_SLOWDOWN = 100
+DEVICE_STEP_MS = 50.0
+HOST_STEP_CAP_MS = 0.6
 
 
 @pytest.mark.parametrize("case", list(CASES))
 def test_every_pipeline_step_is_bounded_at_schema_maximums(gen, schema, tmp_path, case):
-    make, expected_steps = CASES[case]
-    r = _pipeline(gen, schema, make(), tmp_path)
+    doc = CASES[case]()
+    r = _pipeline(gen, schema, doc, tmp_path)
     boot, frame = r["BOOT"], r["FRAME"]
-    # Chunking really happens: 1 load step, then mask and rasterizer rows 4 at a time.
-    assert int(boot["steps"]) == expected_steps, boot
-    assert float(boot["worst_step_ms"]) < STEP_BUDGET_MS, boot
-    assert float(frame["worst_step_ms"]) < STEP_BUDGET_MS, frame
-    assert frame["redrawn"] == "1"
+    assert int(boot["steps"]) == _boot_steps(doc), boot  # the work really is chunked
+    stages = {k: v for k, v in r.items() if k.startswith("STAGE_")}
+    assert set(stages) == {f"STAGE_{n}" for n in ("build", "validate", "prepare", "mask", "raster")}
+    for key, stage in stages.items():
+        mean = float(stage["total_ms"]) / int(stage["steps"])
+        assert mean * BOOT_SLOWDOWN < DEVICE_STEP_MS, (key, stage)
+        assert float(stage["worst_step_ms"]) < HOST_STEP_CAP_MS, (key, stage)
+    frame_mean = float(frame["total_ms"]) / int(frame["steps"])
+    assert frame_mean * FRAME_SLOWDOWN < DEVICE_STEP_MS, frame
+    assert float(frame["worst_step_ms"]) < HOST_STEP_CAP_MS, frame
+    assert frame["published"] == "3", frame
+    assert frame["front_untouched"] == "1", frame  # the shown image never half-written
 
 
 UNKNOWN_TEST = r"""
@@ -445,16 +505,24 @@ PHOTOS_TEST = r"""
 int main() {
   hearthmap_device::GeneratedPhotos photos;
   int fail = 0;
-  if (photos.plant_photo("fern") != nullptr) { std::printf("FAIL before init\n"); ++fail; }
+  if (photos.plant_photo("fern") != nullptr || photos.plant_photo_sized("fern", 8) != nullptr) {
+    std::printf("FAIL before init\n"); ++fail;
+  }
   photos.init();
   const lv_image_dsc_t* fern = photos.plant_photo("fern");
   const lv_image_dsc_t* moss = photos.plant_photo("moss");
+  const lv_image_dsc_t* fern4 = photos.plant_photo_sized("fern", 4);
   if (!fern || !moss || fern->header.w != 8 || fern->header.stride != 16 || fern->data_size != 128 ||
       fern->header.magic != LV_IMAGE_HEADER_MAGIC || fern->header.cf != LV_COLOR_FORMAT_RGB565) {
-    std::printf("FAIL descriptors\n"); ++fail;
+    std::printf("FAIL largest descriptor\n"); ++fail;
+  }
+  if (photos.plant_photo_sized("fern", 8) != fern || !fern4 || fern4->header.w != 4 ||
+      fern4->header.h != 4 || fern4->data_size != 32 || photos.plant_photo_sized("fern", 5) != nullptr) {
+    std::printf("FAIL sized descriptors\n"); ++fail;
   }
   photos.init();  // must be a no-op: the Screen already holds these pointers
-  if (photos.plant_photo("fern") != fern || photos.plant_photo("moss") != moss) {
+  if (photos.plant_photo("fern") != fern || photos.plant_photo("moss") != moss ||
+      photos.plant_photo_sized("fern", 4) != fern4) {
     std::printf("FAIL pointers moved\n"); ++fail;
   }
   if (photos.plant_photo("cactus") != nullptr) { std::printf("FAIL unknown id\n"); ++fail; }
@@ -472,7 +540,7 @@ def test_generated_photos_init_once_keeps_descriptors_stable(gen, tmp_path):
         f = tmp_path / f"{pid}.png"
         Image.new("RGB", (8, 8), colour).save(f)
         files[pid] = f
-    header, source = gen.emit_photos(files, size=8)
+    header, source = gen.emit_photos(files, sizes=(8, 4))
     (tmp_path / "hearthmap_gen").mkdir()
     (tmp_path / "hearthmap_gen/photos.h").write_text(header)
     (tmp_path / "hearthmap_gen/photos.cpp").write_text(source)
@@ -485,3 +553,35 @@ def test_generated_photos_init_once_keeps_descriptors_stable(gen, tmp_path):
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in out, out
+
+
+NAME_TEST = r"""
+#include <cstdio>
+#include "hearthmap_gen/generated_config.h"
+using namespace hearthmap;
+int main() {
+  ConfigLoadResult r = hearthmap_gen::GeneratedConfigSource{}.load();
+  if (!r.config) { for (auto& i : r.issues) std::printf("ISSUE %s %s\n", i.path.c_str(), i.message.c_str()); return 1; }
+  const std::string& n = r.config->rooms[0].name;
+  std::printf("NAME size=%zu first=%d rest=%s\n", n.size(), int(n[0]), n.c_str() + 1);
+  return 0;
+}
+"""
+
+
+def test_names_with_an_embedded_nul_survive_generation(gen, schema, example, tmp_path):
+    # Schema-valid, kept by the host's JSON source: the device must hold the same string.
+    core = _core_sources()
+    example["rooms"][0]["name"] = "\x00Room"
+    assert gen.check_schema(schema, example) == []
+    out = gen.emit_config_source(example, schema, "e.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(NAME_TEST)
+    text = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"), *core],
+        [tmp_path, REPO / "core/include"],
+    )
+    assert "NAME size=5 first=0 rest=Room" in text, text

@@ -26,8 +26,19 @@ void GeneratedPhotos::init() {
 
 const lv_image_dsc_t* GeneratedPhotos::plant_photo(std::string_view photo_id) const {
   if (!initialised_) return nullptr;
+  // The table lists each photo's sizes largest first, so the first match is the largest.
   for (unsigned i = 0; i < hearthmap_gen::kPhotoCount; ++i) {
     if (photo_id == hearthmap_gen::kPhotos[i].id) return &photos_[i];
+  }
+  return nullptr;
+}
+
+const lv_image_dsc_t* GeneratedPhotos::plant_photo_sized(std::string_view photo_id,
+                                                         int diameter) const {
+  if (!initialised_) return nullptr;
+  for (unsigned i = 0; i < hearthmap_gen::kPhotoCount; ++i) {
+    const hearthmap_gen::PhotoData& p = hearthmap_gen::kPhotos[i];
+    if (p.size == diameter && photo_id == p.id) return &photos_[i];
   }
   return nullptr;
 }

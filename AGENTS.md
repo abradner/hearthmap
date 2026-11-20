@@ -222,6 +222,11 @@ add rather than rewrite.
   some third-party CMakeLists. doctest is consumed header-only for that reason
   (`SOURCE_SUBDIR` in `cmake/HearthmapDoctest.cmake` keeps its CMakeLists out of the build); do
   the same for any other old dependency rather than lowering policy settings globally.
+- **ESPHome's LVGL compiles only some software-renderer colour formats.** For the panel it enables
+  RGB565, ARGB8888 and RGB888; scaling or rotating an RGB565 image also needs RGB565A8, so such an
+  image logs "Color format 0x12 is not enabled" and is not drawn (D-039). `host/lvgl/lv_conf.h`
+  mirrors the panel's set so host renders take the same paths; keep the two in step when ESPHome
+  or the YAML changes what it enables.
 - **The ESP32-P4 has no double-precision hardware.** Every `double` operation is a software
   routine of tens to hundreds of cycles, so code that is instant on a laptop can take seconds on
   the panel. The first hardware run boot-looped on the task watchdog because a per-pixel

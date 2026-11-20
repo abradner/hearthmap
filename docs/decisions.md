@@ -439,6 +439,33 @@ bigger house would only have made it worse. **Guard:** `components/hearthmap/tes
 drives the device's pipeline on fictional configs at the schema's maximums and fails if any one
 step exceeds 5 ms on the host; the pre-fix construction took 7.2 s there, 37 ms per step.
 **Would change if:** a step proves too slow on the panel, in which case the step size shrinks.
+**Amended (second hardware run, b68f721):** the panel booted, but the single load step (build,
+whole `validate()`, colour tables) held `loop()` for 216 ms and a full heat-image repaint held
+LVGL for 645 ms. Now the build is one room or pin per step (generated `build_step()`), validation
+is one room or pin per step (core's `ConfigValidator`, which gives exactly `validate()`'s issues
+in order), each colour table is its own step, frames render the heat image into a back buffer
+and swap it in whole (so a repaint between slices never shows a half-written image), and the
+swapped-in image is invalidated in 48-row bands, one per `loop()` call at most every 25 ms. The
+host guard now bounds the mean step per stage scaled by the measured device slowdown (boot
+about 200x, frames about 55x; bounds use 300x and 100x) and caps any single step.
+
+### D-039 The panel never scales an RGB565 image; the host draws with the panel's formats (provisional)
+
+**What happened:** on the panel LVGL logged "Color format 0x12 is not enabled" about three times
+a second. LVGL 9.6's software transform of an RGB565 image needs both
+`LV_DRAW_SW_SUPPORT_RGB565` and `LV_DRAW_SW_SUPPORT_RGB565A8`
+(`src/draw/sw/lv_draw_sw_transform.c`); ESPHome 2026.11.0 enables only RGB565, ARGB8888 and
+RGB888 for this device (its `lvgl` component sets them from the display format and the YAML's
+images). ui_lvgl scaled the 128 px RGB565 plant photos to cover the 44 px pin and 52 px HUD
+discs, so those discs were not drawn. The host never saw it: its `lv_conf.h` left every format
+on. **Default:** the build generates each photo at every disc diameter ui_lvgl uses (44, 52 and
+128 px; a test reads the radii from `screen.cpp`), `ImageProvider` gains
+`plant_photo_sized(id, diameter)` (additive, default nullptr), and the Screen draws a pre-sized
+photo centred, without a transform; the host's `lv_conf.h` now has exactly the panel's format set,
+and a ui test proves a scaled RGB565 photo fails there the same way. **Rejected:** declaring
+RGB565A8 to ESPHome's LVGL from the component: it would work, but every frame would then scale
+photos in software on a 360 MHz core, and the pre-sized images cost about 9 KB of flash per photo
+instead. **Would change if:** the UI needs a disc size chosen at run time.
 
 ### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
 
