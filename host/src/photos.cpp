@@ -16,7 +16,10 @@ const lv_image_dsc_t* DirectoryPhotos::plant_photo(std::string_view photo_id) co
     std::uint32_t w = 0;
     std::uint32_t h = 0;
     const std::string path = dir_ + "/" + std::string(photo_id) + ".png";
-    if (read_png_rgba(path, rgba, w, h).empty() && w > 0 && h > 0 && w < 0x10000 / 4) {
+    // LVGL 9.6 keeps width, height and stride in 16-bit fields: anything larger is refused (the
+    // leaf is drawn) rather than silently truncated.
+    if (read_png_rgba(path, rgba, w, h).empty() && w > 0 && h > 0 && w < 0x10000 / 4 &&
+        h <= 0xFFFF) {
       e->argb.resize(rgba.size());
       for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {  // RGBA -> LVGL's B, G, R, A
         e->argb[i + 0] = rgba[i + 2];

@@ -235,3 +235,24 @@ TEST_CASE("integral numbers spelled as floats are integers; fractions are not") 
   CHECK_FALSE(big_float.config.has_value());
   CHECK(has_issue(big_float, "/heat/grid_rows", IssueSeverity::Error));
 }
+
+TEST_CASE("numbers beyond double range are load errors, not crashes") {
+  const ConfigLoadResult r = JsonConfigSource(tiny(R"(, "stale_after_s": 1e400)")).load();
+  CHECK_FALSE(r.config.has_value());
+  CHECK_FALSE(r.issues.empty());
+  const ReadingsLoadResult f = parse_readings(R"({"now": "2026-01-15T09:00:00Z", "readings": {
+      "s": {"value": 1e400, "last_updated": "2026-01-15T09:00:00Z"}}})");
+  CHECK_FALSE(f.fixture.has_value());
+  CHECK_FALSE(f.error.empty());
+}
+
+TEST_CASE("RFC 3339: impossible dates and offsets are rejected") {
+  CHECK_FALSE(parse_rfc3339("2026-02-29T09:00:00Z").has_value());  // not a leap year
+  CHECK_FALSE(parse_rfc3339("2026-04-31T09:00:00Z").has_value());
+  CHECK(parse_rfc3339("2028-02-29T00:00:00Z").has_value());        // a leap year
+  CHECK(parse_rfc3339("2000-02-29T00:00:00Z").has_value());        // divisible by 400
+  CHECK_FALSE(parse_rfc3339("2100-02-29T00:00:00Z").has_value());  // divisible by 100
+  CHECK_FALSE(parse_rfc3339("2026-01-15T09:00:00+24:00").has_value());
+  CHECK_FALSE(parse_rfc3339("2026-01-15T09:00:00+10:60").has_value());
+  CHECK(parse_rfc3339("2026-01-15T09:00:00+23:59").has_value());
+}

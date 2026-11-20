@@ -417,7 +417,7 @@ ConfigLoadResult JsonConfigSource::load() const {
   json doc;
   try {
     doc = json::parse(text_);
-  } catch (const json::parse_error& e) {
+  } catch (const json::exception& e) {  // parse_error, and out_of_range for 1e400
     result.issues.push_back(
         ConfigIssue{IssueSeverity::Error, "/", std::string("malformed JSON: ") + e.what()});
     return result;
@@ -441,7 +441,11 @@ std::optional<Timestamp> parse_rfc3339(const std::string& text) {
       consumed != 19) {
     return std::nullopt;
   }
-  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return std::nullopt;
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || s > 60) return std::nullopt;
+  static constexpr int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+  const int month_days = kDays[mo - 1] + ((mo == 2 && leap) ? 1 : 0);
+  if (d > month_days) return std::nullopt;
   std::size_t i = 19;
   if (i < text.size() && text[i] == '.') {
     ++i;
@@ -457,6 +461,7 @@ std::optional<Timestamp> parse_rfc3339(const std::string& text) {
     if (std::sscanf(text.c_str() + i + 1, "%2d:%2d%n", &oh, &om, &n) != 2 || n != 5) {
       return std::nullopt;
     }
+    if (oh > 23 || om > 59) return std::nullopt;
     offset = (text[i] == '+' ? 1 : -1) * (oh * 3600 + om * 60);
     i += 6;
   } else {
@@ -472,7 +477,7 @@ ReadingsLoadResult parse_readings(const std::string& text) {
   json doc;
   try {
     doc = json::parse(text);
-  } catch (const json::parse_error& e) {
+  } catch (const json::exception& e) {  // parse_error, and out_of_range for 1e400
     result.error = std::string("malformed JSON: ") + e.what();
     return result;
   }
