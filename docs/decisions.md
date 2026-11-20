@@ -222,6 +222,64 @@ otherwise.
 800 of a 1280 x 800 canvas, a default that only made sense for one panel. The example sets it
 explicitly. **Why:** a default should not encode one layout's HUD width.
 
+### D-024 Heat fields are bit-reproducible; core never fuses multiply-adds (provisional)
+
+**Question:** how deterministic must `compute_heat_field()` be? **Default:** the same inputs give
+byte-identical cells, on the same build and across IEEE-754 platforms, for integer `idw_power`
+values 1..8. Core is compiled with `-ffp-contract=off` (Clang contracts `a*b+c` into fused
+multiply-adds by default, GCC does in GNU modes), never with fast-math; cells and samples are
+iterated in a fixed order; integer powers use multiplication and at most one `sqrtf`, both exactly
+rounded, instead of `powf`, whose rounding differs between C libraries. A golden hash of the
+example flat's field (`core/tests/heat_field_test.cpp`) is checked on every compiler CI runs.
+Non-integer powers use `powf` and are reproducible only within one C library. **Why:** golden
+images (PR 5) depend on the field; an image that changes with the compiler is a flaky test.
+**Would change if:** a non-integer power becomes the default (then a portable power function
+belongs in core), or the firmware toolchain needs contraction for speed (it does not today: the
+P4 has no double-precision FPU, and the heat field is float).
+
+### D-025 The default palette is the UI spec's dark heatmap (provisional)
+
+**Question:** `Palette`'s defaults were a light warm grey, blue and red that appear nowhere in the
+UI spec. **Default:** neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,73,72), the
+spec's comfort-quiet diverging colours on its #0d1013 background. **Why:** principle 3 (quiet
+when fine): on a dark panel a light grey neutral would make a healthy house the brightest thing on
+the wall. **Would change if:** a light theme is added; it passes its own `Palette`.
+
+### D-027 Calibration proposals: method defaults (provisional, PR 8)
+
+**Default:** `tools/calibrate` takes `wet` as the wetter of the median post-watering plateau and
+the 95th time-weighted wetness percentile, and `dry` as the drier of the median pre-watering
+trough (with at least two waterings) and the 5th percentile: top-ups of a still-moist pot have
+troughs far wetter than its dry spells. A watering is a rise of at least 20% of the sensor's
+span within 3 h. Samples hold until the next one (Home Assistant records only changes), for at
+most 7 days. A run of one value longer than 72 h is a frozen sensor, ignored, when it is
+mid-range; at either end of the range it is kept and reported as saturation, because a pot
+that reads 0 for days is the case this project exists for. Polarity is detected from the
+direction of sharp moves, else from the slow trend, and can be forced. **Why:** the brief's
+method, with defaults chosen against synthetic series; the README states each one. **Would
+change if:** real histories show a different watering signature (slow bottom watering, for
+one), which would need a different event detector rather than retuned numbers.
+
+### D-028 Default happy range is 30% to 100% of dry to wet (provisional, PR 8)
+
+**Default:** the proposed `happy_min` is 30% of the way from `dry` to `wet` and `happy_max` is
+`wet` itself, both labelled defaults (`happy_is_default: true`) to be tuned per species.
+**Why:** a `happy_max` short of `wet` would make every just-watered plant warn "too wet"
+(`effective_soil_band()` turns `happy_max` into the warn edge on the wet side), and history
+holds no evidence of over-watering. 30% gives thirst 0.7, the soil layer's default warn edge, so
+adding the default changes no plant's warning point. **Would change if:** per-species presets
+arrive in the editor.
+
+### D-029 calibration.json lists sensors as an array (provisional, PR 8)
+
+**Default:** `schema/calibration.schema.json`: `sensors` is an array of objects keyed by
+`entity_id`, each carrying `status`; only `status: "ok"` carries a `calibration`, whose shape is
+the config's `$defs/calibration` by `$ref`, with all four fields present. Sensors that cannot be
+calibrated are listed with a `message` rather than left out, so the editor can say why.
+**Why:** an array keeps the tool's order and leaves room for more than one proposal per entity
+later; reusing the config's calibration definition means the two cannot drift. **Would change
+if:** the editor's import needs something else; it is the only consumer.
+
 ### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
 
 **Question:** the editor must "validate with the real schema and show errors next to the item",
@@ -260,12 +318,13 @@ change if:** the overlay grows, or the component wants a fixed RGB565 blob from 
 
 ### D-043 The editor reads tools/calibrate's interchange format as that tool defines it (provisional)
 
-**Default:** `schema/calibration.schema.json` is owned by the calibrate tool's PR; the editor's
-copy is byte-identical to it. Import applies every `status: "ok"` sensor's calibration (all four
-fields) to each soil or plant pin whose `entities.moisture` matches, replacing the pin's
+**Default:** `schema/calibration.schema.json` is owned by the calibrate tool (D-029); the editor
+compiles against it and tests its importer on the tool's own example output
+(`tools/calibrate/examples/calibration.json`), read in place. Import applies every `status: "ok"`
+sensor's calibration (all four fields) to each soil or plant pin whose `entities.moisture` matches, replacing the pin's
 calibration as a whole; failed sensors are skipped with their message; confidence, warnings and
 `happy_is_default` are shown, never written into the config. **Would change if:** the tool's
-format changes (its schema is the contract; the editor's test fixture is a copy of its example).
+format changes (its schema is the contract).
 
 ### D-044 New editor projects set `map_area` to the panel layout explicitly (provisional)
 

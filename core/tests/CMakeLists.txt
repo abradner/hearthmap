@@ -4,6 +4,9 @@
 add_executable(hearthmap_core_tests
   main.cpp
   inline_helpers_test.cpp
+  colour_scale_test.cpp
+  geometry_test.cpp
+  heat_field_test.cpp
 )
 target_link_libraries(hearthmap_core_tests PRIVATE hearthmap::core hearthmap_doctest)
 hearthmap_strict_warnings(hearthmap_core_tests)
@@ -14,3 +17,19 @@ add_test(NAME core.unit COMMAND hearthmap_core_tests --no-version)
 # in addition to the exit-code check.
 set_tests_properties(core.unit PROPERTIES
   FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
+
+# Heat-field benchmark: prints timings, asserts nothing about them (CI runners are noisy and run
+# Debug builds). It fails only if a field comes out the wrong shape. Run a Release build locally
+# for numbers worth quoting.
+add_executable(hearthmap_heat_bench heat_field_bench.cpp)
+target_link_libraries(hearthmap_heat_bench PRIVATE hearthmap::core)
+hearthmap_strict_warnings(hearthmap_heat_bench)
+add_test(NAME core.heat_bench COMMAND hearthmap_heat_bench)
+
+# Host-only eyeballing helper: renders the example flat's heat field to PNG or PPM. The smoke
+# test proves it runs and writes a file; looking at the picture is a human's job.
+add_executable(hearthmap_heat_dump heat_dump.cpp)
+target_link_libraries(hearthmap_heat_dump PRIVATE hearthmap::core)
+hearthmap_strict_warnings(hearthmap_heat_dump)
+add_test(NAME core.heat_dump_smoke
+  COMMAND hearthmap_heat_dump "${CMAKE_CURRENT_BINARY_DIR}/heat_dump_smoke.ppm")

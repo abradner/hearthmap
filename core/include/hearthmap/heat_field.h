@@ -45,6 +45,9 @@ struct RoomMask {
 
 /// Build the mask for `config` at config.heat.grid_cols x grid_rows into `out`, reusing its
 /// storage. Not per-frame (the mask depends only on the config), but cheap to redo.
+/// A non-positive grid size gives an empty mask (cols = rows = 0). Rooms past index 32766
+/// (beyond int16) are never assigned. Cost: O(cells * rooms) bounding-box checks plus a
+/// point_in_polygon() per candidate room.
 /// Implemented in core (PR 3).
 void build_room_mask(const Config& config, RoomMask& out);
 
@@ -88,15 +91,26 @@ struct HeatField {
 ///   is outdoor are ignored. Their pins still show values; that is view_model.h's business.
 /// - Weighting: w = 1 / d^power, d = distance from cell centre to sample in canvas pixels
 ///   (map space scaled by config.canvas.map_area width and height), power = config.heat
-///   .idw_power. value = sum(w * v) / sum(w). All in float. When idw_power == 2 exactly, w is
-///   1 / (dx*dx + dy*dy): multiply-only, no sqrt, no powf. Other powers may use powf.
+///   .idw_power. value = sum(w * v) / sum(w), evaluated as base + sum(w * (v - base)) / sum(w)
+///   with base = the room's first usable sample value, so one sample yields its value exactly,
+///   and with values pre-scaled by 2^-20 so that v - base cannot overflow for finite samples
+///   (scaling by a power of two is exact for normal floats, so ordinary results are unchanged).
+///   A cell whose result is still not finite (every weight underflowed: 0/0) is NoData.
+///   All in float. When idw_power == 2 exactly, w is
+///   1 / (dx*dx + dy*dy): multiply-only, no sqrt, no powf. Other integer powers 1..8 use
+///   multiplication and at most one sqrtf; non-integer powers use powf.
 /// - Coincidence: a cell takes a sample's value exactly only when that sample is in the cell's
 ///   own room and d < 0.5 pixel (the first such sample in `samples` order). A sample in another
 ///   room never sets a cell, however close.
-/// - Samples with room_index == kOutside, or out of range for config.rooms, are ignored.
+/// - Samples with room_index == kOutside, or out of range for config.rooms, or with a
+///   non-finite position or value, are ignored. A room whose samples are all ignored is NoData.
 /// - Output cells are Outside where the mask says kOutside or the room is outdoor, NoData where
 ///   the room has no usable sample, Value otherwise.
-/// `mask` must have been built from `config`.
+/// `mask` must have been built from `config`. If it is not a mask at all (cols or rows <= 0, or
+/// room_index.size() != cols * rows) `out` becomes an empty field (cols = rows = 0); a mask cell
+/// naming a room `config` does not have is Outside.
+/// Cost: O(cells * samples) room-index comparisons plus O(cells * samples in the cell's room)
+/// weight evaluations. Same inputs give bit-identical cells (docs/decisions.md D-024).
 /// Implemented in core (PR 3).
 void compute_heat_field(const Config& config, const RoomMask& mask,
                         const std::vector<HeatSample>& samples, HeatField& out);

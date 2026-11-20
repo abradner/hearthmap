@@ -3,8 +3,8 @@ import { applyCalibrations, parseCalibrationFile, type CalibrationFile } from ".
 import { schemaIssues, validateConfig } from "../src/lib/validate";
 import { clone, example, examplePhotoIds, repoText } from "./helpers";
 
-// A byte-for-byte copy of tools/calibrate/examples/calibration.json from the calibrate branch.
-const text = repoText("editor/test/fixtures/calibration-example.json");
+// The calibrate tool's own example output: the contract's example, read in place so it cannot drift.
+const text = repoText("tools/calibrate/examples/calibration.json");
 const file = (): CalibrationFile & Record<string, unknown> => JSON.parse(text) as CalibrationFile & Record<string, unknown>;
 
 describe("parseCalibrationFile (tools/calibrate's format)", () => {
