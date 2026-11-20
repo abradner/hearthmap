@@ -40,6 +40,41 @@ jobs:
         # doctest's summary line, so the log shows how many cases and assertions actually ran.
         run: ctest --test-dir build -V --output-on-failure --no-tests=error
 
+  # ui_lvgl, the host renderer and the golden images. Both compilers must produce the very same
+  # pixels as the committed goldens (rendered on Apple clang/arm64): that is the determinism
+  # claim, checked on every PR.
+  ui-host:
+    name: ui-host (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test (core, ui_lvgl, host, goldens)
+        run: ctest --test-dir build -V --output-on-failure --no-tests=error
+      - name: Upload actual and diff images
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-out-${{ matrix.compiler }}
+          path: build/golden-out/
+          if-no-files-found: ignore
+
   schema:
     runs-on: ubuntu-latest
     steps:
