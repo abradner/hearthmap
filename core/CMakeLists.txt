@@ -22,6 +22,10 @@ list(APPEND HEARTHMAP_CORE_SOURCES
   src/config.cpp
   src/severity.cpp
 )
+# PR 4: view model, HUD, hit-testing.
+list(APPEND HEARTHMAP_CORE_SOURCES
+  src/view_model.cpp
+)
 
 # Header self-containment: one generated translation unit per public header, each including
 # only that header, compiled with core's strict warnings. A header that forgets an #include,

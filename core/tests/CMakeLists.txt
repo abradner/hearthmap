@@ -7,6 +7,7 @@ add_executable(hearthmap_core_tests
   calibration_test.cpp
   config_validate_test.cpp
   severity_test.cpp
+  view_model_test.cpp
   support/flat_fixture.cpp
 )
 target_include_directories(hearthmap_core_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support")
@@ -28,6 +29,17 @@ add_test(NAME core.unit COMMAND hearthmap_core_tests --no-version)
 # in addition to the exit-code check.
 set_tests_properties(core.unit PROPERTIES
   FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
+
+# No allocation once warmed up (D-022). Its own executable: it replaces global operator new.
+add_executable(hearthmap_core_alloc_tests main.cpp alloc_test.cpp support/flat_fixture.cpp)
+target_include_directories(hearthmap_core_alloc_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+if(NOT EXISTS "${PROJECT_SOURCE_DIR}/core/src/geometry.cpp")
+  target_sources(hearthmap_core_alloc_tests PRIVATE support/point_in_polygon_standin.cpp)
+endif()
+target_link_libraries(hearthmap_core_alloc_tests PRIVATE hearthmap::core hearthmap_doctest)
+hearthmap_strict_warnings(hearthmap_core_alloc_tests)
+add_test(NAME core.no_alloc COMMAND hearthmap_core_alloc_tests --no-version)
+set_tests_properties(core.no_alloc PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
 
 # Defaults agreement (docs/decisions.md D-007): default_band() and Config's member defaults,
 # as compiled, must equal the numbers schema/README.md documents and the "default" keywords in
