@@ -32,8 +32,8 @@ constexpr int kPulseWidth = 4;
 constexpr std::uint32_t kPulsePeriodMs = 1600;
 constexpr std::uint32_t kRoomPulseHalfPeriodMs = 1400;  // ~2.8 s full cycle
 constexpr int kRoomPulseWidth = 5;
-constexpr int kBadgeW = 24;
-constexpr int kBadgeH = 22;
+constexpr int kBadgeW = 28;
+constexpr int kBadgeH = 25;
 constexpr int kHudDiscRadius = 26;
 constexpr int kHudTitleHeight = 40;
 constexpr int kOverlayW = 660;
@@ -77,6 +77,20 @@ lv_obj_t* make_box(lv_obj_t* parent) {
   return o;
 }
 
+// Let `obj`'s children draw up to `px` beyond its edges. In LVGL 9.6 overflow_visible alone
+// clips children to the parent's extended draw area, which is 0 unless someone sets it.
+void ext_draw_cb(lv_event_t* e) {
+  lv_event_set_ext_draw_size(
+      e, static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(lv_event_get_user_data(e))));
+}
+
+void allow_overflow(lv_obj_t* obj, std::int32_t px) {
+  lv_obj_set_overflow_visible(obj, true);
+  lv_obj_add_event_cb(obj, ext_draw_cb, LV_EVENT_REFR_EXT_DRAW_SIZE,
+                      reinterpret_cast<void*>(static_cast<std::intptr_t>(px)));
+  lv_obj_refresh_ext_draw_size(obj);
+}
+
 lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, std::uint32_t colour) {
   lv_obj_t* l = lv_label_create(parent);
   lv_obj_remove_style_all(l);
@@ -96,7 +110,8 @@ lv_obj_t* make_circle(lv_obj_t* parent, int radius, std::uint32_t fill) {
   return o;
 }
 
-// The warn/danger badge: a filled triangle with "!" in it, drawn on demand.
+// The warn/danger badge: a filled triangle with "!" in it, drawn on demand, with a dark rim so
+// it stays visible on heat of its own colour.
 void badge_draw_cb(lv_event_t* e) {
   lv_obj_t* obj = lv_event_get_current_target_obj(e);
   lv_layer_t* layer = lv_event_get_layer(e);
@@ -104,14 +119,22 @@ void badge_draw_cb(lv_event_t* e) {
   lv_obj_get_coords(obj, &a);
   lv_draw_triangle_dsc_t d;
   lv_draw_triangle_dsc_init(&d);
-  d.p[0].x = (a.x1 + a.x2 + 1) / 2;
+  const std::int32_t mid = (a.x1 + a.x2 + 1) / 2;
+  d.p[0].x = mid;
   d.p[0].y = a.y1;
   d.p[1].x = a.x2;
   d.p[1].y = a.y2;
   d.p[2].x = a.x1;
   d.p[2].y = a.y2;
-  d.color = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
+  d.color = lv_color_hex(theme::kBackground);
   d.opa = LV_OPA_COVER;
+  lv_draw_triangle(layer, &d);
+  d.p[0].y = a.y1 + 4;
+  d.p[1].x = a.x2 - 3;
+  d.p[1].y = a.y2 - 2;
+  d.p[2].x = a.x1 + 3;
+  d.p[2].y = a.y2 - 2;
+  d.color = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
   lv_draw_triangle(layer, &d);
 }
 
@@ -353,7 +376,7 @@ struct Screen::Impl {
     w.map = make_box(w.root);
     lv_obj_set_pos(w.map, a.x, a.y);
     lv_obj_set_size(w.map, a.width, a.height);
-    lv_obj_set_overflow_visible(w.map, true);
+    allow_overflow(w.map, 160);
     lv_obj_set_clickable(w.map, true);
     lv_obj_add_event_cb(w.map, on_map_click, LV_EVENT_CLICKED, this);
 
@@ -415,7 +438,7 @@ struct Screen::Impl {
     for (std::size_t i = 0; i < config.pins.size(); ++i) {
       const lv_point_precise_t c = map_px(config.pins[i].position);
       lv_obj_t* holder = make_box(w.map);
-      lv_obj_set_overflow_visible(holder, true);
+      allow_overflow(holder, 8);
       lv_obj_set_size(holder, 2 * kPulseTo, 2 * kPulseTo);
       lv_obj_set_pos(holder, c.x - kPulseTo, c.y - kPulseTo);
       lv_obj_t* ring = make_box(holder);
@@ -454,7 +477,7 @@ struct Screen::Impl {
     const lv_point_precise_t c = map_px(pin.position);
     if (in_pot(pin.kind)) {
       lv_obj_t* box = make_box(w.map);
-      lv_obj_set_overflow_visible(box, true);
+      allow_overflow(box, 140);
       lv_obj_set_size(box, 2 * kPlantRadius, 2 * kPlantRadius);
       lv_obj_set_pos(box, c.x - kPlantRadius, c.y - kPlantRadius);
       Disc d = make_disc(box, kPlantRadius, kPinRingWidth);
@@ -470,7 +493,7 @@ struct Screen::Impl {
     } else {
       constexpr int r = kPlainDotRadius + kPlainDotBorder;
       lv_obj_t* box = make_box(w.map);
-      lv_obj_set_overflow_visible(box, true);
+      allow_overflow(box, 140);
       lv_obj_set_size(box, 2 * r, 2 * r);
       lv_obj_set_pos(box, c.x - r, c.y - r);
       lv_obj_t* dot = make_circle(box, r, theme::kTextPrimary);
@@ -478,7 +501,13 @@ struct Screen::Impl {
       lv_obj_set_style_border_color(dot, hex(theme::kBackground), 0);
       lv_obj_set_style_border_opa(dot, LV_OPA_COVER, 0);
       lv_obj_t* value = make_label(box, deps.fonts.px22, theme::kTextPrimary);
-      lv_obj_align(value, LV_ALIGN_LEFT_MID, 2 * r + 6, 0);
+      // A dark backing so the value reads on any heat colour, including its own status colour.
+      lv_obj_set_style_bg_color(value, hex(theme::kBackground), 0);
+      lv_obj_set_style_bg_opa(value, LV_OPA_60, 0);
+      lv_obj_set_style_radius(value, 6, 0);
+      lv_obj_set_style_pad_hor(value, 6, 0);
+      lv_obj_set_style_pad_ver(value, 1, 0);
+      lv_obj_align(value, LV_ALIGN_LEFT_MID, 2 * r + 2, 0);
       lv_obj_t* badge = make_badge(box);
       lv_obj_set_pos(badge, 2, -kBadgeH - 8);
       w.pin[i] = box;
@@ -604,7 +633,7 @@ struct Screen::Impl {
     // Thirst row: label, verdict, bar, scale labels.
     const int row_y = kOverlayPad + 2 * kOverlayDiscRadius + 28;
     w.overlay_thirst = make_box(card);
-    lv_obj_set_overflow_visible(w.overlay_thirst, true);
+    allow_overflow(w.overlay_thirst, 40);
     lv_obj_set_pos(w.overlay_thirst, kOverlayPad, row_y);
     lv_obj_set_size(w.overlay_thirst, kOverlayInnerW, 100);
     lv_obj_t* tlabel = make_label(w.overlay_thirst, f.px22, theme::kTextPrimary);
@@ -858,7 +887,12 @@ struct Screen::Impl {
           }
         }
       } else {
-        if (first || prev->value_text != look.value_text) set_text(w.pin_value[i], look.value_text);
+        if (first || prev->value_text != look.value_text) {
+          set_text(w.pin_value[i], look.value_text);
+          if (first || prev->value_text.empty() != look.value_text.empty()) {
+            set_hidden(w.pin_value[i], look.value_text.empty());  // no empty backing pill
+          }
+        }
         if (first || prev->value_colour != look.value_colour) {
           lv_obj_set_style_text_color(w.pin_value[i], hex(look.value_colour), 0);
           count();

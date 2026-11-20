@@ -118,6 +118,8 @@ TEST_CASE("plain pins show the active value, no data when stale, and dim off-lay
   CHECK(lv_obj_get_style_opa(w.pin[0], LV_PART_MAIN) == LV_OPA_COVER);
   // The humidity pin does not feed the temperature layer: dimmed, no text.
   CHECK(text(w.pin_value[3]).empty());
+  CHECK(hidden(w.pin_value[3]));  // no empty backing pill
+  CHECK_FALSE(hidden(w.pin_value[0]));
   CHECK(lv_obj_get_style_opa(w.pin[3], LV_PART_MAIN) == LV_OPA_40);
 
   vm.pins[0].active_value.reset();
@@ -417,4 +419,33 @@ TEST_CASE("the heat image is drawn at the map area") {
   CHECK(px(41 + 300, 77 + 300) == 0xF800);  // inside the map, away from pins and labels
   CHECK(px(20, 400) == to_rgb565(Rgb888{0x0D, 0x10, 0x13}));  // left margin: background
   CHECK(px(1000, 790) != 0xF800);                             // HUD column: not the map
+}
+
+TEST_CASE("pin labels and badges are drawn even though they sit outside their pin's box") {
+  // Regression: LVGL 9.6 clips children to the parent's extended draw area, so a value label
+  // right of its dot, and a badge past the disc's edge, vanished from the rendered frame while
+  // every widget property still read correctly.
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 28.0;
+  vm.pins[0].active_severity = Severity::Warn;
+  rig.show(vm);
+  rig.display.render();
+  const auto& fb = rig.display.framebuffer();
+  auto count = [&](lv_obj_t* obj, Rgb565 colour) {
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    int n = 0;
+    for (int y = a.y1; y <= a.y2; ++y) {
+      for (int x = a.x1; x <= a.x2; ++x) {
+        n += fb[static_cast<std::size_t>(y) * 1280U + static_cast<std::size_t>(x)] == colour;
+      }
+    }
+    return n;
+  };
+  const Rgb565 warn = to_rgb565(Rgb888{0xF5, 0xA5, 0x24});
+  const Rgb565 danger = to_rgb565(Rgb888{0xE5, 0x48, 0x4D});
+  CHECK(count(rig.w().pin_value[0], warn) > 20);   // "28.0°" in warn colour
+  CHECK(count(rig.w().pin_badge[0], warn) > 100);  // the triangle
+  CHECK(count(rig.w().pin_badge[1], danger) > 100);
 }
