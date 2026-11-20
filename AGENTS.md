@@ -85,7 +85,7 @@ A conflict with a principle is a stop-and-check, never something to quietly work
 | Host renderer | C++17 + LVGL headless (PR 5) | `host/`: renders view models to PNG for golden-image tests |
 | Firmware | ESPHome external component (PR 7) | Python codegen (`components/hearthmap/__init__.py`) + thin C++ glue |
 | Editor | Vite + TypeScript, static (PR 6) | `editor/`: no backend, GitHub Pages |
-| Calibration tool | Python (PR 8) | `tools/calibrate/` |
+| Calibration tool | Python 3.11+, standard library only | `tools/calibrate/`; tests: pytest 9.2.0, pinned in `tools/calibrate/requirements-dev.txt` |
 | Config contract | JSON Schema 2020-12 | `schema/hearthmap.schema.json`; validator `jsonschema==4.23.0` pinned in `schema/requirements.txt` |
 | Testing | doctest v2.4.12 (commit-pinned, `cmake/HearthmapDoctest.cmake`) via `ctest`; Python `unittest` for the schema | |
 | Formatting | clang-format 19.1.7 (`.clang-format`) | Pinned in CI |
@@ -227,6 +227,8 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
   entry fails if doctest reports zero test cases.
 - **schema**: installs the pinned validator, runs `schema/validate.py` (every example config and
   fixture, plus cross-references) and `schema/test_schema.py` (mutations that must be rejected).
+- **calibrate**: `pytest` for `tools/calibrate/` on Python 3.11 and 3.13, with the pinned
+  `tools/calibrate/requirements-dev.txt`.
 - **format**: `clang-format --dry-run --Werror` with clang-format 19.1.7 from PyPI.
 
 Every action is pinned by commit SHA. There are no path filters: every job runs on every PR.

@@ -4,6 +4,8 @@
 the ESPHome component compiles it into static tables, the host renderer parses it, and core's
 `Config` struct (`core/include/hearthmap/config.h`) mirrors it field for field.
 `readings.schema.json` describes the host's readings fixtures (`examples/README.md`).
+`calibration.schema.json` describes `calibration.json`, the proposals `tools/calibrate/` writes
+and the editor imports; its `calibration` objects are this schema's `$defs/calibration`.
 
 The schema checks shape. Rules about values that a schema cannot express (unique ids, a pin's
 room existing, band ordering, calibration width, polygon simplicity) belong to core's

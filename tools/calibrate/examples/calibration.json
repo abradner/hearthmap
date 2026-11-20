@@ -1,0 +1,203 @@
+{
+  "$schema": "https://raw.githubusercontent.com/abradner/hearthmap/main/schema/calibration.schema.json",
+  "version": 1,
+  "generated_at": "2026-01-29T00:00:00Z",
+  "generator": "hearthmap-calibrate 0.1.0",
+  "parameters": {
+    "valid_min": null,
+    "valid_max": null,
+    "min_history_days": 7.0,
+    "hard_min_history_days": 1.0,
+    "hard_min_samples": 3,
+    "despike_half_window": 3,
+    "despike_k": 5.0,
+    "despike_floor_fraction": 0.1,
+    "max_hold_hours": 168.0,
+    "flatline_hours": 72.0,
+    "event_window_hours": 3.0,
+    "min_rise_fraction": 0.2,
+    "settle_hours": 1.0,
+    "plateau_hours": 12.0,
+    "trough_hours": 3.0,
+    "grid_minutes": 30.0,
+    "dry_percentile": 5.0,
+    "wet_percentile": 95.0,
+    "happy_min_fraction": 0.3,
+    "happy_max_fraction": 1.0,
+    "polarity": "auto"
+  },
+  "sensors": [
+    {
+      "entity_id": "sensor.example_monstera_moisture",
+      "status": "ok",
+      "calibration": {
+        "dry": 7.0,
+        "wet": 56.0,
+        "happy_min": 21.7,
+        "happy_max": 56.0
+      },
+      "happy_is_default": true,
+      "confidence": "high",
+      "polarity": "normal",
+      "watering_events": 4,
+      "drying_rate_per_day": 7.415,
+      "drying_fraction_per_day": 0.1513,
+      "warnings": [
+        {
+          "code": "unavailable_samples",
+          "message": "5 unavailable samples ignored"
+        },
+        {
+          "code": "outliers_removed",
+          "message": "1 isolated outliers removed"
+        }
+      ],
+      "evidence": {
+        "samples": 241,
+        "unavailable": 5,
+        "impossible": 0,
+        "outliers": 1,
+        "valid_samples": 235,
+        "min": 6.0,
+        "max": 59.0,
+        "history_days": 28.0,
+        "flatlined": 0,
+        "dry_method": "median of 4 pre-watering troughs",
+        "wet_method": "median of 4 post-watering plateaus",
+        "percentile_dry": 9.0,
+        "percentile_wet": 56.0
+      }
+    },
+    {
+      "entity_id": "sensor.example_basil_moisture",
+      "status": "ok",
+      "calibration": {
+        "dry": 0.0,
+        "wet": 50.0,
+        "happy_min": 15.0,
+        "happy_max": 50.0
+      },
+      "happy_is_default": true,
+      "confidence": "medium",
+      "polarity": "normal",
+      "watering_events": 4,
+      "drying_rate_per_day": 9.684,
+      "drying_fraction_per_day": 0.1937,
+      "warnings": [
+        {
+          "code": "saturated_dry_end",
+          "message": "reads 0 unchanged for over 72 h at its dry end: the probe may saturate there, so the true dry end may lie beyond it"
+        }
+      ],
+      "evidence": {
+        "samples": 213,
+        "unavailable": 0,
+        "impossible": 0,
+        "outliers": 0,
+        "valid_samples": 213,
+        "min": 0.0,
+        "max": 52.0,
+        "history_days": 35.83,
+        "flatlined": 0,
+        "dry_method": "median of 4 pre-watering troughs",
+        "wet_method": "median of 4 post-watering plateaus",
+        "percentile_dry": 0.0,
+        "percentile_wet": 48.0
+      }
+    },
+    {
+      "entity_id": "sensor.example_pothos_moisture_raw",
+      "status": "ok",
+      "calibration": {
+        "dry": 2884.0,
+        "wet": 1368.0,
+        "happy_min": 2429.2,
+        "happy_max": 1368.0
+      },
+      "happy_is_default": true,
+      "confidence": "high",
+      "polarity": "inverted",
+      "watering_events": 5,
+      "drying_rate_per_day": 266.29,
+      "drying_fraction_per_day": 0.1757,
+      "warnings": [],
+      "evidence": {
+        "samples": 327,
+        "unavailable": 0,
+        "impossible": 0,
+        "outliers": 0,
+        "valid_samples": 327,
+        "min": 1280.0,
+        "max": 2892.0,
+        "history_days": 28.0,
+        "flatlined": 0,
+        "dry_method": "median of 5 pre-watering troughs",
+        "wet_method": "95th wetness percentile (wetter than the median of 5 post-watering plateaus)",
+        "percentile_dry": 2816.0,
+        "percentile_wet": 1368.0
+      }
+    },
+    {
+      "entity_id": "sensor.example_snake_moisture",
+      "status": "ok",
+      "calibration": {
+        "dry": 5.0,
+        "wet": 36.0,
+        "happy_min": 14.3,
+        "happy_max": 36.0
+      },
+      "happy_is_default": true,
+      "confidence": "low",
+      "polarity": "normal",
+      "watering_events": 0,
+      "drying_rate_per_day": 1.213,
+      "drying_fraction_per_day": 0.03914,
+      "warnings": [
+        {
+          "code": "polarity_from_trend",
+          "message": "no sharp rises or falls: polarity (normal) inferred from the drying trend"
+        },
+        {
+          "code": "no_watering_events",
+          "message": "no watering events seen: wet is the wettest reading seen, not a post-watering reading; water thoroughly and re-run"
+        }
+      ],
+      "evidence": {
+        "samples": 35,
+        "unavailable": 0,
+        "impossible": 0,
+        "outliers": 0,
+        "valid_samples": 35,
+        "min": 4.0,
+        "max": 38.0,
+        "history_days": 27.67,
+        "flatlined": 0,
+        "dry_method": "5th wetness percentile",
+        "wet_method": "95th wetness percentile",
+        "percentile_dry": 5.0,
+        "percentile_wet": 36.0
+      }
+    },
+    {
+      "entity_id": "sensor.example_lavender_moisture",
+      "status": "no_variation",
+      "message": "cannot calibrate: no variation (every valid reading is 0)",
+      "confidence": "none",
+      "polarity": null,
+      "watering_events": 0,
+      "drying_rate_per_day": null,
+      "drying_fraction_per_day": null,
+      "warnings": [],
+      "evidence": {
+        "samples": 1,
+        "unavailable": 0,
+        "impossible": 0,
+        "outliers": 0,
+        "valid_samples": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "history_days": 0.0
+      }
+    }
+  ]
+}
