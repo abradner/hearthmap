@@ -221,3 +221,37 @@ otherwise.
 **Default:** an omitted `map_area` is `{0, 0, canvas.width, canvas.height}`; it was the left 960 x
 800 of a 1280 x 800 canvas, a default that only made sense for one panel. The example sets it
 explicitly. **Why:** a default should not encode one layout's HUD width.
+
+### D-024 Calibration proposals: method defaults (provisional, PR 8)
+
+**Default:** `tools/calibrate` takes `wet` as the median post-watering plateau (with at least one
+watering) and `dry` as the median pre-watering trough (with at least two), falling back to the
+5th/95th time-weighted wetness percentiles. A watering is a rise of at least 20% of the sensor's
+span within 3 h. Samples hold until the next one (Home Assistant records only changes), for at
+most 7 days. A run of one value longer than 72 h is a frozen sensor, ignored, when it is
+mid-range; at either end of the range it is kept and reported as saturation, because a pot
+that reads 0 for days is the case this project exists for. Polarity is detected from the
+direction of sharp moves, else from the slow trend, and can be forced. **Why:** the brief's
+method, with defaults chosen against synthetic series; the README states each one. **Would
+change if:** real histories show a different watering signature (slow bottom watering, for
+one), which would need a different event detector rather than retuned numbers.
+
+### D-025 Default happy range is 30% to 100% of dry to wet (provisional, PR 8)
+
+**Default:** the proposed `happy_min` is 30% of the way from `dry` to `wet` and `happy_max` is
+`wet` itself, both labelled defaults (`happy_is_default: true`) to be tuned per species.
+**Why:** a `happy_max` short of `wet` would make every just-watered plant warn "too wet"
+(`effective_soil_band()` turns `happy_max` into the warn edge on the wet side), and history
+holds no evidence of over-watering. 30% gives thirst 0.7, the soil layer's default warn edge, so
+adding the default changes no plant's warning point. **Would change if:** per-species presets
+arrive in the editor.
+
+### D-026 calibration.json lists sensors as an array (provisional, PR 8)
+
+**Default:** `schema/calibration.schema.json`: `sensors` is an array of objects keyed by
+`entity_id`, each carrying `status`; only `status: "ok"` carries a `calibration`, whose shape is
+the config's `$defs/calibration` by `$ref`, with all four fields present. Sensors that cannot be
+calibrated are listed with a `message` rather than left out, so the editor can say why.
+**Why:** an array keeps the tool's order and leaves room for more than one proposal per entity
+later; reusing the config's calibration definition means the two cannot drift. **Would change
+if:** the editor's import needs something else; it is the only consumer.
