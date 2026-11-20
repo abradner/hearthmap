@@ -3,11 +3,16 @@
 // A diverging scale: the neutral colour anywhere inside [comfort_min, comfort_max]; towards the
 // cold colour below it, saturating at scale_min; towards the hot colour above it, saturating at
 // scale_max. Severity does not affect colour (pins and pulsing carry severity).
+//
+// Performance contract (docs/decisions.md D-022): the heat field is coloured per heat cell,
+// never per screen pixel, and through a ColourLut built once per band, not by calling
+// colour_for() per cell. colour_for() is the reference the table is built from and tested
+// against.
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "hearthmap/config.h"
 
@@ -52,7 +57,7 @@ constexpr Rgb888 lerp(Rgb888 a, Rgb888 b, double t) {
 }
 
 /// The three anchor colours of the scale. Defaults are the UI spec's dark-theme heatmap colours
-/// (docs/decisions.md D-018): neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,73,72).
+/// (docs/decisions.md D-025): neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,73,72).
 /// ui_lvgl may pass a different palette; core never assumes these.
 struct Palette {
   Rgb888 neutral{30, 35, 41};
@@ -63,8 +68,8 @@ struct Palette {
 /// Colour for `value` under `band`:
 /// - comfort_min <= value <= comfort_max: palette.neutral.
 /// - value < comfort_min: lerp(neutral, cold, t), t = (comfort_min - value) /
-///   (comfort_min - scale_min); when comfort_min <= scale_min the cold side is neutral
-///   (ruling R9: no gradient room means no colour, not a jump to full cold).
+///   (comfort_min - scale_min); when comfort_min <= scale_min the cold side is neutral (no
+///   room to fade, so no colour: not a step to full cold; D-021).
 /// - value > comfort_max: lerp(neutral, hot, t), t = (value - comfort_max) /
 ///   (scale_max - comfort_max); when scale_max <= comfort_max the hot side is neutral.
 /// - Non-finite value: palette.neutral (callers should never pass one; heat cells with no data
@@ -72,32 +77,44 @@ struct Palette {
 /// Implemented in core (PR 3).
 Rgb888 colour_for(const Band& band, double value, const Palette& palette = Palette{});
 
-/// to_rgb565(colour_for(...)), the form ui_lvgl writes into the heat image.
+/// to_rgb565(colour_for(...)). The reference for one value; the heat image uses ColourLut.
 inline Rgb565 colour565_for(const Band& band, double value, const Palette& palette = Palette{}) {
   return to_rgb565(colour_for(band, value, palette));
 }
 
-/// A per-band lookup table, so a heat field is coloured with one float multiply and an array
-/// read per cell instead of a colour_for() call (ruling R11). Fixed size: building or using one
-/// never allocates. Colour is resolved per heat cell, never per screen pixel.
-struct ColourTable {
-  static constexpr std::size_t kEntries = 256;
-  /// entries[i] = colour565_for(band, scale_min + i * (scale_max - scale_min) / (kEntries - 1)).
-  std::array<Rgb565, kEntries> entries{};
-  Rgb565 neutral = 0;
-  float comfort_min = 0.0F;
-  float comfort_max = 0.0F;
-  float scale_min = 0.0F;
-  float scale_max = 0.0F;
+/// Default number of entries in a ColourLut.
+inline constexpr std::size_t kDefaultColourLutSize = 256;
 
-  /// - Non-finite value, or comfort_min <= value <= comfort_max (exact, not quantised): neutral.
-  /// - value <= scale_min: entries.front(); value >= scale_max: entries.back().
-  /// - Otherwise the entry nearest the value (round half up).
-  /// Outside the comfort band this differs from colour565_for() by at most half a table step.
+/// A band's colour scale sampled into a table, so colouring a heat cell is one clamp, one
+/// multiply and one index, all in float (the ESP32-P4 has a single-precision FPU only).
+///
+/// Entry i holds colour565_for(band, lo + (hi - lo) * i / (n - 1), palette), where lo =
+/// band.scale_min, hi = band.scale_max and n = entries.size(). Values beyond lo..hi saturate
+/// exactly as colour_for() does, so clamping the index loses nothing. The table quantises the
+/// comfort edges to the entry spacing; that is the accepted cost.
+struct ColourLut {
+  float lo = 0.0F;
+  float hi = 1.0F;
+  std::vector<Rgb565> entries;
+
+  /// The entry nearest `value`: index = round((value - lo) / (hi - lo) * (n - 1)), clamped to
+  /// 0..n-1. A non-finite value or an empty table gives 0 (black); callers colour only cells
+  /// in CellState::Value, which are finite. A degenerate table (hi <= lo, from a band
+  /// validate() rejects) gives entries.front() for value <= lo and entries.back() otherwise.
+  /// Never allocates.
+  /// Implemented in core (PR 3).
   Rgb565 lookup(float value) const;
 };
 
-/// Build the table for `band` and `palette`.
-ColourTable make_colour_table(const Band& band, const Palette& palette = Palette{});
+/// Fill `out` with `size` entries for `band` and `palette` (a size below 2 is treated as 2).
+/// Reuses out.entries' storage: once it has held `size` entries, a rebuild does not allocate.
+/// Build once per config (or palette change) per layer, not per frame.
+/// Implemented in core (PR 3).
+void build_colour_lut(const Band& band, const Palette& palette, std::size_t size, ColourLut& out);
+
+/// Returning form of build_colour_lut(); allocates.
+/// Implemented in core (PR 3).
+ColourLut build_colour_lut(const Band& band, const Palette& palette = Palette{},
+                           std::size_t size = kDefaultColourLutSize);
 
 }  // namespace hearthmap

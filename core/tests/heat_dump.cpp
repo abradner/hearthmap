@@ -9,7 +9,7 @@
 // demo:   the same plus a cold corner in the living room and a hot oven corner in the kitchen,
 //         with the bedroom sensor removed so its room shows the "no data" hatching.
 // Colours are the UI spec's (background #0d1013, walls #4a535d, no-data hatching #6b7280,
-// outdoor rooms in the garden fill #101a14: they get no heat colour, ruling R10).
+// outdoor rooms in the garden fill #101a14: they get no heat colour, D-006).
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -87,12 +87,14 @@ void dot(Image& img, int cx, int cy) {
 Image render(const Config& config, const std::vector<HeatSample>& samples) {
   const RoomMask mask = build_room_mask(config);
   const HeatField field = compute_heat_field(config, mask, samples);
-  // Colour is resolved once per heat cell through the band's lookup table (ruling R11), then
+  // Colour is resolved once per heat cell through the band's ColourLut (D-022), then
   // blown up to blocks: this is the per-cell path the panel uses, without its smoothing.
-  const ColourTable table = make_colour_table(config.layer(Layer::Temperature).band);
+  const ColourLut lut = build_colour_lut(config.layer(Layer::Temperature).band);
   std::vector<Rgb888> cell_colour(field.cells.size());
   for (std::size_t i = 0; i < field.cells.size(); ++i) {
-    cell_colour[i] = from_rgb565(table.lookup(field.cells[i].value));
+    if (field.cells[i].state == CellState::Value) {
+      cell_colour[i] = from_rgb565(lut.lookup(field.cells[i].value));
+    }
   }
   Image img;
   img.width = config.canvas.map_area.width;
@@ -127,7 +129,8 @@ Image render(const Config& config, const std::vector<HeatSample>& samples) {
     }
   }
   for (const HeatSample& s : samples) {
-    dot(img, static_cast<int>(s.position.x * w), static_cast<int>(s.position.y * h));
+    dot(img, static_cast<int>(static_cast<double>(s.position.x) * w),
+        static_cast<int>(static_cast<double>(s.position.y) * h));
   }
   return img;
 }
@@ -226,9 +229,9 @@ int main(int argc, char** argv) {
   const Config config = fixtures::example_flat_config();
   std::vector<HeatSample> samples = fixtures::example_flat_temperatures();
   if (variant == "demo") {
-    samples.push_back({{0.04, 0.55}, 0, 16.0F});  // living room: cold corner by the balcony door
-    samples.push_back({{0.64, 0.04}, 1, 28.0F});  // kitchen: the oven corner
-    samples.erase(samples.begin() + 5);           // bedroom sensor gone: no data, not a guess
+    samples.push_back({{0.04F, 0.55F}, 0, 16.0F});  // living room: cold corner by the balcony door
+    samples.push_back({{0.64F, 0.04F}, 1, 28.0F});  // kitchen: the oven corner
+    samples.erase(samples.begin() + 5);             // bedroom sensor gone: no data, not a guess
   } else if (variant != "all-ok") {
     std::fprintf(stderr, "unknown variant: %s\n", variant.c_str());
     return 2;

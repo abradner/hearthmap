@@ -8,11 +8,11 @@
 //                       cell scans the sample list for its own room rather than using a
 //                       per-call grouping table: with tens of samples the comparison is cheaper
 //                       than the allocation a table would need, and the call then allocates
-//                       nothing once `out` has held a field this size (ruling R11).
+//                       nothing once `out` has held a field this size (D-022).
 // Interpolation is float (the ESP32-P4 has a single-precision FPU only). Iteration order is
 // fixed (cells row-major, samples in input order), so the same inputs give bit-identical output.
 // Powers 1..8 that are integers avoid powf (whose rounding differs between C libraries), and
-// core is built with -ffp-contract=off (D-017), so for those powers the output is also identical
+// core is built with -ffp-contract=off (D-024), so for those powers the output is also identical
 // across IEEE-754 platforms.
 #include "hearthmap/heat_field.h"
 
@@ -151,7 +151,7 @@ void compute_heat_field(const Config& config, const RoomMask& mask,
       const std::int16_t room = mask.room_index[at];
       HeatCell& cell = out.cells[at];
       // Outside: not in a room, a room this config lacks (mask from another config), or an
-      // outdoor room, which gets no heat colour (R10).
+      // outdoor room, which gets no heat colour (D-006).
       if (room < 0 || static_cast<std::size_t>(room) >= room_count) continue;
       if (config.rooms[static_cast<std::size_t>(room)].outdoor) continue;
       const float cx = ((static_cast<float>(c) + 0.5F) / cols) * width;
@@ -168,8 +168,8 @@ void compute_heat_field(const Config& config, const RoomMask& mask,
         if (!usable(s, room)) continue;
         if (!any) base = s.value;
         any = true;
-        const float dx = cx - static_cast<float>(s.position.x) * width;
-        const float dy = cy - static_cast<float>(s.position.y) * height;
+        const float dx = cx - s.position.x * width;
+        const float dy = cy - s.position.y * height;
         const float d2 = dx * dx + dy * dy;
         if (d2 < kCoincidentD2) {
           cell.value = s.value;

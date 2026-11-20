@@ -36,8 +36,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
       - name: Test
-        # core.unit fails on a zero-test-case run as well as on any failed assertion.
-        run: ctest --test-dir build --output-on-failure --no-tests=error
+        # core.unit fails on a zero-test-case run as well as on any failed assertion. -V prints
+        # doctest's summary line, so the log shows how many cases and assertions actually ran.
+        run: ctest --test-dir build -V --output-on-failure --no-tests=error
 
   schema:
     runs-on: ubuntu-latest

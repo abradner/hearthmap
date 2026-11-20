@@ -24,6 +24,19 @@ struct MapPoint {
   double y = 0.0;
 };
 
+/// A map-space point in single precision, for the per-frame heat-field path (docs/decisions.md
+/// D-022: the device has a single-precision FPU only). Configs store MapPoint; heat samples
+/// carry MapPointF.
+struct MapPointF {
+  float x = 0.0F;
+  float y = 0.0F;
+};
+
+/// MapPoint -> MapPointF, rounding to the nearest float.
+constexpr MapPointF to_float(MapPoint p) {
+  return MapPointF{static_cast<float>(p.x), static_cast<float>(p.y)};
+}
+
 /// A point in canvas pixels. Floating point so sub-pixel touch positions and cell centres are
 /// representable; the UI layer rounds when it draws.
 struct CanvasPoint {

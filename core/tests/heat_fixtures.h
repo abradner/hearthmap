@@ -51,13 +51,13 @@ inline Config example_flat_config() {
 /// that feeds the layer (soil and plant pins' temperatures are display-only, D-004).
 inline std::vector<HeatSample> example_flat_temperatures() {
   return {
-      {{0.2083, 0.3}, 0, 21.5},   // clim_living
-      {{0.5417, 0.2}, 1, 22.0},   // clim_kitchen
-      {{0.8333, 0.2}, 2, 20.5},   // clim_study
-      {{0.5, 0.5}, 3, 20.0},      // clim_hall
-      {{0.6875, 0.75}, 4, 22.5},  // hum_bathroom (temperature role)
-      {{0.8958, 0.75}, 5, 19.5},  // clim_bedroom
-      {{0.2083, 0.7}, 6, 9.0F},   // clim_balcony (outdoor: no heat colour, R10)
+      {{0.2083F, 0.3F}, 0, 21.5},   // clim_living
+      {{0.5417F, 0.2F}, 1, 22.0},   // clim_kitchen
+      {{0.8333F, 0.2F}, 2, 20.5},   // clim_study
+      {{0.5F, 0.5F}, 3, 20.0},      // clim_hall
+      {{0.6875F, 0.75F}, 4, 22.5},  // hum_bathroom (temperature role)
+      {{0.8958F, 0.75F}, 5, 19.5},  // clim_bedroom
+      {{0.2083F, 0.7F}, 6, 9.0F},   // clim_balcony (outdoor: no heat colour, D-006)
   };
 }
 
@@ -100,7 +100,8 @@ inline SyntheticHouse twenty_rooms_sixty_sensors(std::int32_t cols = 131, std::i
       for (int s = 0; s < 3; ++s) {
         const double x = x0 + (0.1 + 0.8 * rng.next()) * (x1 - x0);
         const double y = y0 + (0.1 + 0.8 * rng.next()) * (y1 - y0);
-        house.samples.push_back({{x, y}, index, static_cast<float>(15.0 + 15.0 * rng.next())});
+        house.samples.push_back(
+            {to_float(MapPoint{x, y}), index, static_cast<float>(15.0 + 15.0 * rng.next())});
       }
     }
   }

@@ -32,7 +32,7 @@ const Palette kSpec{};
 
 }  // namespace
 
-TEST_CASE("Palette defaults are the UI spec's heatmap colours (D-018)") {
+TEST_CASE("Palette defaults are the UI spec's heatmap colours (D-025)") {
   CHECK(same(kSpec.neutral, Rgb888{30, 35, 41}));
   CHECK(same(kSpec.cold, Rgb888{42, 120, 214}));
   CHECK(same(kSpec.hot, Rgb888{227, 73, 72}));
@@ -78,7 +78,7 @@ TEST_CASE("colour_for: values far outside the scale clamp to the end colours") {
   CHECK(same(colour_for(band, std::numeric_limits<double>::lowest()), kSpec.cold));
 }
 
-TEST_CASE("colour_for: a side with no gradient room stays neutral (R9)") {
+TEST_CASE("colour_for: a side with no gradient room stays neutral (D-021)") {
   Band band = spec_temperature_band();
   SUBCASE("scale_min == comfort_min: anything below is neutral") {
     band.scale_min = band.comfort_min;
@@ -135,47 +135,57 @@ TEST_CASE("colour565_for packs colour_for's result") {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ColourTable
+// ColourLut
 // ---------------------------------------------------------------------------------------------
 
-TEST_CASE("make_colour_table: entries sample colour565_for across the scale") {
+TEST_CASE("build_colour_lut: entries sample colour565_for across the scale") {
   const Band band = spec_temperature_band();
-  const ColourTable table = make_colour_table(band);
-  CHECK(table.entries.front() == to_rgb565(kSpec.cold));
-  CHECK(table.entries.back() == to_rgb565(kSpec.hot));
-  CHECK(table.neutral == to_rgb565(kSpec.neutral));
-  for (std::size_t i = 0; i < ColourTable::kEntries; ++i) {
-    const double v = 18.0 + static_cast<double>(i) * 9.5 / 255.0;
-    CHECK(table.entries[i] == colour565_for(band, v));
+  const ColourLut lut = build_colour_lut(band);
+  REQUIRE(lut.entries.size() == kDefaultColourLutSize);
+  CHECK(lut.lo == 18.0F);
+  CHECK(lut.hi == 27.5F);
+  CHECK(lut.entries.front() == to_rgb565(kSpec.cold));
+  CHECK(lut.entries.back() == to_rgb565(kSpec.hot));
+  for (std::size_t i = 0; i < lut.entries.size(); ++i) {
+    const double v = 18.0 + 9.5 * static_cast<double>(i) / 255.0;
+    CHECK(lut.entries[i] == colour565_for(band, v));
   }
 }
 
-TEST_CASE("ColourTable::lookup: exact comfort band, clamped ends, non-finite neutral") {
+TEST_CASE("build_colour_lut: a size below 2 is treated as 2") {
   const Band band = spec_temperature_band();
-  const ColourTable table = make_colour_table(band);
-  const Rgb565 neutral = to_rgb565(kSpec.neutral);
-  CHECK(table.lookup(21.5F) == neutral);
-  CHECK(table.lookup(23.5F) == neutral);
-  CHECK(table.lookup(22.0F) == neutral);
-  CHECK(table.lookup(18.0F) == to_rgb565(kSpec.cold));
-  CHECK(table.lookup(-1e30F) == to_rgb565(kSpec.cold));
-  CHECK(table.lookup(27.5F) == to_rgb565(kSpec.hot));
-  CHECK(table.lookup(1e30F) == to_rgb565(kSpec.hot));
-  CHECK(table.lookup(std::numeric_limits<float>::quiet_NaN()) == neutral);
-  CHECK(table.lookup(std::numeric_limits<float>::infinity()) == neutral);
-  CHECK(table.lookup(-std::numeric_limits<float>::infinity()) == neutral);
+  for (const std::size_t size : {std::size_t{0}, std::size_t{1}, std::size_t{2}}) {
+    const ColourLut lut = build_colour_lut(band, kSpec, size);
+    REQUIRE(lut.entries.size() == 2U);
+    CHECK(lut.entries[0] == to_rgb565(kSpec.cold));
+    CHECK(lut.entries[1] == to_rgb565(kSpec.hot));
+  }
 }
 
-TEST_CASE("ColourTable::lookup: within half a step of colour_for everywhere") {
-  // One table step moves each 8-bit channel by at most |far - neutral| / 255 * (span ratio);
-  // check the looked-up colour is never further from the exact one than the colours of the two
-  // neighbouring entries are from each other, plus one for 565 truncation.
+TEST_CASE("ColourLut::lookup: nearest entry, clamped, non-finite and empty give 0") {
   const Band band = spec_temperature_band();
-  const ColourTable table = make_colour_table(band);
+  const ColourLut lut = build_colour_lut(band);
+  CHECK(lut.lookup(18.0F) == lut.entries.front());
+  CHECK(lut.lookup(-1e30F) == lut.entries.front());
+  CHECK(lut.lookup(27.5F) == lut.entries.back());
+  CHECK(lut.lookup(1e30F) == lut.entries.back());
+  CHECK(lut.lookup(22.5F) == to_rgb565(kSpec.neutral));
+  // Round to nearest: a value 0.4 of a step above entry 10 is entry 10, 0.6 is entry 11.
+  const float step = 9.5F / 255.0F;
+  CHECK(lut.lookup(18.0F + 10.4F * step) == lut.entries[10]);
+  CHECK(lut.lookup(18.0F + 10.6F * step) == lut.entries[11]);
+  CHECK(lut.lookup(std::numeric_limits<float>::quiet_NaN()) == 0);
+  CHECK(lut.lookup(std::numeric_limits<float>::infinity()) == 0);
+  CHECK(ColourLut{}.lookup(20.0F) == 0);
+}
+
+TEST_CASE("ColourLut::lookup: within one 565 step per channel of colour565_for") {
+  const Band band = spec_temperature_band();
+  const ColourLut lut = build_colour_lut(band);
   int worst = 0;
   for (float v = 15.0F; v <= 30.0F; v += 0.01F) {
     const Rgb888 exact = from_rgb565(colour565_for(band, static_cast<double>(v)));
-    const Rgb888 got = from_rgb565(table.lookup(v));
+    const Rgb888 got = from_rgb565(lut.lookup(v));
     const int d = std::abs(exact.r - got.r) + std::abs(exact.g - got.g) + std::abs(exact.b - got.b);
     if (d > worst) worst = d;
   }
@@ -183,24 +193,22 @@ TEST_CASE("ColourTable::lookup: within half a step of colour_for everywhere") {
   CHECK(worst <= 24);  // three channels, at most one 565 step (8 levels) each
 }
 
-TEST_CASE("ColourTable::lookup: degenerate scale sides stay neutral like colour_for (R9)") {
+TEST_CASE("ColourLut: a degenerate scale saturates by side") {
   Band band = spec_temperature_band();
-  band.scale_min = band.comfort_min;
-  const ColourTable table = make_colour_table(band);
-  CHECK(table.lookup(10.0F) == to_rgb565(kSpec.neutral));
-  CHECK(table.lookup(27.5F) == to_rgb565(kSpec.hot));
+  band.scale_max = band.scale_min;
+  const ColourLut lut = build_colour_lut(band, kSpec, 4);
+  CHECK(lut.lookup(10.0F) == lut.entries.front());
+  CHECK(lut.lookup(18.0F) == lut.entries.front());
+  CHECK(lut.lookup(18.5F) == lut.entries.back());
 }
 
-TEST_CASE("ColourTable::lookup: the comfort band is not quantised into a coloured entry") {
-  // Entries are 1.0 apart; comfort_max = 254.6 lies 0.4 below the last entry, which is full
-  // hot. Rounding to the nearest entry alone would paint a comfortable value hot.
-  Band band;
-  band.scale_min = 0.0;
-  band.comfort_min = 0.0;
-  band.comfort_max = 254.6;
-  band.scale_max = 255.0;
-  const ColourTable table = make_colour_table(band);
-  REQUIRE(table.entries.back() == to_rgb565(kSpec.hot));
-  CHECK(table.lookup(254.6F) == to_rgb565(kSpec.neutral));
-  CHECK(table.lookup(254.9F) == to_rgb565(kSpec.hot));
+TEST_CASE("build_colour_lut: the reuse form keeps its storage") {
+  const Band band = spec_temperature_band();
+  ColourLut lut;
+  build_colour_lut(band, kSpec, 256, lut);
+  const Rgb565* storage = lut.entries.data();
+  build_colour_lut(default_band(Layer::Humidity), kSpec, 256, lut);
+  CHECK(lut.entries.data() == storage);
+  CHECK(lut.lo == 15.0F);
+  CHECK(lut.entries.front() == colour565_for(default_band(Layer::Humidity), 15.0));
 }

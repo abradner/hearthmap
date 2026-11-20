@@ -17,7 +17,7 @@ using namespace hearthmap;
 using fixtures::rect_room;
 
 // Counts every allocation in this test binary, so the "no allocation once warm" contract
-// (ruling R11) is checked against operator new itself rather than against capacity().
+// (D-022) is checked against operator new itself rather than against capacity().
 namespace {
 std::size_t g_allocations = 0;
 }  // namespace
@@ -81,9 +81,12 @@ HeatField reference_field(const Config& config, const RoomMask& mask,
       bool any = false;
       bool exact = false;
       for (const HeatSample& s : samples) {
-        if (s.room_index != room || !std::isfinite(s.value)) continue;
+        if (s.room_index != room || !std::isfinite(s.value) || !std::isfinite(s.position.x) ||
+            !std::isfinite(s.position.y))
+          continue;
         any = true;
-        const double d = std::hypot(cx - s.position.x * w, cy - s.position.y * h);
+        const double d = std::hypot(cx - static_cast<double>(s.position.x) * w,
+                                    cy - static_cast<double>(s.position.y) * h);
         if (d < 0.5) {
           out.value = s.value;
           exact = true;
@@ -121,6 +124,20 @@ void check_matches_reference(const HeatField& got, const HeatField& want) {
     }
   }
   CHECK(mismatches == 0);
+}
+
+// Bit-for-bit equality of every cell's state and float value. Not memcmp over HeatCell: the
+// struct has padding after `state`, whose bytes are indeterminate and carry no meaning.
+bool same_bits(const HeatField& a, const HeatField& b) {
+  if (a.cols != b.cols || a.rows != b.rows || a.cells.size() != b.cells.size()) return false;
+  for (std::size_t i = 0; i < a.cells.size(); ++i) {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::memcpy(&x, &a.cells[i].value, sizeof x);
+    std::memcpy(&y, &b.cells[i].value, sizeof y);
+    if (a.cells[i].state != b.cells[i].state || x != y) return false;
+  }
+  return true;
 }
 
 std::uint64_t fnv1a(const HeatField& field) {
@@ -247,7 +264,7 @@ TEST_CASE("build_room_mask: rooms past the int16 range are never assigned") {
 TEST_CASE("compute_heat_field: a single sample gives its room a flat field") {
   const Config config = two_rooms();
   const RoomMask mask = build_room_mask(config);
-  const HeatField field = compute_heat_field(config, mask, {{{0.2, 0.3}, 0, 21.5}});
+  const HeatField field = compute_heat_field(config, mask, {{{0.2F, 0.3F}, 0, 21.5}});
   REQUIRE(field.cols == 10);
   REQUIRE(field.rows == 10);
   for (std::int32_t r = 0; r < 10; ++r) {
@@ -267,7 +284,7 @@ TEST_CASE("compute_heat_field: a room with no sample is NoData, never a neighbou
   Config config = two_rooms();
   config.rooms.push_back(rect_room("empty", 0.0, 0.0, 0.0, 0.0));  // claims nothing either
   const RoomMask mask = build_room_mask(config);
-  const HeatField field = compute_heat_field(config, mask, {{{0.75, 0.5}, 1, 30.0}});
+  const HeatField field = compute_heat_field(config, mask, {{{0.75F, 0.5F}, 1, 30.0}});
   for (std::int32_t r = 0; r < 10; ++r) {
     for (std::int32_t c = 0; c < 5; ++c) {
       CHECK(cell_at(field, c, r).state == CellState::NoData);
@@ -281,7 +298,7 @@ TEST_CASE("compute_heat_field: cells outside every room stay Outside") {
   config.rooms[1].polygon = {{0.5, 0.0}, {1.0, 0.0}, {1.0, 0.5}, {0.5, 0.5}};
   const RoomMask mask = build_room_mask(config);
   const HeatField field =
-      compute_heat_field(config, mask, {{{0.25, 0.5}, 0, 20.0}, {{0.75, 0.25}, 1, 25.0}});
+      compute_heat_field(config, mask, {{{0.25F, 0.5F}, 0, 20.0}, {{0.75F, 0.25F}, 1, 25.0}});
   CHECK(cell_at(field, 7, 7).state == CellState::Outside);
   CHECK(cell_at(field, 7, 2).state == CellState::Value);
   CHECK(cell_at(field, 2, 7).state == CellState::Value);
@@ -294,7 +311,7 @@ TEST_CASE("compute_heat_field: interpolation never crosses a room boundary") {
   const Config config = two_rooms();
   const RoomMask mask = build_room_mask(config);
   const std::vector<HeatSample> samples{
-      {{0.1, 0.1}, 0, 10.0}, {{0.1, 0.9}, 0, 20.0}, {{0.5, 0.5}, 1, 1000.0}};
+      {{0.1F, 0.1F}, 0, 10.0}, {{0.1F, 0.9F}, 0, 20.0}, {{0.5F, 0.5F}, 1, 1000.0}};
   const HeatField field = compute_heat_field(config, mask, samples);
   for (std::int32_t r = 0; r < 10; ++r) {
     for (std::int32_t c = 0; c < 5; ++c) {
@@ -319,7 +336,7 @@ TEST_CASE("compute_heat_field: matches the reference on the example flat at seve
   const auto samples = fixtures::example_flat_temperatures();
   // Add a second living-room sensor so there is a gradient for the power to shape.
   auto two = samples;
-  two.push_back({{0.05, 0.55}, 0, 17.0});
+  two.push_back({{0.05F, 0.55F}, 0, 17.0});
   for (const double power : {1.0, 2.0, 3.0, 2.5, 8.0, 0.5}) {
     CAPTURE(power);
     config.heat.idw_power = power;
@@ -340,7 +357,7 @@ TEST_CASE("compute_heat_field: weights use canvas pixels, not map units") {
   config.heat.idw_power = 2.0;
   const RoomMask mask = build_room_mask(config);
   const HeatField field =
-      compute_heat_field(config, mask, {{{0.4, 0.5}, 0, 0.0}, {{0.5, 0.4}, 0, 100.0}});
+      compute_heat_field(config, mask, {{{0.4F, 0.5F}, 0, 0.0}, {{0.5F, 0.4F}, 0, 100.0}});
   // w_x = 1/400, w_y = 1/100: value = 100 * (1/100) / (1/400 + 1/100) = 80. Map units would
   // weight them equally and give 50.
   REQUIRE(field.cells.size() == 1U);
@@ -355,7 +372,7 @@ TEST_CASE("compute_heat_field: a 1 x 1 grid") {
   const RoomMask mask = build_room_mask(config);
   // The single cell belongs to room B (shared-wall rule); only B's samples count.
   const HeatField field =
-      compute_heat_field(config, mask, {{{0.25, 0.5}, 0, 5.0}, {{0.75, 0.5}, 1, 7.0}});
+      compute_heat_field(config, mask, {{{0.25F, 0.5F}, 0, 5.0}, {{0.75F, 0.5F}, 1, 7.0}});
   REQUIRE(field.cells.size() == 1U);
   CHECK(field.cells[0].state == CellState::Value);
   CHECK(field.cells[0].value == 7.0F);
@@ -369,13 +386,13 @@ TEST_CASE("compute_heat_field: a sample within half a pixel of a cell centre set
   config.heat.grid_cols = 1;
   config.heat.grid_rows = 1;
   const RoomMask mask = build_room_mask(config);
-  const HeatSample far{{0.0, 0.0}, 0, 100.0};
+  const HeatSample far{{0.0F, 0.0F}, 0, 100.0};
   SUBCASE("d = 0.4 px: coincident, the other sample has no say") {
-    const HeatField field = compute_heat_field(config, mask, {far, {{0.7, 0.5}, 0, 3.0}});
+    const HeatField field = compute_heat_field(config, mask, {far, {{0.7F, 0.5F}, 0, 3.0}});
     CHECK(field.cells[0].value == 3.0F);
   }
   SUBCASE("d = 0.5 px exactly: not coincident (strictly less than), so it blends") {
-    const HeatField field = compute_heat_field(config, mask, {far, {{0.75, 0.5}, 0, 3.0}});
+    const HeatField field = compute_heat_field(config, mask, {far, {{0.75F, 0.5F}, 0, 3.0}});
     // d^2 = 0.25 and 2 against the far sample: (3/0.25 + 100/2) / (1/0.25 + 1/2) = 62/4.5.
     CHECK(field.cells[0].value == doctest::Approx(62.0 / 4.5).epsilon(1e-6));
   }
@@ -385,7 +402,7 @@ TEST_CASE("compute_heat_field: coincident sensors") {
   // Two sensors at the same spot, exactly on the centre of cell (2, 2) of room A.
   const Config config = two_rooms();
   const RoomMask mask = build_room_mask(config);
-  const std::vector<HeatSample> samples{{{0.25, 0.25}, 0, 10.0}, {{0.25, 0.25}, 0, 20.0}};
+  const std::vector<HeatSample> samples{{{0.25F, 0.25F}, 0, 10.0}, {{0.25F, 0.25F}, 0, 20.0}};
   const HeatField field = compute_heat_field(config, mask, samples);
   // On the spot: the first in input order wins outright, no average.
   CHECK(cell_at(field, 2, 2).value == 10.0F);
@@ -402,12 +419,12 @@ TEST_CASE("compute_heat_field: a sensor exactly on a wall feeds only the room it
   const Config config = two_rooms();
   const RoomMask mask = build_room_mask(config);
   SUBCASE("named for A: A gets its value, B has no data") {
-    const HeatField field = compute_heat_field(config, mask, {{{0.5, 0.5}, 0, 12.0}});
+    const HeatField field = compute_heat_field(config, mask, {{{0.5F, 0.5F}, 0, 12.0}});
     CHECK(cell_at(field, 4, 5).value == 12.0F);
     CHECK(cell_at(field, 5, 5).state == CellState::NoData);
   }
   SUBCASE("named for B: the reverse") {
-    const HeatField field = compute_heat_field(config, mask, {{{0.5, 0.5}, 1, 12.0}});
+    const HeatField field = compute_heat_field(config, mask, {{{0.5F, 0.5F}, 1, 12.0}});
     CHECK(cell_at(field, 4, 5).state == CellState::NoData);
     CHECK(cell_at(field, 5, 5).value == 12.0F);
   }
@@ -420,14 +437,14 @@ TEST_CASE("compute_heat_field: sensors outside every room") {
   SUBCASE("position outside every polygon, but named for B: it still feeds B") {
     // room_index is the pin's declared room, which is authoritative (validate() warns about the
     // position, it does not reassign the pin).
-    const HeatField field = compute_heat_field(config, mask, {{{0.75, 0.9}, 1, 8.0}});
+    const HeatField field = compute_heat_field(config, mask, {{{0.75F, 0.9F}, 1, 8.0}});
     CHECK(cell_at(field, 7, 2).value == 8.0F);
     CHECK(cell_at(field, 7, 7).state == CellState::Outside);
     CHECK(cell_at(field, 2, 2).state == CellState::NoData);
   }
   SUBCASE("room_index kOutside: ignored everywhere") {
     const HeatField field =
-        compute_heat_field(config, mask, {{{0.75, 0.9}, RoomMask::kOutside, 8.0}});
+        compute_heat_field(config, mask, {{{0.75F, 0.9F}, RoomMask::kOutside, 8.0}});
     CHECK(cell_at(field, 7, 2).state == CellState::NoData);
     CHECK(cell_at(field, 2, 2).state == CellState::NoData);
   }
@@ -436,28 +453,28 @@ TEST_CASE("compute_heat_field: sensors outside every room") {
 TEST_CASE("compute_heat_field: unusable samples are ignored, leaving NoData") {
   const Config config = two_rooms();
   const RoomMask mask = build_room_mask(config);
-  const double nan = std::numeric_limits<double>::quiet_NaN();
-  const double inf = std::numeric_limits<double>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
   SUBCASE("room index past the end of config.rooms") {
-    const HeatField field = compute_heat_field(config, mask, {{{0.25, 0.5}, 2, 5.0}});
+    const HeatField field = compute_heat_field(config, mask, {{{0.25F, 0.5F}, 2, 5.0}});
     CHECK(cell_at(field, 2, 5).state == CellState::NoData);
   }
   SUBCASE("negative room index other than kOutside") {
-    const HeatField field = compute_heat_field(config, mask, {{{0.25, 0.5}, -7, 5.0}});
+    const HeatField field = compute_heat_field(config, mask, {{{0.25F, 0.5F}, -7, 5.0}});
     CHECK(cell_at(field, 2, 5).state == CellState::NoData);
   }
   SUBCASE("NaN value") {
     const HeatField field = compute_heat_field(
-        config, mask, {{{0.25, 0.5}, 0, std::numeric_limits<float>::quiet_NaN()}});
+        config, mask, {{{0.25F, 0.5F}, 0, std::numeric_limits<float>::quiet_NaN()}});
     CHECK(cell_at(field, 2, 5).state == CellState::NoData);
   }
   SUBCASE("infinite position") {
-    const HeatField field = compute_heat_field(config, mask, {{{inf, 0.5}, 0, 5.0}});
+    const HeatField field = compute_heat_field(config, mask, {{{inf, 0.5F}, 0, 5.0F}});
     CHECK(cell_at(field, 2, 5).state == CellState::NoData);
   }
   SUBCASE("NaN y position, next to a good sample: only the good one counts") {
     const HeatField field =
-        compute_heat_field(config, mask, {{{0.25, nan}, 0, 99.0}, {{0.25, 0.5}, 0, 5.0}});
+        compute_heat_field(config, mask, {{{0.25F, nan}, 0, 99.0F}, {{0.25F, 0.5F}, 0, 5.0}});
     CHECK(cell_at(field, 2, 5).value == 5.0F);
     CHECK(cell_at(field, 0, 0).value == 5.0F);
   }
@@ -475,7 +492,7 @@ TEST_CASE("compute_heat_field: a mask that is not a mask gives an empty field") 
   SUBCASE("negative rows") {
     mask.rows = -1;
   }
-  const HeatField field = compute_heat_field(config, mask, {{{0.25, 0.5}, 0, 5.0}});
+  const HeatField field = compute_heat_field(config, mask, {{{0.25F, 0.5F}, 0, 5.0}});
   CHECK(field.cols == 0);
   CHECK(field.rows == 0);
   CHECK(field.cells.empty());
@@ -486,7 +503,7 @@ TEST_CASE("compute_heat_field: a mask cell naming a room the config lacks is Out
   RoomMask mask = build_room_mask(config);
   mask.room_index[mask.index(7, 7)] = 5;  // from some other, larger config
   const HeatField field =
-      compute_heat_field(config, mask, {{{0.25, 0.5}, 0, 5.0}, {{0.75, 0.5}, 1, 6.0}});
+      compute_heat_field(config, mask, {{{0.25F, 0.5F}, 0, 5.0}, {{0.75F, 0.5F}, 1, 6.0}});
   CHECK(cell_at(field, 7, 7).state == CellState::Outside);
   CHECK(cell_at(field, 6, 7).value == 6.0F);
 }
@@ -497,18 +514,16 @@ TEST_CASE("compute_heat_field: no samples at all") {
   for (const HeatCell& cell : field.cells) CHECK(cell.state == CellState::NoData);
 }
 
-TEST_CASE("compute_heat_field: same inputs give byte-identical fields") {
+TEST_CASE("compute_heat_field: same inputs give bit-identical fields") {
   const auto house = fixtures::twenty_rooms_sixty_sensors();
   const RoomMask mask = build_room_mask(house.config);
   const HeatField first = compute_heat_field(house.config, mask, house.samples);
   const HeatField second =
       compute_heat_field(house.config, build_room_mask(house.config), house.samples);
-  REQUIRE(first.cells.size() == second.cells.size());
-  CHECK(std::memcmp(first.cells.data(), second.cells.data(),
-                    first.cells.size() * sizeof(HeatCell)) == 0);
+  CHECK(same_bits(first, second));
 }
 
-TEST_CASE("compute_heat_field: outdoor rooms get no heat colour (R10)") {
+TEST_CASE("compute_heat_field: outdoor rooms get no heat colour (D-006)") {
   Config config = two_rooms();
   config.rooms[1].outdoor = true;
   const RoomMask mask = build_room_mask(config);
@@ -516,7 +531,7 @@ TEST_CASE("compute_heat_field: outdoor rooms get no heat colour (R10)") {
   CHECK(mask.room_index[mask.index(7, 5)] == 1);
   // ... but the field leaves it uncoloured, sample or not, and A is unaffected.
   const HeatField field =
-      compute_heat_field(config, mask, {{{0.25, 0.5}, 0, 20.0F}, {{0.75, 0.5}, 1, 5.0F}});
+      compute_heat_field(config, mask, {{{0.25F, 0.5F}, 0, 20.0F}, {{0.75F, 0.5F}, 1, 5.0F}});
   for (std::int32_t r = 0; r < 10; ++r) {
     for (std::int32_t c = 0; c < 5; ++c) CHECK(cell_at(field, c, r).value == 20.0F);
     for (std::int32_t c = 5; c < 10; ++c) CHECK(cell_at(field, c, r).state == CellState::Outside);
@@ -536,7 +551,7 @@ TEST_CASE("compute_heat_field: the example flat's balcony is Outside, the flat i
   }
 }
 
-TEST_CASE("reuse forms allocate nothing once warm (R11)") {
+TEST_CASE("reuse forms allocate nothing once warm (D-022)") {
   const auto house = fixtures::twenty_rooms_sixty_sensors();
   RoomMask mask;
   HeatField field;
@@ -569,19 +584,17 @@ TEST_CASE("reuse forms give the same result as the returning forms") {
   field.cells.assign(9000, HeatCell{CellState::Value, 1.0F});  // stale contents
   compute_heat_field(house.config, mask, house.samples, field);
   const HeatField fresh = compute_heat_field(house.config, mask, house.samples);
-  REQUIRE(field.cells.size() == fresh.cells.size());
-  CHECK(std::memcmp(field.cells.data(), fresh.cells.data(),
-                    field.cells.size() * sizeof(HeatCell)) == 0);
+  CHECK(same_bits(field, fresh));
 }
 
 TEST_CASE("reuse forms clear stale output on refusal") {
   Config config = two_rooms();
   RoomMask mask = build_room_mask(config);
-  HeatField field = compute_heat_field(config, mask, {{{0.25, 0.5}, 0, 5.0F}});
+  HeatField field = compute_heat_field(config, mask, {{{0.25F, 0.5F}, 0, 5.0F}});
   REQUIRE_FALSE(field.cells.empty());
   RoomMask broken = mask;
   broken.room_index.pop_back();
-  compute_heat_field(config, broken, {{{0.25, 0.5}, 0, 5.0F}}, field);
+  compute_heat_field(config, broken, {{{0.25F, 0.5F}, 0, 5.0F}}, field);
   CHECK(field.cols == 0);
   CHECK(field.cells.empty());
   config.heat.grid_cols = 0;
@@ -593,11 +606,11 @@ TEST_CASE("reuse forms clear stale output on refusal") {
 
 TEST_CASE("compute_heat_field: the example flat's field is the same on every platform") {
   // Golden hash over every cell's state and float bits. Integer powers use no libm call beyond
-  // sqrtf, and core is built with -ffp-contract=off (D-017), so GCC and Clang on any IEEE-754
+  // sqrtf, and core is built with -ffp-contract=off (D-024), so GCC and Clang on any IEEE-754
   // platform must agree. A change here means golden images change too: say why in the PR.
   Config config = fixtures::example_flat_config();
   auto samples = fixtures::example_flat_temperatures();
-  samples.push_back({{0.05, 0.55}, 0, 17.0F});  // a gradient in the living room
+  samples.push_back({{0.05F, 0.55F}, 0, 17.0F});  // a gradient in the living room
   const RoomMask mask = build_room_mask(config);
   CHECK(fnv1a(compute_heat_field(config, mask, samples)) == 0x2c0702a208c05dfdULL);
   config.heat.idw_power = 3.0;
