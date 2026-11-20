@@ -6,10 +6,10 @@
     "height": 800,
     "orientation": "landscape",
     "map_area": {
-      "x": 0,
-      "y": 0,
-      "width": 960,
-      "height": 800
+      "x": 40,
+      "y": 76,
+      "width": 864,
+      "height": 720
     }
   },
   "temperature_unit": "C",

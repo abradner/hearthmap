@@ -6,8 +6,9 @@ and never here (`AGENTS.md` §4).
 
 ## `flat/`: a six-room flat with a balcony
 
-`flat/config.json` is a fictional flat on a 12 x 10 grid (map area 960 x 800 px, so one grid unit
-is 80 px in both directions and map distances are undistorted):
+`flat/config.json` is a fictional flat on a 12 x 10 grid (map area 864 x 720 px at x 40, y 76,
+the map region of the UI spec below the 64 px top bar, so one grid unit is 72 px in both
+directions and map distances are undistorted):
 
 ```
 x: 0          5     8          12
