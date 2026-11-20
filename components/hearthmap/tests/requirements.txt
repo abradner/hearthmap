@@ -1,5 +1,16 @@
+# Test dependencies of the ESPHome component, every package pinned, transitive ones included, so
+# a fresh install resolves to exactly this set (CI runs Python 3.13; resolved in a clean venv).
+# Versions only, no hashes yet (an open issue).
 pytest==9.2.0
+iniconfig==2.3.1      # pytest
+packaging==26.3       # pytest
+pluggy==1.7.0         # pytest
+Pygments==2.21.0      # pytest
 # The version in ghcr.io/esphome/esphome:2026.11.0, which runs the photo conversion on a real build.
 pillow==13.0.0
 # Reference validator the build-time checker is compared against (same pin as schema/).
 jsonschema==4.23.0
+attrs==26.1.0                      # jsonschema, referencing
+jsonschema-specifications==2025.9.1  # jsonschema
+referencing==0.37.0                # jsonschema
+rpds-py==2026.9.1                  # jsonschema, referencing
