@@ -10,6 +10,7 @@ add_executable(hearthmap_core_tests
   geometry_test.cpp
   heat_field_test.cpp
   pipeline_test.cpp
+  room_scanner_test.cpp
   severity_test.cpp
   view_model_test.cpp
   support/flat_fixture.cpp

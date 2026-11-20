@@ -189,6 +189,14 @@ bool on_segment(MapPoint a, MapPoint b, MapPoint p) {
 
 // Closed segments ab and cd share at least one point.
 bool segments_touch(MapPoint a, MapPoint b, MapPoint c, MapPoint d) {
+  // A shared point lies in both bounding boxes, so disjoint boxes settle it with comparisons
+  // only. Exact (no arithmetic), and it skips the four cross products for almost every pair of
+  // edges, which is most of validate()'s cost on a chip without double-precision hardware
+  // (docs/decisions.md D-038). NaN coordinates never reach here (is_simple() rejects them).
+  if (std::fmax(a.x, b.x) < std::fmin(c.x, d.x) || std::fmax(c.x, d.x) < std::fmin(a.x, b.x) ||
+      std::fmax(a.y, b.y) < std::fmin(c.y, d.y) || std::fmax(c.y, d.y) < std::fmin(a.y, b.y)) {
+    return false;
+  }
   const int o1 = orientation(a, b, c);
   const int o2 = orientation(a, b, d);
   const int o3 = orientation(c, d, a);

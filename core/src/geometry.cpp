@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <limits>
 
+#include "polygon_edges.h"
+
 namespace hearthmap {
 
 namespace {
@@ -14,15 +16,16 @@ namespace {
 // The edge is canonicalised (lower y first, then lower x) before the intersection is computed,
 // so the two rooms that share an edge evaluate exactly the same floating-point expression for
 // it, whichever direction each polygon walks it. Without this, a point within one rounding error
-// of a shared diagonal wall could be claimed by both rooms or by neither.
+// of a shared diagonal wall could be claimed by both rooms or by neither. The arithmetic lives in
+// polygon_edges.h, shared with RoomScanner.
 bool crosses(MapPoint u, MapPoint v, MapPoint p) {
-  if ((u.y > p.y) == (v.y > p.y)) return false;  // also excludes horizontal edges
-  const bool swap = (v.y < u.y) || (v.y == u.y && v.x < u.x);
-  const MapPoint a = swap ? v : u;
-  const MapPoint b = swap ? u : v;
-  const double x_at_p = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
-  return p.x < x_at_p;
+  if (!detail::spans(u, v, p.y)) return false;  // also excludes horizontal edges
+  return p.x < detail::crossing_x(detail::canonical_edge(u, v), p.y);
 }
+
+}  // namespace
+
+namespace detail {
 
 // True when every vertex lies on one line (zero area). The line runs from vertex 0 to the vertex
 // farthest from it; a vertex is off the line when its cross product with that direction is
@@ -58,7 +61,7 @@ bool collinear(const Polygon& polygon) {
   return true;
 }
 
-}  // namespace
+}  // namespace detail
 
 // O(n) in the vertex count. Fewer than three vertices encloses nothing, so it is never inside;
 // a zero-area polygon (all vertices collinear) is rejected explicitly before counting, because
@@ -66,7 +69,7 @@ bool collinear(const Polygon& polygon) {
 // NaN coordinates compare false everywhere and come out outside.
 bool point_in_polygon(const Polygon& polygon, MapPoint p) {
   const std::size_t n = polygon.size();
-  if (n < 3 || collinear(polygon)) return false;
+  if (n < 3 || detail::collinear(polygon)) return false;
   bool inside = false;
   for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
     if (crosses(polygon[j], polygon[i], p)) inside = !inside;
