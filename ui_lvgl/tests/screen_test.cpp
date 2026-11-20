@@ -820,9 +820,6 @@ struct DevicePhotos : ImageProvider {
     return it == by_size.end() ? nullptr : &it->second.dsc;
   }
 };
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
 // Draw the small config with `photos` and return the framebuffer pixel at the fern pin's centre.
 // Counts LVGL's "format not enabled" warnings into g_not_enabled while it draws.
@@ -860,6 +857,9 @@ std::uint16_t fern_centre_pixel(const ImageProvider& photos) {
   lv_log_register_print_cb(nullptr);
   return px;
 }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 }  // namespace
 
