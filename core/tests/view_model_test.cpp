@@ -467,7 +467,7 @@ TEST_CASE("heat_samples: one per fresh feeding binding, with room index and valu
   // Temperature feeders: 7 climate pins (hum_bathroom's temperature counts); plants' do not.
   CHECK(temp.size() == 7);
   CHECK(temp[0].room_index == room_index(c, "living"));
-  CHECK(temp[0].value == doctest::Approx(21.5));
+  CHECK(temp[0].value == 21.5F);  // exact in float
 
   const auto stale = heat_samples(c, flat_stale_sensors(), kFlatNow, Layer::Temperature);
   CHECK(stale.size() == 5);  // kitchen and study too old
@@ -565,7 +565,7 @@ TEST_CASE("heat_samples into a reused vector clears it first") {
   CHECK(out.size() == 2);
   heat_samples(c, flat_all_ok(), kFlatNow, Layer::Air, out);
   CHECK(out.size() == 2);
-  CHECK(out[0].value == doctest::Approx(620.0F));
+  CHECK(out[0].value == 620.0F);  // exact in float
 }
 
 TEST_CASE("disabled soil layer: plants unjudged on their pins, HUD still lists them (D-020)") {
