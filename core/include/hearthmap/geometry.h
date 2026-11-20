@@ -82,8 +82,11 @@ inline bool contains(const CanvasRect& r, CanvasPoint p) {
 /// canonical vertex order, so two polygons that share an edge (the same two vertices, walked in
 /// either direction) compute bit-identical crossings for it: a point on a shared diagonal wall
 /// goes to exactly one of them. (An edge split at different vertices in the two polygons gets no
-/// such guarantee.) Fewer than three vertices,
-/// or zero area: never inside. Implemented in core (PR 3).
+/// such guarantee.) Fewer than three vertices, or zero area: never inside. Zero area is
+/// detected explicitly before crossings are counted (collinear edges can round to an odd
+/// count): all vertices on one line, within a tolerance of a few ulps of the coordinates'
+/// magnitude, so collinear input rounded to doubles still counts as collinear while a real
+/// sliver (1e-6 thick in map space) does not. Implemented in core (PR 3).
 bool point_in_polygon(const Polygon& polygon, MapPoint p);
 
 }  // namespace hearthmap

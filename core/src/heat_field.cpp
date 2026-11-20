@@ -63,6 +63,10 @@ class InverseDistance {
 // (heat_field.h: d < 0.5 pixel).
 constexpr float kCoincidentD2 = 0.25F;
 
+// Scaling for the weighted mean's accumulation (see compute_heat_field): powers of two, exact.
+constexpr float kScale = 0x1p-20F;
+constexpr float kUnscale = 0x1p20F;
+
 bool usable(const HeatSample& s, std::int16_t room) {
   return s.room_index == room && std::isfinite(s.position.x) && std::isfinite(s.position.y) &&
          std::isfinite(s.value);
@@ -155,18 +159,30 @@ void compute_heat_field(const Config& config, const RoomMask& mask,
       if (room < 0 || static_cast<std::size_t>(room) >= room_count) continue;
       if (config.rooms[static_cast<std::size_t>(room)].outdoor) continue;
       const float cx = ((static_cast<float>(c) + 0.5F) / cols) * width;
-      // Accumulated relative to the room's first sample value: sum(w * (v - base)) / sum(w) +
-      // base is the same weighted mean, but a single sample (or several equal ones) gives its
-      // value exactly rather than w * v / w, which float rounding can move by an ulp; centring
-      // also keeps more of float's precision for the differences that matter.
+      // The weighted mean is accumulated relative to the room's first usable sample and in a
+      // scaled space: base + sum(w * (v - base)) / sum(w), with every value multiplied by
+      // kScale = 2^-20 first.
+      // - Relative to base: a single sample gives its value exactly, not w * v / w.
+      // - Scaled: v - base cannot overflow for finite samples (|v*kScale - base*kScale| is far
+      //   below FLT_MAX, and w <= 2^8 since d >= 0.5 px at power <= 8), so the sum stays
+      //   finite for fewer than 2^11 samples in a room (a config holds at most 256 pins).
+      //   Multiplying by a power of two is exact for normal floats, so for ordinary values the
+      //   result is bit-identical to the unscaled sum.
+      // A cell whose result still is not finite (every weight underflowed to 0 on an absurd
+      // map area, giving 0/0) is NoData, never a garbage Value.
       float base = 0.0F;
+      float base_scaled = 0.0F;
       float weighted = 0.0F;
       float total = 0.0F;
+      int contributors = 0;
       bool any = false;
       bool coincident = false;
       for (const HeatSample& s : samples) {
         if (!usable(s, room)) continue;
-        if (!any) base = s.value;
+        if (!any) {
+          base = s.value;
+          base_scaled = s.value * kScale;
+        }
         any = true;
         const float dx = cx - s.position.x * width;
         const float dy = cy - s.position.y * height;
@@ -177,15 +193,27 @@ void compute_heat_field(const Config& config, const RoomMask& mask,
           break;  // the first coincident sample in input order wins
         }
         const float w = idw.weight(d2);
-        weighted += w * (s.value - base);
+        weighted += w * (s.value * kScale - base_scaled);
         total += w;
+        ++contributors;
       }
       if (!any) {
         cell.state = CellState::NoData;
         continue;
       }
+      if (coincident) {
+        cell.state = CellState::Value;
+        continue;
+      }
+      // One contributor: its value exactly (base * kScale / kScale would lose a subnormal's
+      // low bits).
+      const float value = contributors == 1 ? base : (base_scaled + weighted / total) * kUnscale;
+      if (!std::isfinite(value)) {
+        cell.state = CellState::NoData;
+        continue;
+      }
       cell.state = CellState::Value;
-      if (!coincident) cell.value = base + weighted / total;
+      cell.value = value;
     }
   }
 }
