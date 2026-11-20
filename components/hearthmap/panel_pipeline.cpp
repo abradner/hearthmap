@@ -186,13 +186,14 @@ bool PanelPipeline::heat_step(std::int32_t rows, std::uint32_t mono_ms) {
       return true;
     }
     hm::ui::colour_cells(field_, luts_[hm::index_of(job_layer_)], cell_colours_);
+    prepared_ = raster_->prepare(field_, cell_colours_);  // once per image, not per slice
     image_row_ = 0;
     return false;
   }
   const std::int32_t height = raster_->height();
   if (image_row_ < height) {
     const std::int32_t end = image_row_ + rows * kImageRowsPerFieldRow;
-    raster_->render_rows(field_, cell_colours_, back_, image_row_, end);
+    raster_->render_rows(prepared_, field_, cell_colours_, back_, image_row_, end);
     image_row_ = end < height ? end : height;
     if (image_row_ < height) return false;
   }

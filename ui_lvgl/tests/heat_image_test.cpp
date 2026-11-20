@@ -211,3 +211,45 @@ TEST_CASE("a measured room's narrow extension is coloured, not striped") {
   CHECK(at(img, r, 400, 10) == red);  // top of the chimney, four cells from the base
   CHECK(at(img, r, 400, 700) == red);
 }
+
+TEST_CASE("rows rendered in slices from one prepare() equal render(), fallback cells included") {
+  // The device prepares once per image and renders eight rows per step (F5 of the follow-up
+  // review): the result must be exactly render()'s, including pixels that need a room's first
+  // Value cell (the chimney below), which is what prepare() precomputes.
+  Config c;
+  c.canvas.map_area = CanvasRect{0, 0, 800, 800};
+  c.heat.grid_cols = 8;
+  c.heat.grid_rows = 8;
+  c.rooms = {Room{"a",
+                  "A",
+                  {{0.45, 0.0},
+                   {0.55, 0.0},
+                   {0.55, 0.5},
+                   {1.0, 0.5},
+                   {1.0, 1.0},
+                   {0.0, 1.0},
+                   {0.0, 0.5},
+                   {0.45, 0.5}},
+                  false}};
+  HeatRasterizer r(c);
+  Built b = uniform(c, {c565(0xE34948)});
+  std::vector<Rgb565> whole(r.pixel_count(), 0);
+  r.render(b.field, b.colours, whole.data());
+  std::vector<Rgb565> sliced(r.pixel_count(), 1);
+  const HeatRasterizer::Prepared p = r.prepare(b.field, b.colours);
+  CHECK(p.field_ok);
+  for (std::int32_t y = 0; y < r.height(); y += 8) {
+    r.render_rows(p, b.field, b.colours, sliced.data(), y, y + 8);
+  }
+  CHECK(sliced == whole);
+  // A Prepared for a fitting field does not let a wrong-sized field be read: no data, as render().
+  HeatField wrong;
+  wrong.cols = 3;
+  wrong.rows = 3;
+  wrong.cells.resize(9);
+  std::vector<Rgb565> guarded(r.pixel_count(), 1);
+  r.render_rows(p, wrong, b.colours, guarded.data(), 0, r.height());
+  std::vector<Rgb565> expected(r.pixel_count(), 1);
+  r.render(wrong, b.colours, expected.data());
+  CHECK(guarded == expected);
+}

@@ -14,6 +14,7 @@
 // caller-owned storage and allocates nothing.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -64,13 +65,32 @@ class HeatRasterizer {
   /// a mismatched field draws every room as "no data" rather than reading out of bounds.
   void render(const HeatField& field, const std::vector<Rgb565>& cell_colours, Rgb565* out) const;
 
+  /// What render_rows() needs from `field` beyond its cells: whether it fits this rasterizer,
+  /// and each room's first Value cell (the fallback for pixels far from any of their room's
+  /// Value cells). One pass over every cell, so compute it once per image with prepare(), not
+  /// once per slice of rows.
+  struct Prepared {
+    static constexpr std::size_t kRooms = 0xFF;
+    bool field_ok = false;
+    std::array<std::int32_t, kRooms> first_value{};
+  };
+  Prepared prepare(const HeatField& field, const std::vector<Rgb565>& cell_colours) const;
+
   /// render() for pixel rows [row_begin, row_end) only (clamped to the image), so an embedder
   /// can spread one image over several calls; every row over all calls gives exactly render().
+  /// `prepared` must come from prepare() with the same field and colours.
+  void render_rows(const Prepared& prepared, const HeatField& field,
+                   const std::vector<Rgb565>& cell_colours, Rgb565* out, std::int32_t row_begin,
+                   std::int32_t row_end) const;
+  /// The same, preparing first: a pass over every cell per call.
   void render_rows(const HeatField& field, const std::vector<Rgb565>& cell_colours, Rgb565* out,
-                   std::int32_t row_begin, std::int32_t row_end) const;
+                   std::int32_t row_begin, std::int32_t row_end) const {
+    render_rows(prepare(field, cell_colours), field, cell_colours, out, row_begin, row_end);
+  }
 
  private:
   static constexpr std::uint8_t kNoRoom = 0xFF;
+  static_assert(Prepared::kRooms == kNoRoom, "one first-value slot per room index");
 
   std::int32_t width_ = 0;
   std::int32_t height_ = 0;
