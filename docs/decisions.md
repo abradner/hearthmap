@@ -221,3 +221,62 @@ otherwise.
 **Default:** an omitted `map_area` is `{0, 0, canvas.width, canvas.height}`; it was the left 960 x
 800 of a 1280 x 800 canvas, a default that only made sense for one panel. The example sets it
 explicitly. **Why:** a default should not encode one layout's HUD width.
+
+### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
+
+**Question:** the editor must "validate with the real schema and show errors next to the item",
+but several rules (unique ids, room references, polygon simplicity, calibration width, happy
+range, band order, Fahrenheit, moisture role, map area) live in core's `validate()`, which the
+browser cannot run. **Default:** the editor validates with the schema (Ajv, pinned) and repeats
+those checks in `editor/src/lib/validate.ts`, blocking export on any error. Core stays the
+enforcement (D-017): deleting the editor's copies changes where the author sees a problem, not
+what the firmware accepts (AGENTS.md §8, layered checks). Numbered D-040 rather than the next
+free number to avoid colliding with other PRs written the same night. **Would change if:** core
+is compiled to WebAssembly for the editor, which would replace the copies with the real thing.
+
+### D-041 Editor export: schema key order, no defaults written, 4-decimal coordinates (provisional)
+
+**Default:** the exported `config.json` orders keys as the schema declares them (read from the
+schema at runtime), except `entities`, which keeps the author's order; the editor never writes a
+schema default the author did not set (empty fields show the default as a placeholder); edits
+round map coordinates to 4 decimals (0.1 px on a 960 px map). A loaded config is exported
+unchanged apart from formatting, which the round-trip test checks against `examples/flat/`.
+**Why:** a config that grows defaults on every save hides what the author chose, and a stable
+key order keeps diffs in the private repo small. **Would change if:** codegen wants a fully
+populated config (it should apply defaults itself, D-007).
+
+### D-042 Plant photos are exported as 128 x 128 PNG, centre-cropped (provisional)
+
+**Default:** an attached image is cut to its largest centred square and scaled to 128 x 128 PNG,
+saved as `photos/<photo-id>.png`. Only photos some pin references are exported; photos are not
+autosaved (they would fill `localStorage`), so after a reload the editor warns until they are
+attached again. **Why:** 128 px is the largest size the UI spec draws a plant photo (the detail
+overlay's 64 px radius disc); the ESPHome component converts to RGB565 at build time. **Would
+change if:** the overlay grows, or the component wants a fixed RGB565 blob from the editor.
+
+### D-043 The editor reads tools/calibrate's interchange format as that tool defines it (provisional)
+
+**Default:** `schema/calibration.schema.json` is owned by the calibrate tool's PR; the editor's
+copy is byte-identical to it. Import applies every `status: "ok"` sensor's calibration (all four
+fields) to each soil or plant pin whose `entities.moisture` matches, replacing the pin's
+calibration as a whole; failed sensors are skipped with their message; confidence, warnings and
+`happy_is_default` are shown, never written into the config. **Would change if:** the tool's
+format changes (its schema is the contract; the editor's test fixture is a copy of its example).
+
+### D-044 New editor projects set `map_area` to the panel layout explicitly (provisional)
+
+**Default:** a blank project writes `canvas.map_area` = `{0, 0, 960, 800}`, the map region of the
+UI spec's 1280 x 800 layout, rather than relying on the whole-canvas default (D-023), which would
+put the map under the HUD. "Match plan shape" keeps the area inside 960 x 800. **Would change
+if:** the panel layout changes.
+
+### D-045 Editor UI structure: pure `lib/`, tested; thin vanilla-TS `ui/` (provisional)
+
+**Question:** no convention existed for a web UI in this repo (AGENTS.md §8, "building structure
+where no convention is stated"). **Default:** no framework. Everything a test can check is a pure
+function in `editor/src/lib/` or `editor/src/preview/scene.ts` (data in, data out, Vitest);
+`editor/src/ui/` renders state with a small hyperscript helper and canvas code, and is covered by
+the Playwright smoke test only. Config edits are pure functions over an immutable config, and undo
+is a list of snapshots. **Why:** minimal dependencies (two at runtime: Ajv and fflate) and the
+same "logic where tests reach it" rule as core (principle 2). **Would change if:** the UI grows
+enough that a component framework pays for itself; `lib/` would not change.
