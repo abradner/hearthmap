@@ -7,6 +7,7 @@ add_executable(hearthmap_core_tests
   calibration_test.cpp
   colour_scale_test.cpp
   config_validate_test.cpp
+  config_validator_test.cpp
   geometry_test.cpp
   heat_field_test.cpp
   pipeline_test.cpp

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -325,32 +326,32 @@ void check_canvas(const Canvas& canvas, Issues& out) {
   }
 }
 
-void check_rooms(const Config& config, Issues& out) {
+void check_rooms_header(const Config& config, Issues& out) {
   if (config.rooms.empty()) out.error("/rooms", "a config needs at least one room");
   if (config.rooms.size() > kMaxRooms) out.error("/rooms", "at most 64 rooms");
-  std::set<std::string> seen;
-  for (std::size_t i = 0; i < config.rooms.size(); ++i) {
-    const Room& room = config.rooms[i];
-    const std::string base = index_path("rooms", i);
-    if (!valid_id(room.id)) {
-      out.error(base + "/id", "room id must match [a-z][a-z0-9_]{0,47}");
-    } else if (!seen.insert(room.id).second) {
-      out.error(base + "/id", "duplicate room id '" + room.id + "'");
+}
+
+void check_room(const Config& config, std::size_t i, std::set<std::string>& seen, Issues& out) {
+  const Room& room = config.rooms[i];
+  const std::string base = index_path("rooms", i);
+  if (!valid_id(room.id)) {
+    out.error(base + "/id", "room id must match [a-z][a-z0-9_]{0,47}");
+  } else if (!seen.insert(room.id).second) {
+    out.error(base + "/id", "duplicate room id '" + room.id + "'");
+  }
+  if (!valid_name(room.name))
+    out.error(base + "/name", "name must be 1..48 characters of valid UTF-8");
+  bool vertices_in_range = true;
+  for (std::size_t v = 0; v < room.polygon.size(); ++v) {
+    if (!in_unit_square(room.polygon[v])) {
+      out.error(base + "/polygon/" + std::to_string(v), "vertex must lie within 0..1");
+      vertices_in_range = false;
     }
-    if (!valid_name(room.name))
-      out.error(base + "/name", "name must be 1..48 characters of valid UTF-8");
-    bool vertices_in_range = true;
-    for (std::size_t v = 0; v < room.polygon.size(); ++v) {
-      if (!in_unit_square(room.polygon[v])) {
-        out.error(base + "/polygon/" + std::to_string(v), "vertex must lie within 0..1");
-        vertices_in_range = false;
-      }
-    }
-    if (room.polygon.size() < kMinVertices || room.polygon.size() > kMaxVertices) {
-      out.error(base + "/polygon", "a room polygon needs 3..64 vertices");
-    } else if (vertices_in_range && !is_simple(room.polygon)) {
-      out.error(base + "/polygon", "room polygon is not simple (edges cross, overlap or repeat)");
-    }
+  }
+  if (room.polygon.size() < kMinVertices || room.polygon.size() > kMaxVertices) {
+    out.error(base + "/polygon", "a room polygon needs 3..64 vertices");
+  } else if (vertices_in_range && !is_simple(room.polygon)) {
+    out.error(base + "/polygon", "room polygon is not simple (edges cross, overlap or repeat)");
   }
 }
 
@@ -390,10 +391,12 @@ void check_calibration(const Calibration& cal, const std::string& base, Issues& 
   }
 }
 
-void check_pins(const Config& config, Issues& out) {
+void check_pins_header(const Config& config, Issues& out) {
   if (config.pins.size() > kMaxPins) out.error("/pins", "at most 256 pins");
-  std::set<std::string> seen;
-  for (std::size_t i = 0; i < config.pins.size(); ++i) {
+}
+
+void check_pin(const Config& config, std::size_t i, std::set<std::string>& seen, Issues& out) {
+  {
     const Pin& pin = config.pins[i];
     const std::string base = index_path("pins", i);
     if (!valid_id(pin.id)) {
@@ -509,12 +512,68 @@ void check_scalars(const Config& config, Issues& out) {
 
 }  // namespace
 
+// One unit of validate() per step (config.h, ConfigValidator). The order of units is validate()'s
+// order of checks, so the issue list comes out identical (tests/config_validator_test.cpp).
+struct ConfigValidator::State {
+  explicit State(const Config& c) : config(c) {}
+  const Config& config;
+  Issues out;
+  std::set<std::string> room_ids;
+  std::set<std::string> pin_ids;
+  std::size_t next = 0;
+};
+
+ConfigValidator::ConfigValidator(const Config& config) : state_(std::make_unique<State>(config)) {}
+ConfigValidator::~ConfigValidator() = default;
+
+std::size_t ConfigValidator::steps_total() const {
+  return 3 + state_->config.rooms.size() + state_->config.pins.size();
+}
+
+bool ConfigValidator::done() const {
+  return state_->next >= steps_total();
+}
+
+bool ConfigValidator::step() {
+  State& st = *state_;
+  if (done()) return true;
+  const Config& config = st.config;
+  const std::size_t rooms = config.rooms.size();
+  const std::size_t pins = config.pins.size();
+  const std::size_t k = st.next++;
+  if (k == 0) {
+    if (config.version != kSchemaVersion) st.out.error("/version", "unsupported schema version");
+    check_canvas(config.canvas, st.out);
+    check_rooms_header(config, st.out);
+  } else if (k <= rooms) {
+    check_room(config, k - 1, st.room_ids, st.out);
+  } else if (k == rooms + 1) {
+    check_pins_header(config, st.out);
+  } else if (k <= rooms + 1 + pins) {
+    check_pin(config, k - rooms - 2, st.pin_ids, st.out);
+  } else {
+    check_layers(config, st.out);
+    check_scalars(config, st.out);
+  }
+  return done();
+}
+
+std::vector<ConfigIssue> ConfigValidator::take_issues() {
+  return state_->out.take();
+}
+
+// The whole pass, written out on its own rather than by stepping ConfigValidator, so the
+// validator's tests compare two independent orderings of the same checks.
 std::vector<ConfigIssue> validate(const Config& config) {
   Issues out;
   if (config.version != kSchemaVersion) out.error("/version", "unsupported schema version");
   check_canvas(config.canvas, out);
-  check_rooms(config, out);
-  check_pins(config, out);
+  check_rooms_header(config, out);
+  std::set<std::string> room_ids;
+  for (std::size_t i = 0; i < config.rooms.size(); ++i) check_room(config, i, room_ids, out);
+  check_pins_header(config, out);
+  std::set<std::string> pin_ids;
+  for (std::size_t i = 0; i < config.pins.size(); ++i) check_pin(config, i, pin_ids, out);
   check_layers(config, out);
   check_scalars(config, out);
   return out.take();
