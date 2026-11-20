@@ -7,8 +7,11 @@ the ESPHome component compiles it into static tables, the host renderer parses i
 
 The schema checks shape. Rules about values that a schema cannot express (unique ids, a pin's
 room existing, band ordering, calibration width, polygon simplicity) belong to core's
-`validate()`, declared in `config.h`; `validate.py` checks only ids and cross-references, so the
-examples in CI cannot drift before core's validator exists.
+`validate()`, declared in `config.h`. `validate()` also re-checks every range and pattern this
+schema states, because the device's generated tables never pass through a JSON Schema
+validator: no config source may rely on the schema having run (`docs/decisions.md` D-017).
+`validate.py` checks only ids and cross-references, so the examples in CI cannot drift before
+core's validator exists.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r schema/requirements.txt
@@ -35,8 +38,8 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 | `version` | `1` | required | Schema version. Anything else is refused. |
 | `canvas` | object | required | Panel size and where the map sits (below). |
 | `temperature_unit` | `"C"` \| `"F"` | `"C"` | Unit of temperature readings **and** of temperature band values. Core does not convert: if the readings are Fahrenheit, the bands must be too. |
-| `rooms` | array, >= 1 | required | Room polygons (below). Order matters: where polygons overlap, the earlier room owns the overlap. |
-| `pins` | array | required | Sensor pins (below). Order is the tie-breaker wherever a tie can occur (hit-testing, HUD order). |
+| `rooms` | array, 1..64 | required | Room polygons (below). Order matters: where polygons overlap, the earlier room owns the overlap. |
+| `pins` | array, 0..256 | required | Sensor pins (below). Order is the tie-breaker wherever a tie can occur (hit-testing, HUD order). |
 | `layers` | object | all defaults | Per-layer bands and thresholds (below). |
 | `stale_after_s` | integer >= 1 | `10800` (3 h) | A reading whose `last_updated` is more than this many seconds before now is stale. Exactly this old is still fresh. |
 | `hud` | object | | `max_items` (1..20, default `6`): thirsty plants listed before "+N more". |
@@ -48,7 +51,7 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 |---|---|---|---|
 | `width`, `height` | integer | required | Pixels after rotation. The target panel is 1280 x 800. |
 | `orientation` | `"landscape"` \| `"portrait"` | required | Landscape needs `width > height`, portrait `height > width` (core `validate()`). |
-| `map_area` | `{x, y, width, height}` | `{0, 0, 960, 800}` | Canvas rectangle that map space is drawn into; must lie inside the canvas. The rest of the canvas is the HUD and layer tabs. |
+| `map_area` | `{x, y, width, height}` | the whole canvas: `{0, 0, width, height}` | Canvas rectangle that map space is drawn into; must lie inside the canvas. The rest of the canvas is the HUD and layer tabs, so a real config sets it (the example uses `{0, 0, 960, 800}`). |
 
 ## `rooms[]`
 
@@ -57,7 +60,7 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 | `id` | `^[a-z][a-z0-9_]{0,47}$` | required | Unique among rooms. Pins refer to it. |
 | `name` | string, 1..48 | required | Display name. |
 | `polygon` | 3..64 map points | required | Implicitly closed: do not repeat the first vertex. Must be simple (not self-intersecting). Winding order does not matter. |
-| `outdoor` | boolean | `false` | Outdoor rooms (a balcony) are never judged against indoor comfort bands: their temperature, humidity and CO2 pins are always "ok" when fresh. Plants outdoors are still judged by thirst. Heat never crosses between rooms anyway (`docs/decisions.md` D-005). |
+| `outdoor` | boolean | `false` | Outdoor rooms (a balcony) are never judged against indoor comfort bands: their temperature, humidity and CO2 pins are always "ok" when fresh, and show their values. They get no heat colour: drawn in the outdoor treatment instead (`docs/decisions.md` D-006). Plants outdoors are still judged by thirst. |
 
 ## `pins[]`
 
@@ -69,7 +72,7 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 | `position` | map point | required | Pin centre. Should lie inside its room's polygon (core warns if not). |
 | `room` | room id | required | The room the pin is in. |
 | `entities` | object | required | Home Assistant entity ids by role (below). |
-| `photo` | `^[a-z0-9][a-z0-9_-]{0,47}$` | none | Plant pins only. Resolved by the editor and the ESPHome component to `photos/<id>.png`; core never touches the file. |
+| `photo` | `^[a-z0-9][a-z0-9_-]{0,47}$` | none | Plant pins only (core `validate()` rejects it elsewhere too). Resolved by the editor and the ESPHome component to `photos/<id>.png`; core never touches the file. |
 | `calibration` | object | required for `soil` and `plant`, forbidden otherwise | Below. |
 | `stale_after_s` | integer >= 1 | top-level value | Per-pin staleness override (soil sensors often report rarely). |
 
@@ -86,9 +89,13 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 | `battery` | % | none (shown in the overlay) | |
 | `predicted_dry_at` | | none: **reserved** for a later watering-time model; accepted and ignored in version 1 | |
 
-Any kind may bind any optional role. A role feeds its layer for every kind **except** that
-`temperature` and `humidity` on `soil` and `plant` pins are display-only: a probe in a pot measures
-the pot, not the room (`docs/decisions.md` D-004).
+Any kind may bind any optional role **except** `moisture`, which only `soil` and `plant` pins may
+bind: it needs a calibration, and only those kinds carry one (`docs/decisions.md` D-018). A role
+feeds its layer for every kind **except** that `temperature` and `humidity` on `soil` and `plant`
+pins are display-only: a probe in a pot measures the pot, not the room (D-004).
+
+The detail overlay lists a pin's roles in the order of this table, whatever order the JSON
+object has (D-019).
 
 ### `calibration`
 
@@ -100,8 +107,8 @@ its history (`tools/calibrate/`, PR 8).
 |---|---|---|
 | `dry` | number | Raw reading when the soil is as dry as it gets. |
 | `wet` | number | Raw reading just after a thorough watering. May be numerically **below** `dry` (capacitive probes reporting an ADC count read lower when wet): an inverted range is valid. Must differ from `dry`. |
-| `happy_min` | number, optional | Driest raw reading the plant is happy at. Between `dry` and `wet`. |
-| `happy_max` | number, optional | Wettest raw reading the plant is happy at. Between `dry` and `wet`, and not drier than `happy_min`. |
+| `happy_min` | number, optional | Driest raw reading the plant is happy at. Between `dry` and `wet`, inclusive. |
+| `happy_max` | number, optional | Wettest raw reading the plant is happy at. Between `dry` and `wet`, inclusive, and not drier than `happy_min`. |
 
 Core computes **thirst** = 1 − (raw − dry) / (wet − dry), clamped to 0..1: 0 is just watered, 1 is
 bone dry. `happy_min` and `happy_max` replace the soil layer's warn edges for that one plant
@@ -116,11 +123,11 @@ to `null` removes that threshold.
 
 | Field | Meaning |
 |---|---|
-| `enabled` | Default `true`. A disabled layer has no tab, no heat field and no pulsing. The plant HUD works regardless. |
+| `enabled` | Default `true`. A disabled layer has no tab, no heat field and no pulsing, and the readings that feed it are not judged (no badge); their values still show in the overlay. The plant HUD works regardless (`docs/decisions.md` D-020). |
 | `comfort_min`, `comfort_max` | The comfort band: drawn in the neutral colour. Affects colour only, never severity. |
 | `warn_below`, `warn_above` | Strictly beyond these: **warn**. |
 | `danger_below`, `danger_above` | Strictly beyond these: **danger**. A value exactly on a threshold gets the less severe side. |
-| `scale_min`, `scale_max` | Where the cold (blue) and hot (red) colours saturate. |
+| `scale_min`, `scale_max` | Where the cold (blue) and hot (red) colours saturate. If `scale_min` is not below `comfort_min`, the cold side stays neutral (no colour), and likewise the hot side (D-021). |
 
 Ordering, checked by core: `scale_min <= danger_below <= warn_below <= comfort_min <= comfort_max
 <= warn_above <= danger_above <= scale_max`, for every threshold present.
@@ -132,11 +139,13 @@ Defaults (`default_band()` in `config.h` holds the same numbers):
 | `temperature` | °C | 19–24 | 16 / 27 | 12 / 32 | 10–34 |
 | `humidity` | %RH | 40–60 | 30 / 65 | 20 / 75 | 15–90 |
 | `soil` | thirst 0..1 | 0.1–0.6 | none / 0.7 | none / 0.9 | 0–1 |
-| `air` | CO2 ppm | 400–800 | none / 1200 | none / 2000 | 400–2500 |
+| `air` | CO2 ppm | 400–800 | none / 1200 | none / 2000 | 350–2500 |
 
-The temperature defaults are Celsius. With `temperature_unit: "F"`, every temperature band field
-must be set explicitly: core does not convert, and a config source refuses an `"F"` config that
-leaves any of them to the default (`docs/decisions.md` D-011).
+The temperature defaults are Celsius. With `temperature_unit: "F"`, `layers.temperature` must be
+present with all eight band fields above set explicitly (`null` is fine for a threshold; `enabled`
+is not a band field): core does not convert. The schema states this with an `if`/`then`, and core's
+`validate()` enforces it; config sources only record which fields were present
+(`docs/decisions.md` D-011).
 
 ## Changing the schema
 

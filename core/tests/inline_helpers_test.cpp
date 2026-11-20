@@ -95,6 +95,37 @@ TEST_CASE("soil and plant pins' temperature and humidity are display-only") {
   CHECK_FALSE(feeds_layer(PinKind::Plant, Role::PredictedDryAt));
 }
 
+TEST_CASE("moisture feeds the soil layer only from soil and plant pins") {
+  CHECK(feeds_layer(PinKind::Soil, Role::Moisture));
+  CHECK(feeds_layer(PinKind::Plant, Role::Moisture));
+  CHECK_FALSE(feeds_layer(PinKind::Temperature, Role::Moisture));
+  CHECK_FALSE(feeds_layer(PinKind::Humidity, Role::Moisture));
+  CHECK_FALSE(feeds_layer(PinKind::AirQuality, Role::Moisture));
+}
+
+TEST_CASE("band field bits are distinct and kAllBandFields covers all eight") {
+  unsigned all = 0;
+  for (std::size_t i = 0; i < kBandFieldCount; ++i) {
+    const auto bit = band_field_bit(static_cast<BandField>(i));
+    CHECK((all & bit) == 0U);
+    all |= bit;
+  }
+  CHECK(all == kAllBandFields);
+}
+
+TEST_CASE("the air layer's default scale starts below its comfort band") {
+  const Band air = default_band(Layer::Air);
+  CHECK(air.scale_min == doctest::Approx(350.0));
+  CHECK(air.comfort_min == doctest::Approx(400.0));
+  CHECK(air.scale_min < air.comfort_min);
+}
+
+TEST_CASE("to_float keeps a map point's coordinates") {
+  const MapPointF f = to_float(MapPoint{0.25, 0.75});
+  CHECK(f.x == doctest::Approx(0.25F));
+  CHECK(f.y == doctest::Approx(0.75F));
+}
+
 namespace {
 // Band's documented ordering for every threshold that is present.
 bool ordered(const Band& b) {
@@ -131,11 +162,17 @@ TEST_CASE("a default-constructed Config carries the documented defaults") {
   CHECK(c.version == kSchemaVersion);
   CHECK(c.canvas.width == 1280);
   CHECK(c.canvas.height == 800);
+  // The default map area is the whole default canvas (D-023).
+  CHECK(c.canvas.map_area.x == 0);
+  CHECK(c.canvas.map_area.y == 0);
+  CHECK(c.canvas.map_area.width == c.canvas.width);
+  CHECK(c.canvas.map_area.height == c.canvas.height);
   CHECK(c.stale_after == 10800);
   CHECK(c.hud.max_items == 6);
   for (Layer l : {Layer::Temperature, Layer::Humidity, Layer::Soil, Layer::Air}) {
     CHECK(c.layer(l).enabled);
     CHECK(c.layer(l).band.comfort_max == default_band(l).comfort_max);
+    CHECK(c.layer(l).present == 0);
   }
   const UiState s = initial_ui_state(c);
   CHECK(s.active_layer == c.default_layer);

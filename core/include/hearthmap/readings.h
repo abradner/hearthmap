@@ -22,11 +22,17 @@ enum class ReadingState : std::uint8_t {
 
 struct Reading {
   ReadingState state = ReadingState::Unknown;
-  double value = 0.0;          ///< Meaningful only when state == Value. Never NaN or inf there:
-                               ///< sources map non-finite numbers to Unknown.
-  std::string unit;            ///< As HA reports it ("°C", "%"). Informational: core does not
-                               ///< convert units (docs/decisions.md D-011).
-  Timestamp last_updated = 0;  ///< When HA last changed or refreshed this state.
+  double value = 0.0;  ///< Meaningful only when state == Value. Never NaN or inf there:
+                       ///< sources map non-finite numbers to Unknown.
+  std::string unit;    ///< As HA reports it ("°C", "%"). Informational: core does not
+                       ///< convert units (docs/decisions.md D-011).
+  /// The last time the source confirmed this value: not the last time it changed
+  /// (docs/decisions.md D-012). Home Assistant pushes a state only when it changes, so a steady
+  /// sensor would otherwise age into TooOld while still reporting. The device glue therefore
+  /// re-stamps every reading in state Value with the current time while the Home Assistant API
+  /// connection is up, and stops re-stamping the moment it drops, so readings then age
+  /// honestly. Fixtures and the host pass timestamps through exactly as given.
+  Timestamp last_updated = 0;
 };
 
 /// All readings known at one moment, keyed by entity id. An entity absent from the map is

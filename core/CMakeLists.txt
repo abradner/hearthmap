@@ -34,3 +34,14 @@ add_library(hearthmap::core ALIAS hearthmap_core)
 target_include_directories(hearthmap_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(hearthmap_core PUBLIC cxx_std_17)
 hearthmap_strict_warnings(hearthmap_core)
+
+# Core builds without exceptions or RTTI, as ESP-IDF firmware commonly does (docs/decisions.md
+# D-002). PRIVATE: it binds core's own translation units, including the header self-containment
+# units above, so a header that needs either fails here. The test executable keeps both, because
+# doctest uses exceptions; tests only include the headers.
+if(MSVC)
+  target_compile_options(hearthmap_core PRIVATE /GR- /EHs-c-)
+  target_compile_definitions(hearthmap_core PRIVATE _HAS_EXCEPTIONS=0)
+else()
+  target_compile_options(hearthmap_core PRIVATE -fno-exceptions -fno-rtti)
+endif()

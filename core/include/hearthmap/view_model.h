@@ -41,12 +41,17 @@ inline UiState initial_ui_state(const Config& config) {
 }
 
 /// Something the user did. Construct with the named factories.
+///
+/// Tap routing (docs/decisions.md D-013): while an overlay is open it is modal. A tap on the
+/// scrim (anywhere outside the overlay card) sends only CloseOverlay; a tap on the card sends
+/// nothing (the card's own close control sends CloseOverlay). TapMap is sent only when no
+/// overlay is open, so a tap through the scrim never also hits a pin underneath.
 struct UiEvent {
   enum class Type : std::uint8_t {
-    TapMap,        ///< A tap inside the map image; `point` in canvas pixels.
+    TapMap,        ///< A tap inside the map image, no overlay open; `point` in canvas pixels.
     SelectLayer,   ///< A layer tab was tapped; `layer`.
     TapHudItem,    ///< A HUD row was tapped; `pin_id`.
-    CloseOverlay,  ///< The overlay's close control, or a tap outside it.
+    CloseOverlay,  ///< The overlay's close control, or a tap on the scrim around it.
   };
 
   Type type = Type::CloseOverlay;
@@ -85,7 +90,7 @@ struct HitResult {
 HitResult hit_test(const Config& config, CanvasPoint point,
                    double radius_px = kDefaultPinHitRadiusPx);
 
-/// The next UiState.
+/// The next UiState. apply() does not rely on the routing rule above: it stays total.
 /// - TapMap: hit a pin -> overlay_pin = that pin, unless it is already the open one, in which
 ///   case the overlay closes (a second tap toggles). Hit a room or nothing -> overlay closes.
 /// - SelectLayer: active_layer = layer when that layer is enabled, else unchanged. The overlay
@@ -131,11 +136,14 @@ struct HudItem {
 };
 
 /// Plants that need water, worst first (docs/decisions.md D-009).
-/// Candidates: Plant pins whose primary assessment is Fresh and Warn or Danger on the dry side
-/// (value > the effective band's warn_above; a too-wet plant is not listed). Order: Danger
-/// before Warn, then thirst descending, then config order. `items` holds at most
-/// config.hud.max_items; `overflow` counts the candidates left out ("+N more"). The HUD is
-/// independent of the active layer and of whether the soil layer is enabled.
+/// Candidates: Plant pins whose primary assessment is Fresh and on the dry side, where "dry
+/// side" means s = classify(*primary.band, thirst) is Warn or Danger AND thirst >
+/// primary.band->comfort_max (it does not refer to warn_above, which may be absent; a too-wet
+/// plant is not listed). HudItem::severity is that s. Order: Danger before Warn, then thirst
+/// descending, then config order. `items` holds at most config.hud.max_items; `overflow`
+/// counts the candidates left out ("+N more"). The HUD is independent of the active layer and
+/// of whether the soil layer is enabled: it classifies the band itself rather than reading
+/// primary.severity, which is Ok while the soil layer is disabled (D-020).
 struct Hud {
   std::vector<HudItem> items;
   std::size_t overflow = 0;
@@ -150,12 +158,16 @@ struct OverlayRow {
 
 struct OverlayView {
   std::size_t pin_index = 0;
-  /// One row per binding, in the pin's binding order, except PredictedDryAt (reserved, not
-  /// shown in v1).
+  /// One row per binding, ordered by the Role enum (Temperature, Humidity, Moisture, Co2, Pm25,
+  /// Voc, Battery), never by binding or JSON key order, which a source need not preserve
+  /// (D-019). PredictedDryAt is omitted (reserved, not shown in v1). Rows for roles whose
+  /// layer is disabled still appear, with their values, unjudged (D-020).
   std::vector<OverlayRow> rows;
 };
 
 struct ViewModel {
+  /// The layer actually shown: ui_state.active_layer when enabled, else config.default_layer
+  /// (D-020). Never the requested layer when that one is disabled.
   Layer active_layer = Layer::Temperature;
   std::vector<Layer> tabs;  ///< Enabled layers, in Layer enum order.
   std::vector<PinView> pins;
@@ -165,16 +177,30 @@ struct ViewModel {
   std::optional<OverlayView> overlay;
 };
 
-/// Everything the screen shows for (config, readings, now, ui_state). If ui_state.active_layer
-/// is disabled, the view model uses config.default_layer instead.
+/// Everything the screen shows for (config, readings, now, ui_state), written into `out`,
+/// reusing its vectors' and strings' storage: once warmed up with the same config, a rebuild
+/// does not allocate (D-022). If ui_state.active_layer is disabled, the view model uses
+/// config.default_layer instead (ViewModel::active_layer says which).
+/// Implemented in core (PR 4).
+void build_view_model(const Config& config, const Readings& readings, Timestamp now,
+                      const UiState& ui_state, ViewModel& out);
+
+/// Returning form of build_view_model(); allocates.
 /// Implemented in core (PR 4).
 ViewModel build_view_model(const Config& config, const Readings& readings, Timestamp now,
                            const UiState& ui_state);
 
-/// Heat samples for `layer`: one per binding that feeds `layer` (feeds_layer()) and is Fresh,
-/// at the pin's position and room, with the assessed value (thirst for the soil layer).
-/// Empty when `layer` is disabled. Pins whose room id is unknown are skipped (validate()
+/// Heat samples for `layer`, written into `out` (cleared first, storage reused): one per
+/// binding that feeds `layer` (feeds_layer()) and is Fresh, at the pin's position and room,
+/// with the assessed value as float (thirst for the soil layer). Empty when `layer` is
+/// disabled. Pins in outdoor rooms are included; compute_heat_field() ignores them, so the
+/// outdoor rule lives in one place. Pins whose room id is unknown are skipped (validate()
 /// makes that impossible in a usable config).
+/// Implemented in core (PR 4).
+void heat_samples(const Config& config, const Readings& readings, Timestamp now, Layer layer,
+                  std::vector<HeatSample>& out);
+
+/// Returning form of heat_samples(); allocates.
 /// Implemented in core (PR 4).
 std::vector<HeatSample> heat_samples(const Config& config, const Readings& readings, Timestamp now,
                                      Layer layer);

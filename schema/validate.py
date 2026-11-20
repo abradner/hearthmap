@@ -6,10 +6,14 @@ Checks, for every examples/<name>/:
   2. every readings/*.json against schema/readings.schema.json;
   3. the cross-references a schema cannot express: room and pin ids unique, every pin's room
      exists, and every entity a fixture mentions is bound by some pin in the config (a fixture
-     naming an unknown entity is a typo that would silently test nothing).
+     naming an unknown entity is a typo that would silently test nothing). The entity check runs
+     whenever config.json passed its own checks, including when it binds no entities at all
+     (then every fixture entity is unknown); it is skipped only when config.json failed, which
+     is already reported.
 
 Semantic rules about values (band ordering, calibration width, polygon simplicity) are core's
 validate() (core/include/hearthmap/config.h), not this script's: enforcement lives in one place.
+This script is a CI aid for the examples, not a gate any config source may rely on.
 
 Usage: python3 schema/validate.py [examples-dir ...]   (default: every directory in examples/)
 Exit status: 0 when everything passes, 1 otherwise. Prints one line per file checked, so a
@@ -71,13 +75,14 @@ def check_example(directory: Path, config_v, readings_v) -> tuple[int, int]:
     if not errs:
         ref_errs, entities = reference_errors(config)
         errs += ref_errs
+    config_ok = not errs
     checked += 1
     failures += report(config_path, errs)
 
     for fixture_path in sorted((directory / "readings").glob("*.json")):
         fixture = load(fixture_path)
         errs = schema_errors(readings_v, fixture)
-        if not errs and entities:
+        if not errs and config_ok:
             unknown = sorted(set(fixture["readings"]) - entities)
             errs += [f"/readings/{e}: not bound by any pin in config.json" for e in unknown]
         checked += 1

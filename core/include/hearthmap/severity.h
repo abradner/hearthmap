@@ -33,6 +33,10 @@ constexpr Severity worse(Severity a, Severity b) {
 }
 
 /// Why a reading can or cannot be trusted. Every value except Fresh makes the severity Stale.
+/// When several apply, the first in this precedence wins (docs/decisions.md D-012):
+///   Missing > Unavailable > Unknown > BadCalibration > TooOld.
+/// So an old reading on a degenerate calibration reports BadCalibration, the reason a human
+/// can fix, rather than TooOld.
 enum class Freshness : std::uint8_t {
   Fresh,
   Missing,         ///< The entity is absent from Readings (never received).
@@ -47,7 +51,8 @@ inline Seconds effective_stale_after(const Pin& pin, const Config& config) {
   return pin.stale_after.value_or(config.stale_after);
 }
 
-/// Freshness of one reading.
+/// Freshness of one reading, ignoring calibration (assess() layers BadCalibration on top, in
+/// the precedence above).
 /// - nullptr -> Missing; state Unavailable -> Unavailable; state Unknown -> Unknown.
 /// - age = now - last_updated. age > stale_after -> TooOld. age == stale_after is still Fresh.
 /// - A last_updated in the future (clock skew between HA and the panel) counts as age 0.
@@ -74,16 +79,22 @@ struct Assessment {
   std::optional<double> raw;
   /// Stale when not Fresh. When Fresh: classify() against the band below for roles that feed a
   /// layer (feeds_layer()), except that in an outdoor room Temperature, Humidity and Co2 are
-  /// always Ok (docs/decisions.md D-006). Roles that feed no layer, and display-only roles on
-  /// soil/plant pins: Ok.
+  /// always Ok (docs/decisions.md D-006). Ok, whatever the value, for: roles that feed no layer;
+  /// display-only roles on soil/plant pins; roles whose layer is disabled (not judged: no badge,
+  /// no pulse, D-020). Freshness is still reported for all of these, and `value` and `raw` are
+  /// still filled, so the overlay shows them.
   Severity severity = Severity::Stale;
-  /// The band used: the layer's band, or effective_soil_band() for Moisture. nullopt for roles
-  /// that feed no layer.
+  /// The band that applies: the layer's band, or effective_soil_band() for Moisture. Filled for
+  /// every role that feeds a layer (feeds_layer()), even when that layer is disabled or the
+  /// reading is not Fresh, so the HUD can judge thirst on its own (view_model.h, Hud). nullopt
+  /// for roles that feed no layer.
   std::optional<Band> band;
 };
 
 /// Assess the binding for `role` on `pin`. Returns nullopt when the pin does not bind `role`.
-/// `pin` must belong to `config` (its room is looked up for the outdoor rule).
+/// `pin` must belong to `config` (its room is looked up for the outdoor rule). Freshness follows
+/// the precedence on Freshness: assess_freshness() first, then, for Moisture, a degenerate
+/// calibration turns Fresh or TooOld into BadCalibration.
 /// Implemented in core (PR 2).
 std::optional<Assessment> assess(const Config& config, const Pin& pin, Role role,
                                  const Readings& readings, Timestamp now);

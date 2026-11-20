@@ -22,6 +22,8 @@ inline constexpr double kMinCalibrationWidth = 1e-9;
 /// - Readings beyond either end clamp (wetter than wet -> 1.0, drier than dry -> 0.0).
 /// - Zero-width range (|wet - dry| < kMinCalibrationWidth): std::nullopt. Core reports the pin
 ///   as Stale with reason Freshness::BadCalibration rather than guess (severity.h).
+/// - The span is closed: `dry` and `wet` themselves are inside it (validate() accepts a happy
+///   edge equal to either).
 /// - Non-finite `raw`: std::nullopt.
 /// Implemented in core (PR 2).
 std::optional<double> moisture_fraction(const Calibration& calibration, double raw);
