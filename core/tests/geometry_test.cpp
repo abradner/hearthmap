@@ -2,6 +2,7 @@
 // and degenerate polygons, and shared-edge exclusivity.
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <limits>
 
 #include "hearthmap/geometry.h"
@@ -114,4 +115,42 @@ TEST_CASE("point_in_polygon: a non-finite point is outside") {
   CHECK_FALSE(point_in_polygon(kUnitSquare, {0.5, nan}));
   CHECK_FALSE(point_in_polygon(kUnitSquare, {-inf, 0.5}));
   CHECK_FALSE(point_in_polygon(kUnitSquare, {0.5, inf}));
+}
+
+TEST_CASE("point_in_polygon: collinear vertices contain nothing, however the crossings round") {
+  // Review finding on PR 3: exactly zero area, yet the overlapping edges' intersections rounded
+  // differently and the crossing count came out odd.
+  const Polygon collinear{{0.0, 0.0}, {0.3125, 0.4375}, {0.625, 0.875}};
+  CHECK_FALSE(point_in_polygon(collinear, {0.35, 0.49}));
+  // Collinear in intent but not exactly representable: points on y = 0.7x + 0.05, each rounded
+  // to the nearest double, so their cross products are rounding noise rather than zero.
+  auto on_line = [](double x) { return MapPoint{x, 0.7 * x + 0.05}; };
+  const Polygon inexact{on_line(0.1), on_line(0.3), on_line(0.9), on_line(0.55)};
+  // Three points a hair apart, far from the origin: their coordinates' rounding is large next
+  // to their spacing.
+  const Polygon close_together{on_line(0.9), on_line(0.9 + 1e-9), on_line(0.9 + 3e-9)};
+  int inside = 0;
+  for (int i = 0; i <= 2000; ++i) {
+    const double x = 0.05 + 0.9 * i / 2000.0;
+    const MapPoint p = on_line(x);
+    inside += point_in_polygon(inexact, p) ? 1 : 0;
+    inside += point_in_polygon(inexact, {p.x, std::nextafter(p.y, 1.0)}) ? 1 : 0;
+    inside += point_in_polygon(inexact, {p.x, std::nextafter(p.y, 0.0)}) ? 1 : 0;
+    const double xc = 0.9 + 3e-9 * i / 2000.0;
+    const MapPoint q = on_line(xc);
+    inside += point_in_polygon(close_together, q) ? 1 : 0;
+    inside += point_in_polygon(close_together, {q.x, std::nextafter(q.y, 1.0)}) ? 1 : 0;
+    inside += point_in_polygon(close_together, {q.x, std::nextafter(q.y, 0.0)}) ? 1 : 0;
+  }
+  CHECK(inside == 0);
+}
+
+TEST_CASE("point_in_polygon: a thin but real sliver still contains its interior") {
+  const Polygon sliver{{0.0, 0.0}, {1.0, 0.0}, {1.0, 1e-6}};  // area 5e-7
+  CHECK(point_in_polygon(sliver, {0.5, 2.5e-7}));
+  CHECK(point_in_polygon(sliver, {0.99, 0.5e-6}));
+  CHECK_FALSE(point_in_polygon(sliver, {0.5, 6e-7}));
+  // A sliver whose vertices are far from its first vertex in one axis only.
+  const Polygon needle{{0.2, 0.5}, {0.8, 0.5 + 1e-9}, {0.8, 0.5 - 1e-9}};
+  CHECK(point_in_polygon(needle, {0.7, 0.5}));
 }
