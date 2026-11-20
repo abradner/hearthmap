@@ -89,7 +89,9 @@ config is proven to be refused, and the example proven to load.
     now"), only the room. While disconnected it shows the honest time since the last confirmation.
 - **Offline**: while that connection is down, the top bar shows "Offline" in the warn colour in
   place of the house summary; it clears on reconnect. A change of connection state redraws at
-  once.
+  once. ESPHome reports "a client with a state subscription", not "Home Assistant" in
+  particular, so a second native-API client subscribed to states hides a Home Assistant
+  disconnect (D-046, known limit).
 - **Time**: until the `time_id` source is valid the screen says "Waiting for time" and nothing is
   judged, rather than marking every sensor stale.
 - **Nothing blocks** (D-038). `setup()` only subscribes, takes over LVGL's log output (to count

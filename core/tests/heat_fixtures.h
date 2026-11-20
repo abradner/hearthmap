@@ -2,8 +2,8 @@
 //
 // example_flat_*() mirrors examples/flat/config.json (rooms, map area, heat settings) and the
 // temperature readings in examples/flat/readings/all-ok.json, by hand: core has no JSON parser.
-// If the example changes, change this too (the host renderer reads the JSON itself, and its
-// golden images are the cross-check).
+// If the example changes, change this too, and compare by hand: nothing checks that the two
+// agree (the host renderer's golden images render the JSON, never this copy).
 #pragma once
 
 #include <cstdint>

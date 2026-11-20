@@ -560,7 +560,13 @@ overlay shows the room only, no "seen" text. `offline`: the top bar's summary la
 `heat_behind` (D-047): the heat image is dimmed. The device sets `offline` = not
 `is_connected_with_state_subscription()` and `restamped` = connected (re-stamping runs exactly
 then); while offline the overlay shows the honest time since the last confirmation. A change of
-connection state redraws at once. **Why not the view model:** these describe the plumbing around
+connection state redraws at once. **Known limit:** ESPHome 2026.11.0's
+`is_connected_with_state_subscription()` is true while any API client subscribes to entity
+states, and no public API says which client subscribed to Home Assistant states (the per-client
+flag is private, and compiled only with wizard inputs). So a second client subscribed to states
+(another Home Assistant, a script using the native API) keeps "connected" true after Home
+Assistant itself disconnects: no "Offline", and values keep being re-stamped. With Home
+Assistant as the only state subscriber, as in the intended setup, the flag is exact. **Why not the view model:** these describe the plumbing around
 core (a connection, a re-stamping policy, an image in flight), not anything core judges from
 config and readings; putting them in `ViewModel` would make core carry UI state it never uses.
 **Consequences, documented in `readings.h`, `schema/README.md` and the component README:** on the
