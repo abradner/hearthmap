@@ -122,8 +122,8 @@ TEST_CASE("the air layer's default scale starts below its comfort band") {
 
 TEST_CASE("to_float keeps a map point's coordinates") {
   const MapPointF f = to_float(MapPoint{0.25, 0.75});
-  CHECK(f.x == doctest::Approx(0.25F));
-  CHECK(f.y == doctest::Approx(0.75F));
+  CHECK(f.x == 0.25F);  // both exactly representable
+  CHECK(f.y == 0.75F);
 }
 
 namespace {

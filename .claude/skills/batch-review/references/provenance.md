@@ -1,6 +1,6 @@
 # Batch review: where the rules came from
 
-Ported across a fleet of sibling repos and corrected against real batches in each. Add to this
+Ported across several earlier projects and corrected against real batches in each. Add to this
 file rather than replacing it: the value is in the accumulated evidence, not in any single batch.
 Read it when a rule looks wrong for your case, before changing it.
 
@@ -51,12 +51,10 @@ Read it when a rule looks wrong for your case, before changing it.
   showstopper-fix cases — this just states it as the general rule those two are instances of.
 - The independent fresh-eyes pass exists because a sibling repo's nine-PR delegated batch went
   through per-PR bot review on every PR, one aggregate bot review, and two orchestrator-run
-  reactive rounds — and a fresh-eyes agent over the full diff then found what all of that missed:
-  a reactive-round fix had silently defanged a security regression test (now passing without
-  executing the branch it pinned), an unaudited denial path, and a privilege grant whose sole
-  written justification was never verified under the live role. Three bot rounds: zero of the
-  three. The same pass also *cleared* the batch's security claims by tracing them, which is what
-  made the readiness report worth trusting.
+  reactive rounds — and a fresh-eyes agent over the full diff then found three material problems
+  all of that had missed, one of them a regression test that a reactive fix had left passing
+  without exercising its branch. The same pass also *cleared* the batch's other claims by tracing
+  them, which is what made the readiness report worth trusting.
 - The spelled-out diff command exists because the shorthand `...<branch>` doesn't fail when
   copied — it silently diffs from HEAD, truncating the review surface — and the wrapped two-line
   form fails the same way (bare `git diff` is valid). Both were caught in review of the skill text
@@ -77,8 +75,8 @@ Read it when a rule looks wrong for your case, before changing it.
   this skill's own earlier text said `gh stack merge <followup-pr>`, and a sibling repo's audit of
   the same text first proposed "inspect with `gh stack view --json` before merging" as the guard —
   a non-mitigation, since `view` takes no target and cannot resolve what a bare number would have
-  merged. The independent-numbering hazard is observed fact, not inference: that repo had stack
-  #46 live while PR #46 did not exist. The checkout-by-URL cycle replaced both wrong drafts.
+  merged. The independent-numbering hazard is observed fact, not inference: a stack number has been
+  live while no PR had that number. The checkout-by-URL cycle replaced both wrong drafts.
 - The "a returned command is not a finished merge" rule comes from the API contract: branch
   protection and repository rules are evaluated when the merge *runs*, not when it is submitted, so
   an accepted submit proves only that the PR is open and not a draft. This is the same
@@ -108,13 +106,11 @@ Read it when a rule looks wrong for your case, before changing it.
   the review doc beside the Copilot row; that repo dropped Copilot in October 2026, and a repo that
   still runs it keeps them.
 
-- GitHub batches are always `gh stack` trains, and manual stacking moved to its own reference, on the
-  operator's word (18 October 2026): "manual is no longer required on github". Before that the manual
-  flavour was the default on one repo and an operator choice per batch on others, which an unattended
-  night had no one to make.
+- GitHub batches are always `gh stack` trains, and manual stacking moved to its own reference, once
+  the owner judged manual stacking no longer needed on GitHub. Before that the manual flavour was an
+  operator choice per batch, which an unattended run had no one to make.
 - The merge method is the repo's (`AGENTS.md`), not this skill's: the body once hard-coded
-  `--squash`, which a user-level copy then imposed on repos with their own rule. Raised by a
-  post-merge review (19 October 2026), the same day one operator made squash-only stacks the rule:
-  "use squash and merge in gh stacks rather than merge commits / rebase".
+  `--squash`, which a user-level copy then imposed on repos with their own rule. A post-merge review
+  raised it; squash-merged stacks are the default where a repo states no other rule.
 
 Append this repo's own batch outcomes here as they accumulate.

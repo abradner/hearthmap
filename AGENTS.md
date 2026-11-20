@@ -299,29 +299,14 @@ projects; adjust only with reason, and record the reason (see §10).
 - Destructive actions (dropping data, deleting files you didn't just create, rewriting published
   history) and outward-facing actions (publishing, sending, deploying) need explicit approval,
   every time. Approval for one instance is not approval for the next.
-- **Merging is gated on a live go-ahead, and every new session starts assuming the manual gate.**
-  A completed review, green CI, a finished followup, and an auto-mode session default are none of
-  them authorization. Report readiness and stop.
-  - A **conditional, forward-looking** go-ahead is still a go-ahead: "merge this train once #38 is
-    resolved" names the batch and states the condition, and covers merging while the operator is
-    away. It authorizes *that* batch only.
-  - A **session-scoped carve-out** ("auto-merge only trivial mechanical PRs tonight") is valid when
-    the operator sets it — at session start, as their own policy choice. Treat it as a one-session
-    precedent and ask again next time; anything touching auth, scopes, custody, or an API contract
-    stacks and waits regardless.
-  - Ambiguous continuations ("continue the stack flow") are **not** authorization. Ask briefly,
-    citing this rule so it doesn't read as timidity.
-  - **Do not propose loosening this.** The operator's position is that they would like to soften it
-    eventually but that harnesses are not reliable enough yet. Offering options is fine when they
-    are the one setting session policy; advocating for less gating mid-stream is not.
+- **Merging needs the owner's go-ahead.** A completed review, green CI or a finished followup is
+  not authorization: report readiness and stop.
 - Never force-push or rewrite published history without an explicit, current go-ahead.
 - **Visibility and content are separate axes.** Before making anything public, do not let a narrow
   confirmation (repo name, a visibility toggle) stand in for consent to the *content* — git
   history, comments, and design docs go out too. Separately flag anything describing a
   still-unfixed vulnerability or written more candidly than the operator likely pictured, and ask
-  about that specifically. (A sibling repo was pushed public with candid commit messages
-  documenting exact vulnerabilities, one of them still live in the code at push time; it had to be
-  flipped back to private immediately.)
+  about that specifically: published history cannot be taken back.
 - If you encounter a violation of a safety rule already committed (a plaintext secret, a
   destructive migration lying in wait), flag it immediately — finding it is not the same as
   having caused it, and silence helps nobody.
@@ -357,8 +342,7 @@ projects; adjust only with reason, and record the reason (see §10).
   value into an image-wide ENV to make a build step pass, which would have silently defeated this
   rule in production. If a build step needs a stand-in, scope it to that step, never image-wide.)
 - The same explicitness applies to what the code writes: anything persisted that holds data states
-  its permissions explicitly rather than inheriting the process umask. (Database dumps in a
-  sibling repo landed world-readable because the dump path never asserted a mode.)
+  its permissions explicitly rather than inheriting the process umask.
 
 ### Review feedback
 
@@ -400,9 +384,8 @@ projects; adjust only with reason, and record the reason (see §10).
        passes. Revert *all* of them, or the proof is vacuous.
     2. **The test never reaches the mechanism.** Ordering or setup means the code under test
        doesn't run at all — a stale-state test that refreshes first is never stale; a persistence
-       test that never saves has nothing to lose. (Independently confirmed in a second sibling
-       repo: a round-2 reactive fix silently defanged a security regression test, which kept
-       passing without ever executing the branch it pinned.)
+       test that never saves has nothing to lose. A later fix can do this to a test that used to
+       work, so re-prove a test after changing its setup.
     3. **The lever is a no-op.** The thing you changed to reproduce the failure doesn't affect the
        output. Confirm the lever moves the output *before* concluding anything from it.
     4. **False positives are masking real ones.** A check that flags noise gets tuned until it's
@@ -412,9 +395,8 @@ projects; adjust only with reason, and record the reason (see §10).
 - **For any isolation or authorization test, name the attacker and write *their* request.** A spec
   that asserts the mechanism's own definition back at itself cannot fail for any input — it reads
   like coverage and gates nothing. If you cannot describe an input that would make the assertion
-  fail, the test is documentation, not a gate. (A tenancy spec built its record through the very
-  scope it claimed to test; the actual cross-tenant hole sat unnoticed until a reviewer read the
-  middleware and the controller together.)
+  fail, the test is documentation, not a gate. A test that builds its data through the mechanism
+  it claims to test is the usual way this goes wrong.
 - **Inference from a plausible nearby cause is not diagnosis.** Wait for the real signal and read
   the actual failure before naming a cause. The incident and the review-time form of this rule live
   in `docs/pr-review-machinery.md` §5 — that file is canonical for it; don't restate it here.
@@ -541,8 +523,8 @@ Meta-rules for editing this file — they exist because each was violated somewh
 
 What was pruned or changed from the steering template this repo was initialised from, and why —
 kept in the doc (not just a commit message) so future readers don't need git archaeology to know
-what was deliberately excluded. The template is private; this record names it only generically,
-and the repo's lineage is tracked in a private registry, not here.
+what was deliberately excluded. The template is not public, so this record names it only
+generically.
 
 Initialised 2026-11-20 by an unattended agent run, from an approved build plan, with no operator
 available for the template's interview. Every interview answer below was taken from that plan

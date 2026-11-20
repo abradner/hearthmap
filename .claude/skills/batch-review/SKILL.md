@@ -14,13 +14,11 @@ Why: reacting piecemeal across several in-flight PRs rewrites branches under ope
 rebase cycles, and fragments reviewer attention. One PR at a time, the single-PR flow (react
 immediately) is right; this skill is for the multi-PR case only.
 
-**Which copy.** This is hearthmap's copy. The body below is
-kept identical to the owner's steering template's, and to any user-level copy an operator installs; only this
-paragraph and Repo specifics are per-repo. Claude Code loads a user-level skill in place of a repo
-skill of the same name, so a user-level copy should open by sending sessions here.
+**Which copy.** This is hearthmap's copy; only this paragraph and Repo specifics are written for
+this repo. Claude Code loads a user-level skill in place of a repo skill of the same name, so if a
+user-level copy differs from this file, this file wins here.
 
-**Read first:** `docs/pr-review-machinery.md`, "the review doc" below (in a repo without one, the
-user-level `sop` skill's `references/pr-review-machinery.md`, where installed):
+**Read first:** `docs/pr-review-machinery.md`, "the review doc" below:
 reviewer triggers, the targeting rules that decide which reads each change owes, the three-surface
 harvest, triage, the round cap, green-signal traps, the merge check. This skill covers only what batching changes. Detail that is read only
 when needed: `references/gh-stack.md` (the stacked tooling), `references/manual-stacking.md` (a batch
@@ -106,7 +104,7 @@ introduce bugs. Per the targeting rules:
    any branch went through an agent-performed merge or rebase. Per-branch review cannot see a
    semantic fork or a silently deleted control between two green branches.
 
-Fix findings in the commit itself. Small changes are not exempt: in one sibling repo an eight-line `srcset` change drew
+Fix findings in the commit itself. Small changes are not exempt: an eight-line change has drawn
 three defects.
 
 ## Phase 3 — Fan-out
@@ -222,8 +220,7 @@ only time the batch touches its own threads. Every finding gets an answer before
 
 ## Phase 7 — Merge the stack
 
-**Gate**: the repo's merge gate (its `AGENTS.md`; where that states none, the `sop` skill's "Who may
-say merge"). A synthesis, a green followup or an auto-mode
+**Gate**: the repo's merge gate (`AGENTS.md` §8: merges need the owner's go-ahead). A synthesis, a green followup or an auto-mode
 default is not a go-ahead. If the stack is ready, send the ready line and stop.
 
 Pre-flights, in order:

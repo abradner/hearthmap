@@ -68,8 +68,8 @@ rewrites no branch. Verify each base afterwards.
 ## Why never a bare number
 
 `gh stack merge <n>` treats `n` first as a **stack** number, then as a PR number, and the two are
-independent sequences over the same small integers (a sibling repo had stack #46 live while PR #46
-did not exist; its followup was PR #47). Pass the followup's PR number when it is also a live stack
+independent sequences over the same small integers (a stack number can be live while no PR has
+that number, and vice versa). Pass the followup's PR number when it is also a live stack
 number and an atomic merge lands a different train. `merge` takes integers only and `view` takes no
 target, so you cannot check what a number resolves to. `checkout` accepts a PR URL, which cannot be
 misread: check out, `view --json`, merge with no argument.

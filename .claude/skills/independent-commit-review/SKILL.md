@@ -11,16 +11,14 @@ author's assumptions; this process buys fresh eyes by giving the work to subagen
 seen the conversation, and then (step 8) to a reviewer that is not even the same kind of model,
 because agents of one family share blind spots.
 
-**Which copy.** This text is kept identical to the owner's private steering template and any
-user-level copy. Claude Code loads the user-level copy in place of a repo's copy of the same name, so if this
-repo has `.claude/skills/independent-commit-review/SKILL.md` and it differs from what you are
-reading, read that one and follow it. **Which commits get a read, and when**, is the repo's review
-doc (`docs/pr-review-machinery.md` §1, "Targeting"), or the `sop` skill where a repo has none.
+**Which copy.** This is hearthmap's copy. Claude Code loads a user-level copy in place of a repo's
+copy of the same name, so if this repo's `.claude/skills/independent-commit-review/SKILL.md`
+differs from what you are reading, read that one and follow it. **Which commits get a read, and
+when**, is the repo's review doc (`docs/pr-review-machinery.md` §1, "Targeting").
 
-Why it earns its cost: the first repo to run this reviewed 12 fast-built commits after the fact and
-found **9 needed real fixes**, including a subject-spoofing auth bypass. Between 2 and 18 October 2026
-on one repo, independent reads made about 35 material catches, including most of its deploy, rollback
-and runbook HIGHs; in ten of those cases a bot had reviewed the same code and missed it.
+Why it earns its cost: in earlier projects, after-the-fact reads of fast-built commits found most of
+them needed real fixes, and independent reads made dozens of material catches, many in code a bot
+had already reviewed and passed.
 
 ## The three kinds of read
 
@@ -101,4 +99,4 @@ triage: later commits may already have fixed or moved it.
 
 Put the review of record on the PR (a comment, or the merge body): who read what range at which
 head, findings and dispositions, and anything the read could not cover (no different-family pass
-available; a browser it could not run). Ready lines cite it; a coordinating session (a foreman), where there is one, checks it.
+available; a browser it could not run). Ready lines cite it; whoever coordinates the merge checks it.

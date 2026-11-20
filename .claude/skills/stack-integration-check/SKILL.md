@@ -16,15 +16,15 @@ after the PRs are open it is an archaeology project across published history.
 
 ## What this catches
 
-Every instance below is from the sibling repo this skill was extracted from, and
+Every instance below is real, from the project this skill was extracted from, and
 every one was found by reading git rather than by any suite or report.
 
 | Defect | Why per-branch review misses it | Real instance |
 |---|---|---|
-| **Semantic fork** | Two branches implement the same shared function in opposite directions. Both suites pass because each only tests cases that behave identically under either rule. | Two branches wrote opposite `scope.Covers` semantics for untargeted-grant-vs-targeted-request — fail-closed on one, fail-open on the other. |
-| **Silently deleted control** | An agent "merges" by copying files, taking one package wholesale and dropping another. The merged result is correct, so integration testing passes; the individual PR is not. | A branch deleted `validateCapabilityScopes` from three store chokepoints introduced by the PR below it. |
+| **Semantic fork** | Two branches implement the same shared function in opposite directions. Both suites pass because each only tests cases that behave identically under either rule. | Two branches implemented one shared predicate with opposite answers for the same edge case. |
+| **Silently deleted control** | An agent "merges" by copying files, taking one package wholesale and dropping another. The merged result is correct, so integration testing passes; the individual PR is not. | A branch dropped a validation check, added by the PR below it, from every place it was called. |
 | **Content without ancestry** | The branch has the right *files* but the branch below is not in its history, so the PR diff re-adds code another PR already adds. | A "merge" that was a file-level copy; `git merge-base --is-ancestor` failed. |
-| **Enforcement drift** | The same rule expressed in two places (code and query, boundary and constraint) diverges as one side changes. | Scope filtering in application code vs the SQL `LIKE` queries. |
+| **Enforcement drift** | The same rule expressed in two places (code and query, boundary and constraint) diverges as one side changes. | One filter rule written both in application code and in a database query. |
 
 ## Step 1 — Write down the topology
 
