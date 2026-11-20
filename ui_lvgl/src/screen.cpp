@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -308,9 +309,11 @@ struct Screen::Impl {
   std::optional<HudLook> hud_look;
   std::optional<OverlayLook> overlay_look;
   std::vector<std::string> hud_pin_ids;  // per card, for TapHudItem
+  std::map<std::string, const lv_image_dsc_t*, std::less<>> photo_cache;
 
   Impl(lv_obj_t* parent, const Config& cfg, const lv_image_dsc_t* heat, ScreenDeps d)
       : config(cfg), deps(std::move(d)) {
+    load_photos();
     build_root(parent);
     build_top_bar();
     build_map(heat);
@@ -621,9 +624,20 @@ struct Screen::Impl {
     }
   }
 
+  // Each photo id is asked of the provider once, at construction, and the pointer reused by
+  // every widget that shows it (ports.h: descriptors live as long as the Screen).
+  void load_photos() {
+    if (deps.photos == nullptr) return;
+    for (const Pin& pin : config.pins) {
+      if (!pin.photo.has_value() || photo_cache.count(*pin.photo) != 0) continue;
+      photo_cache.emplace(*pin.photo, deps.photos->plant_photo(*pin.photo));
+    }
+  }
+
   const lv_image_dsc_t* photo_for(const Pin& pin) const {
-    if (deps.photos == nullptr || !pin.photo.has_value()) return nullptr;
-    return deps.photos->plant_photo(*pin.photo);
+    if (!pin.photo.has_value()) return nullptr;
+    auto it = photo_cache.find(*pin.photo);
+    return it == photo_cache.end() ? nullptr : it->second;
   }
 
   static void set_disc_image(Disc& d, const lv_image_dsc_t* photo, const LeafImage* leaf) {
@@ -944,6 +958,9 @@ struct Screen::Impl {
         l.value_text = "no data";
         l.value_colour = theme::kStale;
       }
+    } else {
+      // Off the active layer: no value, but a silent sensor still looks silent (principle 1).
+      l.stale = pv.primary.freshness != Freshness::Fresh;
     }
     return l;
   }

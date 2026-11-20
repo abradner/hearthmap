@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -568,4 +569,87 @@ TEST_CASE("seven HUD cards and the overflow line fit on the screen") {
   CHECK(last.y2 < more.y1);
   CHECK(more.y2 <= 800 - 12);
   CHECK(last.y2 - last.y1 + 1 == theme::kHudCardHeight);  // the cards keep their size
+}
+
+TEST_CASE("an off-layer plain pin still looks stale when its sensor is stale") {
+  // Review finding: off the active layer the stale dot went back to white.
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[3].primary = test::stale(Role::Humidity, Freshness::Unavailable);
+  vm.pins[3].active_severity = Severity::Stale;  // off-layer: primary's severity
+  rig.show(vm);
+  lv_obj_t* dot = lv_obj_get_child(rig.w().pin[3], 0);
+  CHECK(bg_rgb(dot) == theme::kStale);
+  CHECK(hidden(rig.w().pin_value[3]));  // still no value text off-layer
+  // And a fresh off-layer pin keeps the normal dot.
+  lv_obj_t* fresh_dot = lv_obj_get_child(rig.w().pin[0], 0);
+  CHECK(bg_rgb(fresh_dot) == theme::kTextPrimary);
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"  // lv_image_header_t bit-fields
+#endif
+namespace {
+
+// A provider that hands out a new descriptor on every call and poisons the one it returned
+// before for the same id, as the old contract allowed.
+struct PoisoningPhotos : ImageProvider {
+  mutable std::map<std::string, int, std::less<>> calls;
+  mutable std::vector<std::unique_ptr<lv_image_dsc_t>> all;
+  mutable std::map<std::string, lv_image_dsc_t*, std::less<>> last;
+  std::vector<std::uint8_t> pixels = std::vector<std::uint8_t>(8 * 8 * 2, 0x33);
+  const lv_image_dsc_t* plant_photo(std::string_view id) const override {
+    ++calls[std::string(id)];
+    auto it = last.find(id);
+    if (it != last.end()) {
+      it->second->data = nullptr;  // poison
+      it->second->header.magic = 0;
+    }
+    auto d = std::make_unique<lv_image_dsc_t>();
+    d->header.magic = LV_IMAGE_HEADER_MAGIC;
+    d->header.cf = LV_COLOR_FORMAT_RGB565;
+    d->header.w = 8;
+    d->header.h = 8;
+    d->header.stride = 16;
+    d->data_size = 128;
+    d->data = pixels.data();
+    last[std::string(id)] = d.get();
+    all.push_back(std::move(d));
+    return all.back().get();
+  }
+};
+
+}  // namespace
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+TEST_CASE("each photo id is requested once and every widget keeps a valid descriptor") {
+  host::HeadlessDisplay display(1280, 800);
+  Config config = test::small_config();
+  RecordingSink sink;
+  PoisoningPhotos photos;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  deps.photos = &photos;
+  Screen screen(display.screen(), config, nullptr, deps);
+  ViewModel vm = test::temperature_vm(config);  // the fern (photo "fern") is in the HUD
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  OverlayView ov;
+  ov.pin_index = 1;  // the fern's overlay
+  vm.overlay = ov;
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  vm.hud.items = {HudItem{2, 0.8, Severity::Warn}, HudItem{1, 0.95, Severity::Danger}};
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  CHECK(photos.calls["fern"] == 1);
+  // Every image showing the fern points at a live (unpoisoned) descriptor.
+  const auto& w = screen.widgets();
+  lv_obj_t* map_img = lv_obj_get_child(lv_obj_get_child(lv_obj_get_child(w.pin[1], 0), 0), 0);
+  const auto* src = static_cast<const lv_image_dsc_t*>(lv_image_get_src(map_img));
+  REQUIRE(src != nullptr);
+  CHECK(src->data != nullptr);
+  CHECK(src->header.magic == LV_IMAGE_HEADER_MAGIC);
+  display.render();  // drawing must not touch a poisoned descriptor
 }

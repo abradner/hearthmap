@@ -27,9 +27,11 @@ class EventSink {
 };
 
 /// Supplies plant photos by photo id (Pin::photo). Return nullptr when there is none; the UI
-/// then draws the placeholder leaf. The returned descriptor must stay valid until the next call
-/// for the same id or until the Screen is destroyed. Any LVGL colour format LVGL can draw works;
-/// the UI scales it to cover the plant's disc.
+/// then draws the placeholder leaf. The Screen asks for each distinct id once, while it is being
+/// constructed, and shows that pointer in every widget for that plant (map pin, HUD card,
+/// overlay) for as long as the Screen exists. A returned descriptor and its pixels must
+/// therefore stay valid and unchanged until the Screen is destroyed; the provider must outlive
+/// it. Any LVGL colour format LVGL can draw works; the UI scales it to cover the plant's disc.
 class ImageProvider {
  public:
   virtual ~ImageProvider() = default;
