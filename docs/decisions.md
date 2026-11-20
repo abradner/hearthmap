@@ -579,3 +579,26 @@ during a rebuild, tabbing away and back); each of "always rebuild", "never recor
 samples", "ignore a layer change", "no interval" and "update() waits for the rebuild" was seen to
 fail it. **Would change if:** the panel shows the lag is confusing (shorter interval), or rebuilds
 get cheap enough to drop the interval.
+
+### D-048 A pre-flash `--check`, and one table of semantic cases for core and the editor (provisional)
+
+**What happened:** a config the editor exported and the firmware build accepted could still be
+refused at boot, because core's `validate()` first runs on the panel. Three collinear points
+with inexact coordinates (`[[0.0551,0.2332],[0.0681,0.2855],[0.0941,0.3901]]`) were one: the
+editor's simplicity check compared cross products with exactly zero, core's zero-area test
+allows a few ulps. **Default:** (1) `hearthmap-render --check --config <json>` loads a config
+through the host's JSON source and `validate()`, prints every issue with its JSON path and exits 1
+on any error; the component README makes it the required step before a flash (it needs the host
+build, `-DHEARTHMAP_BUILD_UI=ON`). A separate binary was not added: the render CLI already owns
+the JSON source. (2) `schema/semantic-cases.json` holds configs the schema accepts and the
+verdict `validate()` must give, as one change each to a base config (a room polygon or a map
+area): inexact and exact collinear points, a repeated vertex, a closing vertex repeated, a
+fold-back, a bow tie, a 1e-6 sliver that must be accepted, map areas off and exactly on the
+canvas. Core's test reads it through a C++ table CMake generates at configure time (core's tests
+stay free of a JSON parser); the editor's test reads the JSON. A case either side disagrees with
+fails that side. (3) The editor now runs core's exact zero-area test (`isZeroArea()`, the same
+double arithmetic) before its other polygon checks. The editor's fold-back loop, like core's, is
+a second guard: every fold-back is also caught by the edge-touch test or the zero-area test, so
+removing it fails no test. **Would change if:** the editor gains a WebAssembly build of core, at
+which point the editor would call `validate()` itself and the table would test one
+implementation.
