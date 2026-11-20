@@ -187,3 +187,51 @@ TEST_CASE("every example fixture parses") {
     CHECK_MESSAGE(r.fixture.has_value(), name << ": " << r.error);
   }
 }
+
+TEST_CASE("integers the destination cannot hold are load errors, never narrowed") {
+  // Review finding: 4294967344 narrowed to 48 and passed validate().
+  const ConfigLoadResult cols =
+      JsonConfigSource(tiny(R"(, "heat": {"grid_cols": 4294967344})")).load();
+  CHECK_FALSE(cols.config.has_value());
+  CHECK(has_issue(cols, "/heat/grid_cols", IssueSeverity::Error));
+
+  std::string t = tiny();
+  t.replace(t.find("\"version\": 1"), 12, "\"version\": 4294967297");
+  const ConfigLoadResult version = JsonConfigSource(t).load();
+  CHECK_FALSE(version.config.has_value());
+  CHECK(has_issue(version, "/version", IssueSeverity::Error));
+
+  const ConfigLoadResult huge =
+      JsonConfigSource(tiny(R"(, "stale_after_s": 18446744073709551615)")).load();
+  CHECK_FALSE(huge.config.has_value());
+  CHECK(has_issue(huge, "/stale_after_s", IssueSeverity::Error));
+
+  const ConfigLoadResult negative =
+      JsonConfigSource(tiny(R"(, "hud": {"max_items": -9999999999})")).load();
+  CHECK_FALSE(negative.config.has_value());
+  CHECK(has_issue(negative, "/hud/max_items", IssueSeverity::Error));
+
+  // Positive control: in range is fine.
+  CHECK(JsonConfigSource(tiny(R"(, "heat": {"grid_cols": 64})")).load().config.has_value());
+}
+
+TEST_CASE("integral numbers spelled as floats are integers; fractions are not") {
+  // Review finding: JSON Schema's integer type accepts 1280.0 and 4.8e1.
+  std::string t = tiny(R"(, "heat": {"grid_cols": 4.8e1}, "stale_after_s": 3600.0)");
+  t.replace(t.find("\"width\": 1280"), 13, "\"width\": 1280.0");
+  t.replace(t.find("\"version\": 1"), 12, "\"version\": 1.0");
+  const ConfigLoadResult ok = JsonConfigSource(t).load();
+  REQUIRE(ok.config.has_value());
+  CHECK(ok.config->canvas.width == 1280);
+  CHECK(ok.config->heat.grid_cols == 48);
+  CHECK(ok.config->stale_after == 3600);
+
+  const ConfigLoadResult frac = JsonConfigSource(tiny(R"(, "heat": {"grid_cols": 48.5})")).load();
+  CHECK_FALSE(frac.config.has_value());
+  CHECK(has_issue(frac, "/heat/grid_cols", IssueSeverity::Error));
+
+  const ConfigLoadResult big_float =
+      JsonConfigSource(tiny(R"(, "heat": {"grid_rows": 1e12})")).load();
+  CHECK_FALSE(big_float.config.has_value());
+  CHECK(has_issue(big_float, "/heat/grid_rows", IssueSeverity::Error));
+}

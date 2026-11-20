@@ -1,8 +1,10 @@
 #include "json_config.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string_view>
 #include <utility>
@@ -48,11 +50,47 @@ class Parser {
     return std::nullopt;
   }
 
-  std::optional<std::int64_t> integer(const json& v, const std::string& path) {
-    if (v.is_number_integer()) return v.get<std::int64_t>();
-    error(path, "expected an integer");
-    return std::nullopt;
+  // A JSON integer that fits [lo, hi]. As in JSON Schema, a number spelled with a fraction or
+  // exponent counts when it is mathematically integral (1280.0, 4.8e1); 48.5 does not. A value
+  // outside [lo, hi] is an error here, never narrowed into a different valid value.
+  std::optional<std::int64_t> integer(const json& v, const std::string& path,
+                                      std::int64_t lo = std::numeric_limits<std::int32_t>::min(),
+                                      std::int64_t hi = std::numeric_limits<std::int32_t>::max()) {
+    std::int64_t out = 0;
+    if (v.is_number_unsigned()) {
+      const auto u = v.get<std::uint64_t>();
+      if (u > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        error(path, "integer out of range");
+        return std::nullopt;
+      }
+      out = static_cast<std::int64_t>(u);
+    } else if (v.is_number_integer()) {
+      out = v.get<std::int64_t>();
+    } else if (v.is_number_float()) {
+      const double d = v.get<double>();
+      if (!std::isfinite(d) || std::trunc(d) != d) {
+        error(path, "expected an integer");
+        return std::nullopt;
+      }
+      // 2^63 is exactly representable; anything at or beyond it cannot be an int64.
+      if (d >= 9223372036854775808.0 || d < -9223372036854775808.0) {
+        error(path, "integer out of range");
+        return std::nullopt;
+      }
+      out = static_cast<std::int64_t>(d);
+    } else {
+      error(path, "expected an integer");
+      return std::nullopt;
+    }
+    if (out < lo || out > hi) {
+      error(path, "integer out of range");
+      return std::nullopt;
+    }
+    return out;
   }
+
+  static constexpr std::int64_t kI64Min = std::numeric_limits<std::int64_t>::min();
+  static constexpr std::int64_t kI64Max = std::numeric_limits<std::int64_t>::max();
 
   std::optional<std::string> string(const json& v, const std::string& path) {
     if (v.is_string()) return v.get<std::string>();
@@ -216,7 +254,7 @@ class Parser {
       }
     }
     if (auto* v = member(j, "stale_after_s")) {
-      if (auto s = integer(*v, path + "/stale_after_s")) p.stale_after = *s;
+      if (auto s = integer(*v, path + "/stale_after_s", kI64Min, kI64Max)) p.stale_after = *s;
     }
   }
 
@@ -294,7 +332,10 @@ class Parser {
          {"$schema", "version", "canvas", "temperature_unit", "rooms", "pins", "layers",
           "stale_after_s", "hud", "heat"});
     if (auto* v = required(j, "version", "")) {
-      if (auto n = integer(*v, "/version")) c.version = static_cast<int>(*n);
+      if (auto n = integer(*v, "/version", std::numeric_limits<int>::min(),
+                           std::numeric_limits<int>::max())) {
+        c.version = static_cast<int>(*n);
+      }
     }
     if (auto* v = required(j, "canvas", "")) canvas(*v, c.canvas);
     if (auto* v = member(j, "temperature_unit")) {
@@ -332,7 +373,7 @@ class Parser {
     }
     if (auto* v = member(j, "layers")) layers(*v, c);
     if (auto* v = member(j, "stale_after_s")) {
-      if (auto n = integer(*v, "/stale_after_s")) c.stale_after = *n;
+      if (auto n = integer(*v, "/stale_after_s", kI64Min, kI64Max)) c.stale_after = *n;
     }
     if (auto* v = member(j, "hud")) {
       if (object_at(*v, "/hud")) {
