@@ -16,6 +16,12 @@ set(HEARTHMAP_CORE_HEADERS
 # heat field, colour scale) and PR 4 (view model). Add each new .cpp here.
 set(HEARTHMAP_CORE_SOURCES
 )
+# PR 2: config validation, calibration, severity.
+list(APPEND HEARTHMAP_CORE_SOURCES
+  src/calibration.cpp
+  src/config.cpp
+  src/severity.cpp
+)
 
 # Header self-containment: one generated translation unit per public header, each including
 # only that header, compiled with core's strict warnings. A header that forgets an #include,
