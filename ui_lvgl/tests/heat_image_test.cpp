@@ -182,3 +182,32 @@ TEST_CASE("colour_cells colours Value cells through the lookup table and nothing
   colour_cells(f, lut, out);
   CHECK(out.data() == before);
 }
+
+TEST_CASE("a measured room's narrow extension is coloured, not striped") {
+  // Review finding: pixels more than two cells from any Value cell of their own room drew the
+  // no-data stripes although the room has data.
+  Config c;
+  c.canvas.map_area = CanvasRect{0, 0, 800, 800};
+  c.heat.grid_cols = 8;
+  c.heat.grid_rows = 8;
+  // A wide base (y 0.5..1) with a chimney x 0.45..0.55 up to the top. Cell centres sit at
+  // 0.0625 + k * 0.125, so no centre falls inside the chimney.
+  c.rooms = {Room{"a",
+                  "A",
+                  {{0.45, 0.0},
+                   {0.55, 0.0},
+                   {0.55, 0.5},
+                   {1.0, 0.5},
+                   {1.0, 1.0},
+                   {0.0, 1.0},
+                   {0.0, 0.5},
+                   {0.45, 0.5}},
+                  false}};
+  HeatRasterizer r(c);
+  const Rgb565 red = c565(0xE34948);
+  Built b = uniform(c, {red});
+  std::vector<Rgb565> img(r.pixel_count(), 0);
+  r.render(b.field, b.colours, img.data());
+  CHECK(at(img, r, 400, 10) == red);  // top of the chimney, four cells from the base
+  CHECK(at(img, r, 400, 700) == red);
+}

@@ -9,15 +9,22 @@
 # To update either: change URL and SHA-256 together and say why in the PR.
 include(FetchContent)
 
+# DOWNLOAD_EXTRACT_TIMESTAMP exists from CMake 3.24; on 3.21..3.23 (our floor) it would be
+# parsed as part of URL_HASH and break the download.
+set(_hearthmap_extract_ts)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+  set(_hearthmap_extract_ts DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+endif()
+
 FetchContent_Declare(nlohmann_json
   URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
   URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  ${_hearthmap_extract_ts}
   SOURCE_SUBDIR do-not-add-subdirectory)
 FetchContent_Declare(lodepng
   URL https://github.com/lvandeve/lodepng/archive/7b2893e35891c0c85bee5595caafaf3c2044b409.tar.gz
   URL_HASH SHA256=e0b571062acdbe187fd4e8b0ff46f6e7d1b634457ff1a4b383aaac4c78bfd59b
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  ${_hearthmap_extract_ts}
   SOURCE_SUBDIR do-not-add-subdirectory)
 FetchContent_MakeAvailable(nlohmann_json lodepng)
 

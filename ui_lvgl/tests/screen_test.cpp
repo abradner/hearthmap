@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -130,7 +131,7 @@ TEST_CASE("plain pins show the active value, no data when stale, and dim off-lay
   CHECK(text(w.pin_value[3]).empty());
   CHECK(hidden(w.pin_value[3]));  // no empty backing pill
   CHECK_FALSE(hidden(w.pin_value[0]));
-  CHECK(lv_obj_get_style_opa(w.pin[3], LV_PART_MAIN) == LV_OPA_40);
+  CHECK(lv_obj_get_style_opa(lv_obj_get_child(w.pin[3], 0), LV_PART_MAIN) == LV_OPA_40);  // the dot
 
   vm.pins[0].active_value.reset();
   vm.pins[0].active_severity = Severity::Stale;
@@ -304,7 +305,7 @@ TEST_CASE("the plant overlay shows thirst, happy range, the three stats and seen
   const std::size_t before = rig.screen->writes();
   rig.show(vm, 1000 + 600);
   CHECK(text(w.overlay_subtitle) == "West   seen 15 min ago");
-  CHECK(rig.screen->writes() > before);
+  CHECK(rig.screen->writes() == before + 1);  // the subtitle and nothing else
 
   vm.overlay.reset();
   rig.show(vm);
@@ -568,4 +569,200 @@ TEST_CASE("seven HUD cards and the overflow line fit on the screen") {
   CHECK(last.y2 < more.y1);
   CHECK(more.y2 <= 800 - 12);
   CHECK(last.y2 - last.y1 + 1 == theme::kHudCardHeight);  // the cards keep their size
+}
+
+TEST_CASE("an off-layer plain pin still looks stale when its sensor is stale") {
+  // Review finding: off the active layer the stale dot went back to white.
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[3].primary = test::stale(Role::Humidity, Freshness::Unavailable);
+  vm.pins[3].active_severity = Severity::Stale;  // off-layer: primary's severity
+  rig.show(vm);
+  lv_obj_t* dot = lv_obj_get_child(rig.w().pin[3], 0);
+  CHECK(bg_rgb(dot) == theme::kStale);
+  CHECK(hidden(rig.w().pin_value[3]));  // still no value text off-layer
+  // And a fresh off-layer pin keeps the normal dot.
+  lv_obj_t* fresh_dot = lv_obj_get_child(rig.w().pin[0], 0);
+  CHECK(bg_rgb(fresh_dot) == theme::kTextPrimary);
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"  // lv_image_header_t bit-fields
+#endif
+namespace {
+
+// A provider that hands out a new descriptor on every call and poisons the one it returned
+// before for the same id, as the old contract allowed.
+struct PoisoningPhotos : ImageProvider {
+  mutable std::map<std::string, int, std::less<>> calls;
+  mutable std::vector<std::unique_ptr<lv_image_dsc_t>> all;
+  mutable std::map<std::string, lv_image_dsc_t*, std::less<>> last;
+  std::vector<std::uint8_t> pixels = std::vector<std::uint8_t>(8 * 8 * 2, 0x33);
+  const lv_image_dsc_t* plant_photo(std::string_view id) const override {
+    ++calls[std::string(id)];
+    auto it = last.find(id);
+    if (it != last.end()) {
+      it->second->data = nullptr;  // poison
+      it->second->header.magic = 0;
+    }
+    auto d = std::make_unique<lv_image_dsc_t>();
+    d->header.magic = LV_IMAGE_HEADER_MAGIC;
+    d->header.cf = LV_COLOR_FORMAT_RGB565;
+    d->header.w = 8;
+    d->header.h = 8;
+    d->header.stride = 16;
+    d->data_size = 128;
+    d->data = pixels.data();
+    last[std::string(id)] = d.get();
+    all.push_back(std::move(d));
+    return all.back().get();
+  }
+};
+
+}  // namespace
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+TEST_CASE("each photo id is requested once and every widget keeps a valid descriptor") {
+  host::HeadlessDisplay display(1280, 800);
+  Config config = test::small_config();
+  RecordingSink sink;
+  PoisoningPhotos photos;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  deps.photos = &photos;
+  Screen screen(display.screen(), config, nullptr, deps);
+  ViewModel vm = test::temperature_vm(config);  // the fern (photo "fern") is in the HUD
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  OverlayView ov;
+  ov.pin_index = 1;  // the fern's overlay
+  vm.overlay = ov;
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  vm.hud.items = {HudItem{2, 0.8, Severity::Warn}, HudItem{1, 0.95, Severity::Danger}};
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  CHECK(photos.calls["fern"] == 1);
+  // Every image showing the fern points at a live (unpoisoned) descriptor.
+  const auto& w = screen.widgets();
+  lv_obj_t* map_img = lv_obj_get_child(lv_obj_get_child(lv_obj_get_child(w.pin[1], 0), 0), 0);
+  const auto* src = static_cast<const lv_image_dsc_t*>(lv_image_get_src(map_img));
+  REQUIRE(src != nullptr);
+  CHECK(src->data != nullptr);
+  CHECK(src->header.magic == LV_IMAGE_HEADER_MAGIC);
+  display.render();  // drawing must not touch a poisoned descriptor
+}
+
+TEST_CASE("map taps are reported in canvas pixels when the Screen's parent is offset") {
+  host::HeadlessDisplay display(1280, 800);
+  lv_obj_t* holder = lv_obj_create(display.screen());
+  lv_obj_remove_style_all(holder);
+  lv_obj_set_pos(holder, 100, 50);
+  lv_obj_set_size(holder, 1280, 800);
+  Config config = test::small_config();
+  RecordingSink sink;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  Screen screen(holder, config, nullptr, deps);
+  screen.update(test::temperature_vm(config), HeaderText{"09:00", "House"}, 1000);
+  display.render();
+  display.tap(100 + 300, 50 + 300);  // canvas (300, 300), inside the map
+  REQUIRE(sink.events.size() == 1);
+  CHECK(sink.events[0].type == UiEvent::Type::TapMap);
+  CHECK(sink.events[0].point.x == doctest::Approx(300));
+  CHECK(sink.events[0].point.y == doctest::Approx(300));
+}
+
+TEST_CASE("a short room name that fits whole is shown even where an ellipsis would not fit") {
+  host::HeadlessDisplay display(1280, 800);
+  auto width = [](const char* t) {
+    lv_point_t sz;
+    lv_text_get_size(&sz, t, builtin_fonts().px20, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x;
+  };
+  const std::int32_t full = width("IIII");
+  REQUIRE(width("III...") > full);  // the case: whole name fits, the ellipsis form would not
+  Config c = test::dense_config();
+  // Toilet becomes exactly wide enough for "IIII" with the standard 12 + 8 px insets.
+  const double x1 = static_cast<double>(full + 20 + 1) / 864.0;
+  c.rooms[0].name = "IIII";
+  c.rooms[0].polygon = {{0.0, 0.0}, {x1, 0.0}, {x1, 0.5}, {0.0, 0.5}};
+  c.rooms[1].polygon[0].x = x1;
+  c.rooms[1].polygon[3].x = x1;
+  RecordingSink sink;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  Screen screen(display.screen(), c, nullptr, deps);
+  CHECK_FALSE(hidden(screen.widgets().room_label[0]));
+}
+
+TEST_CASE("a HUD cap too large for the screen shows the cards that fit and counts the rest") {
+  host::HeadlessDisplay display(1280, 800);
+  Config c = test::dense_config();
+  c.hud.max_items = 9;
+  RecordingSink sink;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  Screen screen(display.screen(), c, nullptr, deps);
+  ViewModel vm = test::dense_vm(c);
+  vm.hud.items.push_back(HudItem{0, 0.9, Severity::Danger});
+  vm.hud.items.push_back(HudItem{1, 0.9, Severity::Danger});  // 9 items
+  vm.hud.overflow = 1;
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  display.render();
+  const auto& w = screen.widgets();
+  const std::size_t shown = w.hud_card.size();
+  CHECK(shown < 9);
+  CHECK(area_of(w.hud_card[shown - 1]).y2 < 800);
+  CHECK(area_of(w.hud_more).y2 <= 800 - 12);
+  CHECK(text(w.hud_more) == "+" + std::to_string(1 + (9 - shown)) + " more");
+  CHECK(text(w.hud_count) == "10");  // the title still counts every thirsty plant
+}
+
+TEST_CASE("dimming an off-layer pin leaves its badge at full strength") {
+  Rig rig;
+  rig.show(test::temperature_vm(rig.config));
+  // The fern is off the temperature layer and in danger: its badge and every ancestor of the
+  // badge must be fully opaque; the disc itself is dimmed.
+  for (lv_obj_t* o = rig.w().pin_badge[1]; o != nullptr; o = lv_obj_get_parent(o)) {
+    CHECK(lv_obj_get_style_opa(o, LV_PART_MAIN) == LV_OPA_COVER);
+  }
+  CHECK(lv_obj_get_style_opa(lv_obj_get_child(rig.w().pin[1], 0), LV_PART_MAIN) == LV_OPA_40);
+}
+
+TEST_CASE("with the soil layer disabled the overlay shows moisture without judging it") {
+  Rig rig;
+  rig.config.layers[index_of(Layer::Soil)].enabled = false;
+  ViewModel vm = test::temperature_vm(rig.config);
+  OverlayView ov;
+  ov.pin_index = 1;
+  // Core does not judge roles feeding a disabled layer: severity Ok, value still present.
+  ov.rows.push_back(test::row(
+      test::fresh(Role::Moisture, 0.95, Severity::Ok, default_band(Layer::Soil)), "%", 900));
+  vm.overlay = ov;
+  rig.show(vm);
+  CHECK(text(rig.w().overlay_verdict) == "5%");
+  CHECK(text_rgb(rig.w().overlay_verdict) == theme::kTextSecondary);
+}
+
+TEST_CASE("deleting the Screen's parent first leaves a Screen that is safe to update and destroy") {
+  host::HeadlessDisplay display(1280, 800);
+  lv_obj_t* holder = lv_obj_create(display.screen());
+  Config config = test::small_config();
+  RecordingSink sink;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  auto screen = std::make_unique<Screen>(holder, config, nullptr, deps);
+  screen->update(test::temperature_vm(config), HeaderText{"09:00", "House"}, 1000);
+  lv_obj_delete(holder);  // LVGL frees the Screen's tree with its parent
+  CHECK(screen->widgets().root == nullptr);
+  const std::size_t before = screen->writes();
+  screen->update(test::temperature_vm(config), HeaderText{"09:01", "House"}, 1060);
+  CHECK(screen->writes() == before);  // nothing touched
+  screen.reset();                     // must not delete the freed root again
 }

@@ -14,10 +14,17 @@
 # To update: change the commit, the tag comment and the SHA-256 together, and say why in the PR.
 include(FetchContent)
 
+# DOWNLOAD_EXTRACT_TIMESTAMP exists from CMake 3.24; on 3.21..3.23 (our floor) it would be
+# parsed as part of URL_HASH and break the download.
+set(_hearthmap_extract_ts)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+  set(_hearthmap_extract_ts DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+endif()
+
 FetchContent_Declare(lvgl
   URL https://github.com/lvgl/lvgl/archive/80ca777e37a2b176770726a02e07a6fb79ef0b39.tar.gz  # v9.6.0
   URL_HASH SHA256=1c10f77b8e5e7776366d56de5645958f3312b3926b71a2a811d819fc0ad0cbaa
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  ${_hearthmap_extract_ts}
   SOURCE_SUBDIR do-not-add-subdirectory)
 FetchContent_MakeAvailable(lvgl)
 

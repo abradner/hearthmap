@@ -1,6 +1,7 @@
 #include "hearthmap/ui/heat_image.h"
 
 #include <algorithm>
+#include <array>
 
 #include "hearthmap/geometry.h"
 #include "hearthmap/ui/theme.h"
@@ -122,6 +123,19 @@ void HeatRasterizer::render_rows(const HeatField& field, const std::vector<Rgb56
   const bool field_ok = field.cols == cols_ && field.rows == rows_ &&
                         field.cells.size() == cell_count && cell_colours.size() == cell_count;
   const auto ucols = static_cast<std::size_t>(cols_);
+  // Per room, its first Value cell (row-major): the last resort for pixels too far from any of
+  // their room's Value cells for the local search (a narrow extension between cell centres).
+  // On the stack: render() never allocates.
+  std::array<std::int32_t, kNoRoom> first_value;
+  first_value.fill(-1);
+  if (field_ok) {
+    for (std::size_t c = 0; c < cell_count; ++c) {
+      const std::uint8_t room = cell_room_[c];
+      if (room != kNoRoom && first_value[room] < 0 && field.cells[c].state == CellState::Value) {
+        first_value[room] = static_cast<std::int32_t>(c);
+      }
+    }
+  }
 
   const std::int32_t first = row_begin < 0 ? 0 : row_begin;
   const std::int32_t last = row_end > height_ ? height_ : row_end;
@@ -169,8 +183,8 @@ void HeatRasterizer::render_rows(const HeatField& field, const std::vector<Rgb56
         }
         if (sum_w == 0) {
           // Near a wall all four neighbours can belong to other rooms (or carry no weight).
-          // Take the nearest Value cell of this room within two cells, if any: a measured room
-          // never shows "no data" slivers along its walls.
+          // Take the nearest Value cell of this room within two cells, else the room's first
+          // Value cell: a measured room never shows "no data" anywhere inside it.
           const std::int32_t cc = wx_[xi] < 128 ? col0_[xi] : col1_[xi];
           const std::int32_t cr = wy < 128 ? row0_[yi] : row1_[yi];
           std::int32_t best = -1;
@@ -190,6 +204,7 @@ void HeatRasterizer::render_rows(const HeatField& field, const std::vector<Rgb56
               }
             }
           }
+          if (best < 0) best = first_value[room];
           if (best >= 0) {
             px = cell_colours[static_cast<std::size_t>(best)];
             continue;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -308,9 +309,11 @@ struct Screen::Impl {
   std::optional<HudLook> hud_look;
   std::optional<OverlayLook> overlay_look;
   std::vector<std::string> hud_pin_ids;  // per card, for TapHudItem
+  std::map<std::string, const lv_image_dsc_t*, std::less<>> photo_cache;
 
   Impl(lv_obj_t* parent, const Config& cfg, const lv_image_dsc_t* heat, ScreenDeps d)
       : config(cfg), deps(std::move(d)) {
+    load_photos();
     build_root(parent);
     build_top_bar();
     build_map(heat);
@@ -331,6 +334,11 @@ struct Screen::Impl {
     if (indev == nullptr) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
+    // Display coordinates -> canvas: the root sits at its parent's origin, wherever that is.
+    lv_area_t root;
+    lv_obj_get_coords(self(e)->w.root, &root);
+    p.x -= root.x1;
+    p.y -= root.y1;
     self(e)->send(
         UiEvent::tap_map(CanvasPoint{static_cast<double>(p.x), static_cast<double>(p.y)}));
   }
@@ -355,8 +363,13 @@ struct Screen::Impl {
 
   // ---- construction ---------------------------------------------------------------------------
 
+  // LVGL frees the tree with its parent: if the embedder deletes the parent first, forget every
+  // widget so update() and ~Screen() never touch freed objects.
+  static void on_root_deleted(lv_event_t* e) { self(e)->w = ScreenWidgets{}; }
+
   void build_root(lv_obj_t* parent) {
     w.root = make_box(parent);
+    lv_obj_add_event_cb(w.root, on_root_deleted, LV_EVENT_DELETE, this);
     lv_obj_set_pos(w.root, 0, 0);
     lv_obj_set_size(w.root, config.canvas.width, config.canvas.height);
     lv_obj_set_style_bg_color(w.root, hex(theme::kBackground), 0);
@@ -446,7 +459,7 @@ struct Screen::Impl {
     const std::int32_t avail = (x2 - x1) - inset_l - inset_r;
     const std::int32_t least =
         room.name.size() <= 3 ? full : text_width(room.name.substr(0, 3) + "...", font);
-    if (avail < least) {
+    if (full > avail && avail < least) {
       lv_obj_set_hidden(label, true);
       return;
     }
@@ -621,9 +634,20 @@ struct Screen::Impl {
     }
   }
 
+  // Each photo id is asked of the provider once, at construction, and the pointer reused by
+  // every widget that shows it (ports.h: descriptors live as long as the Screen).
+  void load_photos() {
+    if (deps.photos == nullptr) return;
+    for (const Pin& pin : config.pins) {
+      if (!pin.photo.has_value() || photo_cache.count(*pin.photo) != 0) continue;
+      photo_cache.emplace(*pin.photo, deps.photos->plant_photo(*pin.photo));
+    }
+  }
+
   const lv_image_dsc_t* photo_for(const Pin& pin) const {
-    if (deps.photos == nullptr || !pin.photo.has_value()) return nullptr;
-    return deps.photos->plant_photo(*pin.photo);
+    if (!pin.photo.has_value()) return nullptr;
+    auto it = photo_cache.find(*pin.photo);
+    return it == photo_cache.end() ? nullptr : it->second;
   }
 
   static void set_disc_image(Disc& d, const lv_image_dsc_t* photo, const LeafImage* leaf) {
@@ -650,15 +674,20 @@ struct Screen::Impl {
     lv_obj_set_pos(w.hud_empty, theme::kHudX, theme::kHudY + kHudTitleHeight);
     lv_obj_set_hidden(w.hud_empty, true);
 
-    const auto cap = static_cast<std::size_t>(std::max<std::int32_t>(0, config.hud.max_items));
-    hud_pin_ids.assign(cap, std::string());
-    // Gap between cards: the spec's 10 px, reduced (never the cards) so `cap` cards plus the
+    // Gap between cards: the spec's 10 px, reduced (never the cards) so the cards plus the
     // "+N more" line end kHudBottomMargin above the screen's bottom edge. Below 4 px it stops
-    // shrinking; the schema allows caps up to 20, which cannot fit (the spec's cap is 7).
+    // shrinking, and the pool holds only the cards that then fit: with a larger max_items the
+    // items beyond the pool are counted in "+N more" (update_hud).
     const int start = theme::kHudY + kHudTitleHeight;
-    const int n = static_cast<int>(cap);
     // int32_t is long on the ESP32-P4 toolchain: name every conversion to int.
     const int more_h = static_cast<int>(lv_font_get_line_height(f.px20));
+    const int usable =
+        static_cast<int>(config.canvas.height) - kHudBottomMargin - more_h - 2 - start;
+    const int fits = std::max(1, usable / (theme::kHudCardHeight + 4));
+    const auto cap = static_cast<std::size_t>(
+        std::min<std::int32_t>(std::max<std::int32_t>(0, config.hud.max_items), fits));
+    hud_pin_ids.assign(cap, std::string());
+    const int n = static_cast<int>(cap);
     int gap = theme::kHudCardGap;
     if (n > 0) {
       const int room = static_cast<int>(config.canvas.height) - kHudBottomMargin - more_h - 2 -
@@ -933,7 +962,9 @@ struct Screen::Impl {
       l.stale = !fresh;
       if (fresh) {
         l.ring_permille = ring_permille(*pv.primary.value);
-        l.ring_colour = severity_colour(pv.primary.severity);
+        // Moisture feeding a disabled soil layer is not judged (D-020): a neutral ring.
+        l.ring_colour = config.layer(Layer::Soil).enabled ? severity_colour(pv.primary.severity)
+                                                          : theme::kTextSecondary;
       }
     } else if (pv.on_active_layer) {
       if (pv.active_value.has_value()) {
@@ -944,6 +975,9 @@ struct Screen::Impl {
         l.value_text = "no data";
         l.value_colour = theme::kStale;
       }
+    } else {
+      // Off the active layer: no value, but a silent sensor still looks silent (principle 1).
+      l.stale = pv.primary.freshness != Freshness::Fresh;
     }
     return l;
   }
@@ -957,7 +991,14 @@ struct Screen::Impl {
       if (prev.has_value() && *prev == look) continue;
       const bool first = !prev.has_value();
       if (first || prev->dim != look.dim) {
-        lv_obj_set_style_opa(w.pin[i], look.dim ? LV_OPA_40 : LV_OPA_COVER, 0);
+        // Dim the disc or the dot and value, never the badge (it stays at full strength).
+        const lv_opa_t opa = look.dim ? LV_OPA_40 : LV_OPA_COVER;
+        if (pin_disc[i].holder != nullptr) {
+          lv_obj_set_style_opa(pin_disc[i].holder, opa, 0);
+        } else {
+          lv_obj_set_style_opa(pin_dot[i], opa, 0);
+          lv_obj_set_style_opa(w.pin_value[i], opa, 0);
+        }
         count();
       }
       if (first || prev->badge != look.badge) {
@@ -1036,10 +1077,12 @@ struct Screen::Impl {
       li.colour = severity_colour(item.severity);
       look.items.push_back(li);
     }
-    look.overflow = vm.hud.overflow;
+    // Items beyond the card pool (a max_items larger than the screen holds) join "+N more".
+    const std::size_t total = vm.hud.items.size() + vm.hud.overflow;
+    if (look.items.size() > w.hud_card.size()) look.items.resize(w.hud_card.size());
+    look.overflow = total - look.items.size();
     if (hud_look.has_value() && *hud_look == look) return;
 
-    const std::size_t total = look.items.size() + look.overflow;
     set_text(w.hud_count, std::to_string(total));
     lv_obj_align_to(w.hud_count, hud_title, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
     set_hidden(w.hud_count, total == 0);
@@ -1116,8 +1159,15 @@ struct Screen::Impl {
     o.stale = !fresh;
     if (o.pot) {
       if (prow != nullptr) {
-        o.verdict = thirst_verdict(prow->assessment);
-        o.status_colour = severity_colour(prow->assessment.severity);
+        if (config.layer(Layer::Soil).enabled) {
+          o.verdict = thirst_verdict(prow->assessment);
+          o.status_colour = severity_colour(prow->assessment.severity);
+        } else {
+          // Not judged (D-020): the percentage alone, in a neutral colour, never "happy".
+          o.verdict =
+              fresh ? std::to_string(moisture_percent(*prow->assessment.value)) + "%" : "no data";
+          o.status_colour = theme::kTextSecondary;
+        }
         if (fresh) {
           o.ring_permille = ring_permille(*prow->assessment.value);
           o.bar_permille =
@@ -1149,54 +1199,77 @@ struct Screen::Impl {
   void update_overlay(const ViewModel& vm, Timestamp now) {
     OverlayLook o = overlay_of(vm, now);
     if (overlay_look.has_value() && *overlay_look == o) return;
-    set_hidden(w.scrim, !o.open);
+    const OverlayLook* prev = overlay_look.has_value() ? &*overlay_look : nullptr;
+    if (prev == nullptr || prev->open != o.open) set_hidden(w.scrim, !o.open);
     if (o.open) {
+      // Opening, or switching to another pin, rewrites every group; otherwise only the groups
+      // whose shown state changed (a minute passing touches the subtitle and nothing else).
+      const bool all = prev == nullptr || !prev->open || prev->pin != o.pin || prev->pot != o.pot;
       const Pin& pin = config.pins[o.pin];
-      set_text(w.overlay_title, o.title);
-      set_text(w.overlay_subtitle, o.subtitle);
-      set_hidden(overlay_disc.holder, !o.pot);
-      set_hidden(overlay_dot_face, o.pot);
-      set_hidden(w.overlay_thirst, !o.pot);
+      if (all || prev->title != o.title) set_text(w.overlay_title, o.title);
+      if (all || prev->subtitle != o.subtitle) set_text(w.overlay_subtitle, o.subtitle);
+      if (all) {
+        set_hidden(overlay_disc.holder, !o.pot);
+        set_hidden(overlay_dot_face, o.pot);
+        set_hidden(w.overlay_thirst, !o.pot);
+        lv_obj_set_pos(overlay_stats, kOverlayPad,
+                       kOverlayPad + 2 * kOverlayDiscRadius + 28 + (o.pot ? 118 : 0));
+      }
       if (o.pot) {
-        set_ring(overlay_disc, o.ring_permille, o.status_colour);
-        if (pin.kind == PinKind::Plant) {
-          set_disc_image(overlay_disc, photo_for(pin),
-                         o.stale ? &overlay_leaf_stale : &overlay_leaf);
-        } else {
-          set_disc_image(overlay_disc, nullptr, nullptr);
+        if (all || prev->ring_permille != o.ring_permille ||
+            prev->status_colour != o.status_colour) {
+          set_ring(overlay_disc, o.ring_permille, o.status_colour);
         }
-        set_text(w.overlay_verdict, o.verdict);
-        lv_obj_set_style_text_color(w.overlay_verdict, hex(o.status_colour), 0);
-        if (o.bar_permille >= 0) {
-          lv_obj_set_width(overlay_bar_fill,
-                           std::max(kBarH, kOverlayInnerW * o.bar_permille / 1000));
-          lv_obj_set_style_bg_color(overlay_bar_fill, hex(o.status_colour), 0);
+        if (all || prev->stale != o.stale) {
+          if (pin.kind == PinKind::Plant) {
+            set_disc_image(overlay_disc, photo_for(pin),
+                           o.stale ? &overlay_leaf_stale : &overlay_leaf);
+          } else {
+            set_disc_image(overlay_disc, nullptr, nullptr);
+          }
+          count();
         }
-        set_hidden(overlay_bar_fill, o.bar_permille < 0);
-        if (o.happy_lo >= 0) {
-          lv_obj_set_x(overlay_bar_happy, kOverlayInnerW * o.happy_lo / 100);
-          lv_obj_set_width(overlay_bar_happy, kOverlayInnerW * (o.happy_hi - o.happy_lo) / 100);
-          set_text(w.overlay_happy, "happy " + std::to_string(o.happy_lo) + " to " +
-                                        std::to_string(o.happy_hi) + "%");
-        } else {
-          set_text(w.overlay_happy, "");
+        if (all || prev->verdict != o.verdict || prev->status_colour != o.status_colour) {
+          set_text(w.overlay_verdict, o.verdict);
+          lv_obj_set_style_text_color(w.overlay_verdict, hex(o.status_colour), 0);
         }
-        set_hidden(overlay_bar_happy, o.happy_lo < 0);
-        lv_obj_set_pos(overlay_stats, kOverlayPad, kOverlayPad + 2 * kOverlayDiscRadius + 28 + 118);
-      } else {
+        if (all || prev->bar_permille != o.bar_permille || prev->status_colour != o.status_colour) {
+          if (o.bar_permille >= 0) {
+            lv_obj_set_width(overlay_bar_fill,
+                             std::max(kBarH, kOverlayInnerW * o.bar_permille / 1000));
+            lv_obj_set_style_bg_color(overlay_bar_fill, hex(o.status_colour), 0);
+          }
+          set_hidden(overlay_bar_fill, o.bar_permille < 0);
+        }
+        if (all || prev->happy_lo != o.happy_lo || prev->happy_hi != o.happy_hi) {
+          if (o.happy_lo >= 0) {
+            lv_obj_set_x(overlay_bar_happy, kOverlayInnerW * o.happy_lo / 100);
+            lv_obj_set_width(overlay_bar_happy, kOverlayInnerW * (o.happy_hi - o.happy_lo) / 100);
+            set_text(w.overlay_happy, "happy " + std::to_string(o.happy_lo) + " to " +
+                                          std::to_string(o.happy_hi) + "%");
+          } else {
+            set_text(w.overlay_happy, "");
+          }
+          set_hidden(overlay_bar_happy, o.happy_lo < 0);
+        }
+      } else if (all || prev->stale != o.stale) {
         lv_obj_set_style_bg_color(overlay_dot, hex(o.stale ? theme::kStale : theme::kTextPrimary),
                                   0);
-        lv_obj_set_pos(overlay_stats, kOverlayPad, kOverlayPad + 2 * kOverlayDiscRadius + 28);
+        count();
       }
       for (std::size_t i = 0; i < kMaxStats; ++i) {
         const bool used = i < o.stats.size();
+        const bool was_used = prev != nullptr && i < prev->stats.size();
+        if (!all && used == was_used && (!used || prev->stats[i] == o.stats[i])) continue;
         set_text(w.overlay_stat_label[i], used ? o.stats[i].label : std::string());
         set_text(w.overlay_stat_value[i], used ? o.stats[i].value : std::string());
         if (used) {
           lv_obj_set_style_text_color(w.overlay_stat_value[i], hex(o.stats[i].colour), 0);
         }
       }
-      set_text(w.overlay_history_title, o.history_title);
+      if (all || prev->history_title != o.history_title) {
+        set_text(w.overlay_history_title, o.history_title);
+      }
     }
     overlay_look = std::move(o);
   }
@@ -1213,6 +1286,7 @@ Screen::~Screen() {
 }
 
 void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now) {
+  if (impl_->w.root == nullptr) return;  // the tree went with its parent
   impl_->update_header(header);
   impl_->update_tabs(vm);
   impl_->update_rooms(vm);
