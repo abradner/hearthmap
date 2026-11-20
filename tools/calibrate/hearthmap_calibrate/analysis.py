@@ -315,17 +315,20 @@ def find_events(held: _Held, sign: int, min_rise: float, params: Params) -> list
 
 
 def detect_polarity(held: _Held, min_rise: float, params: Params) -> tuple[str, list[Finding]]:
+    """Normal when sharp rises outnumber sharp falls, inverted when the reverse; on a tie (none of
+    either, or as many of each) the slow trend decides."""
     if params.polarity in (NORMAL, INVERTED):
         return params.polarity, []
     up = len(find_events(held, +1, min_rise, params))
     down = len(find_events(held, -1, min_rise, params))
     if up != down:
         return (NORMAL if up > down else INVERTED), []
+    why = "no sharp rises or falls" if up == 0 else f"as many sharp rises as falls ({up})"
     trend = trend_sign(held)
     if trend == 0:
-        return NORMAL, [Finding("polarity_assumed", "no watering events and no drying trend: assumed higher reading = wetter")]
+        return NORMAL, [Finding("polarity_assumed", f"{why} and no drying trend: assumed higher reading = wetter")]
     polarity = NORMAL if trend < 0 else INVERTED
-    return polarity, [Finding("polarity_from_trend", f"no watering events: polarity ({polarity}) inferred from the drying trend")]
+    return polarity, [Finding("polarity_from_trend", f"{why}: polarity ({polarity}) inferred from the drying trend")]
 
 
 def trend_sign(held: _Held, step_hours: float = 6.0) -> int:
@@ -411,20 +414,27 @@ def analyse(entity_id: str, samples: list[Sample], unit: str | None = None, para
         weights = [e - t for t, e in zip(held.t, held.end)]
     pct_wet = sign * weighted_percentile(wetness, weights, params.wet_percentile)
     pct_dry = sign * weighted_percentile(wetness, weights, params.dry_percentile)
+    # Events are evidence, percentiles a bound: each end is the more extreme of the two. Top-up
+    # waterings of a still-moist pot have troughs far wetter than the pot's dry spells, and a
+    # partial watering has a plateau short of a thorough one; neither may narrow the range.
+    wet, wet_method = pct_wet, f"{params.wet_percentile:g}th wetness percentile"
     if plateaus:
-        wet, wet_method = statistics.median(plateaus), f"median of {len(plateaus)} post-watering plateaus"
-    else:
-        wet, wet_method = pct_wet, f"{params.wet_percentile:g}th wetness percentile"
+        if sign * statistics.median(plateaus) >= sign * pct_wet:
+            wet, wet_method = statistics.median(plateaus), f"median of {len(plateaus)} post-watering plateaus"
+        else:
+            wet_method += f" (wetter than the median of {len(plateaus)} post-watering plateaus)"
+    dry, dry_method = pct_dry, f"{params.dry_percentile:g}th wetness percentile"
     if len(troughs) >= 2:
-        dry, dry_method = statistics.median(troughs), f"median of {len(troughs)} pre-watering troughs"
-    else:
-        dry, dry_method = pct_dry, f"{params.dry_percentile:g}th wetness percentile"
+        if sign * statistics.median(troughs) <= sign * pct_dry:
+            dry, dry_method = statistics.median(troughs), f"median of {len(troughs)} pre-watering troughs"
+        else:
+            dry_method += f" (drier than the median of {len(troughs)} pre-watering troughs)"
     evidence.update(dry_method=dry_method, wet_method=wet_method, percentile_dry=_round(pct_dry), percentile_wet=_round(pct_wet))
 
     rate = drying_rate(held, events, sign, params)
     common = dict(polarity=polarity, watering_events=len(events), evidence=evidence)
     width = sign * (wet - dry)
-    if width <= max(3 * sigma, 1e-9):
+    if width <= max(4 * sigma, 1e-9):
         return Proposal(
             entity_id,
             TOO_NARROW,

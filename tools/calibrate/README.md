@@ -121,14 +121,17 @@ once, for the last `--days` days (default 28).
 6. **Watering events.** A rise of at least 20% of the span (and at least 4x the noise) within
    3 h, timed from when the previous reading stopped being the latest one, so a watering recorded
    hours after the last change still counts. Consecutive rises within 3 h are one event.
-7. **Range.** `wet` = median **post-watering plateau** (the held value from 1 h to 13 h after
-   the peak, so overshoot has drained). `dry` = median **pre-watering trough** (the held value in
-   the 3 h before the rise). With no events `wet` is the 95th, and with fewer than two events
-   `dry` the 5th, **time-weighted** wetness percentile of the held values. Wetness is
-   polarity-aware: for an inverted probe `dry` is numerically above `wet`.
+7. **Range.** Evidence from events: the median **post-watering plateau** (the held value from
+   1 h to 13 h after the peak, so overshoot has drained) and, with two or more events, the median
+   **pre-watering trough** (the held value in the 3 h before the rise). A bound from the whole
+   history: the 95th and 5th **time-weighted** wetness percentiles of the held values. `wet` is
+   the wetter of plateau and 95th percentile, `dry` the drier of trough and 5th percentile, so
+   top-ups of a still-moist pot cannot hide a week at 0%, nor partial waterings a thorough
+   soak. `evidence.dry_method`/`wet_method` say which won. Wetness is polarity-aware: for an
+   inverted probe `dry` is numerically above `wet`.
 8. **Drying rate.** The median least-squares slope over each stretch between waterings at least
    12 h long, in raw units per day (positive = drying), and as a fraction of the range per day.
-9. **Judge.** A range not wider than 3x the noise is `too_narrow`. Confidence: `high` with 3+
+9. **Judge.** A range not wider than 4x the noise is `too_narrow`. Confidence: `high` with 3+
    waterings over 14+ days and no saturation or flat-line; `medium` with 1+ watering over 7+
    days; `low` otherwise (no waterings, or under 7 days).
 10. **Happy range.** `happy_min` = dry + 30% of (wet - dry); `happy_max` = wet. A **default**,

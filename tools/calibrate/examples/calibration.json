@@ -110,16 +110,16 @@
       "status": "ok",
       "calibration": {
         "dry": 2884.0,
-        "wet": 1372.0,
-        "happy_min": 2430.4,
-        "happy_max": 1372.0
+        "wet": 1368.0,
+        "happy_min": 2429.2,
+        "happy_max": 1368.0
       },
       "happy_is_default": true,
       "confidence": "high",
       "polarity": "inverted",
       "watering_events": 5,
       "drying_rate_per_day": 266.29,
-      "drying_fraction_per_day": 0.1761,
+      "drying_fraction_per_day": 0.1757,
       "warnings": [],
       "evidence": {
         "samples": 327,
@@ -132,7 +132,7 @@
         "history_days": 28.0,
         "flatlined": 0,
         "dry_method": "median of 5 pre-watering troughs",
-        "wet_method": "median of 5 post-watering plateaus",
+        "wet_method": "95th wetness percentile (wetter than the median of 5 post-watering plateaus)",
         "percentile_dry": 2816.0,
         "percentile_wet": 1368.0
       }
@@ -155,7 +155,7 @@
       "warnings": [
         {
           "code": "polarity_from_trend",
-          "message": "no watering events: polarity (normal) inferred from the drying trend"
+          "message": "no sharp rises or falls: polarity (normal) inferred from the drying trend"
         },
         {
           "code": "no_watering_events",

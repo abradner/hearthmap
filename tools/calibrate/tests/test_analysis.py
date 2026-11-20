@@ -165,6 +165,34 @@ def test_dry_end_saturating_at_zero_is_real_and_reported():
     assert p.evidence["flatlined"] == 0  # at an end: kept, not ignored
 
 
+def test_top_up_waterings_do_not_hide_a_long_dry_spell():
+    # Three top-ups from 40% back to 60% (troughs at 40), then left to dry to 0 for a week.
+    s = []
+    t = T0
+    for _ in range(3):
+        s += [Sample(t + h * HOUR, 60 - 20 * h / 96) for h in range(96)]
+        t += 96 * HOUR
+    s += [Sample(t + h * HOUR, max(0.0, 60 - 60 * h / 150)) for h in range(24 * 14)]
+    p = analyse("sensor.example_topped_up", s, "%")
+    assert p.watering_events == 3
+    assert p.dry == 0.0  # not the 40% troughs
+    assert "drier than the median of 3 pre-watering troughs" in p.evidence["dry_method"]
+    assert p.wet == pytest.approx(60, abs=2)
+
+
+def test_partial_waterings_do_not_cap_the_wet_end():
+    # One thorough soak to 80 that lasts, then repeated partial top-ups that only reach ~45.
+    s = [Sample(T0 + h * HOUR, 80 - 10 * h / 240) for h in range(240)]
+    t = T0 + 240 * HOUR
+    for _ in range(4):
+        s += [Sample(t + h * HOUR, 45 - 25 * h / 72) for h in range(72)]
+        t += 72 * HOUR
+    p = analyse("sensor.example_partial", s, "%")
+    assert p.watering_events >= 3
+    assert p.wet > 70
+    assert "wetter than the median" in p.evidence["wet_method"]
+
+
 def test_frozen_mid_range_run_is_ignored_for_percentiles():
     s = sawtooth(days=35)
     # Freeze the sensor at 33.0 for four days in the middle (HA records it once, then nothing).

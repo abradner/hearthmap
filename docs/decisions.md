@@ -224,9 +224,10 @@ explicitly. **Why:** a default should not encode one layout's HUD width.
 
 ### D-024 Calibration proposals: method defaults (provisional, PR 8)
 
-**Default:** `tools/calibrate` takes `wet` as the median post-watering plateau (with at least one
-watering) and `dry` as the median pre-watering trough (with at least two), falling back to the
-5th/95th time-weighted wetness percentiles. A watering is a rise of at least 20% of the sensor's
+**Default:** `tools/calibrate` takes `wet` as the wetter of the median post-watering plateau and
+the 95th time-weighted wetness percentile, and `dry` as the drier of the median pre-watering
+trough (with at least two waterings) and the 5th percentile: top-ups of a still-moist pot have
+troughs far wetter than its dry spells. A watering is a rise of at least 20% of the sensor's
 span within 3 h. Samples hold until the next one (Home Assistant records only changes), for at
 most 7 days. A run of one value longer than 72 h is a frozen sensor, ignored, when it is
 mid-range; at either end of the range it is kept and reported as saturation, because a pot

@@ -23,11 +23,11 @@ sensor.example_basil_moisture  (confidence: medium)
   warning:   reads 0 unchanged for over 72 h at its dry end: the probe may saturate there, so the true dry end may lie beyond it
 
 sensor.example_pothos_moisture_raw  (confidence: high)
-  range:     dry 2884  ->  wet 1372  (inverted probe: lower is wetter)
-  happy:     2430.4 .. 1372  (default, tune per species)
+  range:     dry 2884  ->  wet 1368  (inverted probe: lower is wetter)
+  happy:     2429.2 .. 1368  (default, tune per species)
   waterings: 5
   drying:    266.29 units/day (18% of the range per day, about 5.7 days from wet to dry)
-  method:    dry from median of 5 pre-watering troughs; wet from median of 5 post-watering plateaus
+  method:    dry from median of 5 pre-watering troughs; wet from 95th wetness percentile (wetter than the median of 5 post-watering plateaus)
   data:      28 days, 327 samples (0 unavailable, 0 impossible, 0 outliers, 0 flat-lined)
 
 sensor.example_snake_moisture  (confidence: low)
@@ -37,7 +37,7 @@ sensor.example_snake_moisture  (confidence: low)
   drying:    1.21 units/day (4% of the range per day, about 25.6 days from wet to dry)
   method:    dry from 5th wetness percentile; wet from 95th wetness percentile
   data:      27.67 days, 35 samples (0 unavailable, 0 impossible, 0 outliers, 0 flat-lined)
-  warning:   no watering events: polarity (normal) inferred from the drying trend
+  warning:   no sharp rises or falls: polarity (normal) inferred from the drying trend
   warning:   no watering events seen: wet is the wettest reading seen, not a post-watering reading; water thoroughly and re-run
 
 sensor.example_lavender_moisture
