@@ -61,43 +61,49 @@ void build_axis(std::int32_t pixels, std::int32_t cells, std::vector<std::int32_
 
 }  // namespace
 
-HeatRasterizer::HeatRasterizer(const Config& config)
+HeatRasterizer::HeatRasterizer(const Config& config) : HeatRasterizer(config, Deferred{}) {
+  build_rows(config, rows_ + height_);
+}
+
+HeatRasterizer::HeatRasterizer(const Config& config, Deferred)
     : width_(config.canvas.map_area.width),
       height_(config.canvas.map_area.height),
       cols_(config.heat.grid_cols),
-      rows_(config.heat.grid_rows) {
+      rows_(config.heat.grid_rows),
+      scanner_(config) {
   if (width_ < 0) width_ = 0;
   if (height_ < 0) height_ = 0;
+  if (cols_ < 0) cols_ = 0;
+  if (rows_ < 0) rows_ = 0;
   room_outdoor_.reserve(config.rooms.size());
   for (const auto& room : config.rooms) room_outdoor_.push_back(room.outdoor);
-
-  // Which room owns each pixel centre: first in config order (config.h, Config::rooms).
-  const CanvasRect& area = config.canvas.map_area;
   pixel_room_.assign(pixel_count(), kNoRoom);
-  for (std::int32_t y = 0; y < height_; ++y) {
-    for (std::int32_t x = 0; x < width_; ++x) {
-      const MapPoint p = to_map(area, CanvasPoint{area.x + x + 0.5, area.y + y + 0.5});
-      for (std::size_t r = 0; r < config.rooms.size() && r < kNoRoom; ++r) {
-        if (point_in_polygon(config.rooms[r].polygon, p)) {
-          pixel_room_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) +
-                      static_cast<std::size_t>(x)] = static_cast<std::uint8_t>(r);
-          break;
-        }
-      }
-    }
-  }
-
-  const RoomMask mask = build_room_mask(config);
-  cell_room_.assign(mask.room_index.size(), kNoRoom);
-  for (std::size_t i = 0; i < mask.room_index.size(); ++i) {
-    const std::int16_t r = mask.room_index[i];
-    if (r >= 0 && r < kNoRoom) cell_room_[i] = static_cast<std::uint8_t>(r);
-  }
-  cols_ = mask.cols;
-  rows_ = mask.rows;
-
+  cell_room_.assign(static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_), kNoRoom);
+  scan_row_.assign(static_cast<std::size_t>(std::max(width_, cols_)), RoomMask::kOutside);
   build_axis(width_, cols_, col0_, col1_, wx_);
   build_axis(height_, rows_, row0_, row1_, wy_);
+}
+
+bool HeatRasterizer::build_rows(const Config& config, std::int32_t max_rows) {
+  (void)config;  // the scanner copied what it needs; kept for the contract and future use
+  for (std::int32_t n = 0; n < max_rows && !ready(); ++n, ++next_row_) {
+    // Grid rows first (cells, core's mask geometry), then pixel rows (pixel centres: map point
+    // ((x + 0.5) / width, (y + 0.5) / height), the same centre as to_map() of the pixel's
+    // canvas centre).
+    const bool grid = next_row_ < rows_;
+    const std::int32_t row = grid ? next_row_ : next_row_ - rows_;
+    const std::int32_t across = grid ? cols_ : width_;
+    const std::int32_t down = grid ? rows_ : height_;
+    std::vector<std::uint8_t>& dest = grid ? cell_room_ : pixel_room_;
+    scanner_.scan_row(across, down, row, scan_row_.data());
+    const std::size_t base = static_cast<std::size_t>(row) * static_cast<std::size_t>(across);
+    for (std::int32_t x = 0; x < across; ++x) {
+      const std::int16_t r = scan_row_[static_cast<std::size_t>(x)];
+      dest[base + static_cast<std::size_t>(x)] =
+          r >= 0 && r < kNoRoom ? static_cast<std::uint8_t>(r) : kNoRoom;
+    }
+  }
+  return ready();
 }
 
 std::size_t HeatRasterizer::working_bytes() const {
@@ -108,6 +114,11 @@ std::size_t HeatRasterizer::working_bytes() const {
 
 void HeatRasterizer::render(const HeatField& field, const std::vector<Rgb565>& cell_colours,
                             Rgb565* out) const {
+  render_rows(field, cell_colours, out, 0, height_);
+}
+
+void HeatRasterizer::render_rows(const HeatField& field, const std::vector<Rgb565>& cell_colours,
+                                 Rgb565* out, std::int32_t row_begin, std::int32_t row_end) const {
   const std::size_t cell_count = static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_);
   const bool field_ok = field.cols == cols_ && field.rows == rows_ &&
                         field.cells.size() == cell_count && cell_colours.size() == cell_count;
@@ -126,7 +137,9 @@ void HeatRasterizer::render(const HeatField& field, const std::vector<Rgb565>& c
     }
   }
 
-  for (std::int32_t y = 0; y < height_; ++y) {
+  const std::int32_t first = row_begin < 0 ? 0 : row_begin;
+  const std::int32_t last = row_end > height_ ? height_ : row_end;
+  for (std::int32_t y = first; y < last; ++y) {
     const auto yi = static_cast<std::size_t>(y);
     const std::int32_t wy = wy_[yi];
     const std::size_t rows_idx[2] = {static_cast<std::size_t>(row0_[yi]),

@@ -27,9 +27,27 @@ namespace hearthmap::ui {
 class HeatRasterizer {
  public:
   /// Precomputes which room owns each pixel of config.canvas.map_area (first room in config
-  /// order whose polygon contains the pixel centre, core's point_in_polygon()) and each grid
-  /// cell (core's build_room_mask()). `config` need not outlive the rasterizer.
+  /// order whose polygon contains the pixel centre, exactly core's point_in_polygon()) and each
+  /// grid cell (exactly core's build_room_mask()). `config` need not outlive the rasterizer.
   explicit HeatRasterizer(const Config& config);
+
+  /// Tag for the two-phase form below.
+  struct Deferred {};
+
+  /// Two-phase construction for embedders that must not block (the device's boot,
+  /// docs/decisions.md D-038): sizes everything and returns at once; room ownership is then
+  /// computed by build_rows() calls, a few rows at a time. The one-argument constructor is this
+  /// plus build_rows(config, all rows), so the result is identical.
+  HeatRasterizer(const Config& config, Deferred);
+
+  /// Compute room ownership for up to `max_rows` more rows: the heat grid's rows first, then the
+  /// image's pixel rows. Returns ready(). `config` must be the one the rasterizer was
+  /// constructed with. Each row costs double-precision work for the room edges that cross it
+  /// plus integer work per pixel (core's RoomScanner); nothing is per pixel per room.
+  bool build_rows(const Config& config, std::int32_t max_rows);
+
+  /// True once every row is built. render() before that draws unbuilt rows as background.
+  bool ready() const { return next_row_ >= rows_ + height_; }
 
   std::int32_t width() const { return width_; }
   std::int32_t height() const { return height_; }
@@ -46,6 +64,11 @@ class HeatRasterizer {
   /// a mismatched field draws every room as "no data" rather than reading out of bounds.
   void render(const HeatField& field, const std::vector<Rgb565>& cell_colours, Rgb565* out) const;
 
+  /// render() for pixel rows [row_begin, row_end) only (clamped to the image), so an embedder
+  /// can spread one image over several calls; every row over all calls gives exactly render().
+  void render_rows(const HeatField& field, const std::vector<Rgb565>& cell_colours, Rgb565* out,
+                   std::int32_t row_begin, std::int32_t row_end) const;
+
  private:
   static constexpr std::uint8_t kNoRoom = 0xFF;
 
@@ -60,6 +83,10 @@ class HeatRasterizer {
   // of the second.
   std::vector<std::int32_t> col0_, col1_, row0_, row1_;
   std::vector<std::int32_t> wx_, wy_;
+  // Deferred build state.
+  RoomScanner scanner_;
+  std::vector<std::int16_t> scan_row_;  ///< One row of scanner output.
+  std::int32_t next_row_ = 0;           ///< 0..rows_ grid rows, then rows_..rows_+height_ pixels.
 };
 
 /// One colour per cell of `field` through core's ColourLut (built once per band), written into

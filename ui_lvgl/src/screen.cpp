@@ -310,6 +310,8 @@ struct Screen::Impl {
   std::optional<OverlayLook> overlay_look;
   std::vector<std::string> hud_pin_ids;  // per card, for TapHudItem
   std::map<std::string, const lv_image_dsc_t*, std::less<>> photo_cache;
+  /// Pre-sized photos by (photo id, disc diameter), where the provider has them.
+  std::map<std::pair<std::string, int>, const lv_image_dsc_t*> sized_photo_cache;
 
   Impl(lv_obj_t* parent, const Config& cfg, const lv_image_dsc_t* heat, ScreenDeps d)
       : config(cfg), deps(std::move(d)) {
@@ -599,7 +601,7 @@ struct Screen::Impl {
       lv_obj_set_pos(box, c.x - kPlantRadius, c.y - kPlantRadius);
       Disc d = make_disc(box, kPlantRadius, kPinRingWidth);
       if (pin.kind == PinKind::Plant) {
-        set_disc_image(d, photo_for(pin), &pin_leaf);
+        set_disc_image(d, photo_for(pin, 2 * kPlantRadius), &pin_leaf);
       }
       lv_obj_t* badge = make_badge(box);
       lv_obj_set_pos(badge, 2 * kPlantRadius - kBadgeW / 2, -kBadgeH / 2);
@@ -641,11 +643,23 @@ struct Screen::Impl {
     for (const Pin& pin : config.pins) {
       if (!pin.photo.has_value() || photo_cache.count(*pin.photo) != 0) continue;
       photo_cache.emplace(*pin.photo, deps.photos->plant_photo(*pin.photo));
+      for (int diameter : {2 * kPlantRadius, 2 * kHudDiscRadius, 2 * kOverlayDiscRadius}) {
+        const lv_image_dsc_t* sized = deps.photos->plant_photo_sized(*pin.photo, diameter);
+        // Only an exact fit is used as pre-sized: anything else would still need scaling.
+        if (sized != nullptr && static_cast<int>(sized->header.w) == diameter &&
+            static_cast<int>(sized->header.h) == diameter) {
+          sized_photo_cache.emplace(std::make_pair(*pin.photo, diameter), sized);
+        }
+      }
     }
   }
 
-  const lv_image_dsc_t* photo_for(const Pin& pin) const {
+  /// The photo for a disc of `diameter`: pre-sized when the provider has it, else the one
+  /// plant_photo() gave (scaled to cover), else nullptr (the leaf).
+  const lv_image_dsc_t* photo_for(const Pin& pin, int diameter) const {
     if (!pin.photo.has_value()) return nullptr;
+    auto sized = sized_photo_cache.find(std::make_pair(*pin.photo, diameter));
+    if (sized != sized_photo_cache.end()) return sized->second;
     auto it = photo_cache.find(*pin.photo);
     return it == photo_cache.end() ? nullptr : it->second;
   }
@@ -653,7 +667,11 @@ struct Screen::Impl {
   static void set_disc_image(Disc& d, const lv_image_dsc_t* photo, const LeafImage* leaf) {
     if (photo != nullptr) {
       lv_image_set_src(d.image, photo);
-      lv_image_set_inner_align(d.image, LV_IMAGE_ALIGN_COVER);
+      // A photo already the disc's size is centred, not scaled: no software transform.
+      const bool fits =
+          static_cast<int32_t>(photo->header.w) == lv_obj_get_style_width(d.image, LV_PART_MAIN) &&
+          static_cast<int32_t>(photo->header.h) == lv_obj_get_style_height(d.image, LV_PART_MAIN);
+      lv_image_set_inner_align(d.image, fits ? LV_IMAGE_ALIGN_CENTER : LV_IMAGE_ALIGN_COVER);
     } else if (leaf != nullptr) {
       lv_image_set_src(d.image, leaf->dsc());
       lv_image_set_inner_align(d.image, LV_IMAGE_ALIGN_CENTER);
@@ -1032,7 +1050,7 @@ struct Screen::Impl {
           set_ring(d, look.ring_permille, look.ring_colour);
         }
         if (pin.kind == PinKind::Plant && (first || prev->stale != look.stale)) {
-          const lv_image_dsc_t* photo = photo_for(pin);
+          const lv_image_dsc_t* photo = photo_for(pin, 2 * kPlantRadius);
           if (photo == nullptr) {
             set_disc_image(d, nullptr, look.stale ? &pin_leaf_stale : &pin_leaf);
             count();
@@ -1105,7 +1123,7 @@ struct Screen::Impl {
       set_text(w.hud_percent[c], std::to_string(li.percent) + "%");
       lv_obj_set_style_text_color(w.hud_percent[c], hex(li.colour), 0);
       set_ring(hud_disc[c], li.permille, li.colour);
-      set_disc_image(hud_disc[c], photo_for(pin), &hud_leaf);
+      set_disc_image(hud_disc[c], photo_for(pin, 2 * kHudDiscRadius), &hud_leaf);
       set_hidden(w.hud_card[c], false);
     }
     if (look.overflow > 0) set_text(w.hud_more, "+" + std::to_string(look.overflow) + " more");
@@ -1222,7 +1240,7 @@ struct Screen::Impl {
         }
         if (all || prev->stale != o.stale) {
           if (pin.kind == PinKind::Plant) {
-            set_disc_image(overlay_disc, photo_for(pin),
+            set_disc_image(overlay_disc, photo_for(pin, 2 * kOverlayDiscRadius),
                            o.stale ? &overlay_leaf_stale : &overlay_leaf);
           } else {
             set_disc_image(overlay_disc, nullptr, nullptr);

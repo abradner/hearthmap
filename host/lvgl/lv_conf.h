@@ -17,7 +17,29 @@
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
 #define LV_USE_OS LV_OS_NONE
-#define LV_USE_LOG 0
+
+/* Warnings are compiled in (as on the device, where ESPHome prints them) and go nowhere unless a
+ * test registers a print callback: ui_lvgl's tests count them (docs/decisions.md D-039). */
+#define LV_USE_LOG 1
+#define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
+#define LV_LOG_PRINTF 0
+
+/* The software renderer's colour formats, exactly as ESPHome 2026.11.0 compiles them for the
+ * panel (its lvgl component: the display format RGB565 plus ARGB8888 for layers, and RGB888 for
+ * gradients), so host renders and golden images take the device's code paths. A format missing
+ * here is missing there: drawing a scaled or rotated RGB565 image, for one, needs RGB565A8 too,
+ * which the device does not have (D-039). */
+#define LV_DRAW_SW_SUPPORT_RGB565 1
+#define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED 0
+#define LV_DRAW_SW_SUPPORT_RGB565A8 0
+#define LV_DRAW_SW_SUPPORT_RGB888 1
+#define LV_DRAW_SW_SUPPORT_XRGB8888 0
+#define LV_DRAW_SW_SUPPORT_ARGB8888 1
+#define LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED 0
+#define LV_DRAW_SW_SUPPORT_L8 0
+#define LV_DRAW_SW_SUPPORT_AL88 0
+#define LV_DRAW_SW_SUPPORT_A8 0
+#define LV_DRAW_SW_SUPPORT_I1 0
 #define LV_USE_SYSMON 0
 
 /* No theme: every ui_lvgl object starts from lv_obj_remove_style_all(). */

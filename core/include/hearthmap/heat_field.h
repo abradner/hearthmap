@@ -43,6 +43,50 @@ struct RoomMask {
   }
 };
 
+/// Which room owns each centre of a grid laid over map space, computed one row at a time.
+///
+/// For a `cols` x `rows` grid, cell (c, r) has its centre at map point ((c + 0.5) / cols,
+/// (r + 0.5) / rows), and scan_row() gives every cell of row r the index of the first room in
+/// config order whose polygon contains that centre, or RoomMask::kOutside. The answer is exactly
+/// point_in_polygon()'s for each centre, by construction: both evaluate the same edge arithmetic,
+/// once per edge per row here instead of once per edge per point.
+///
+/// Cost per row: double-precision work for the edges that cross the row only (O(E) worst case,
+/// E = total vertices over all rooms, typically a few per room) plus O(cols) integer fills. That
+/// is what makes the device's boot affordable: point_in_polygon() per pixel was O(pixels x E) in
+/// software double precision on the ESP32-P4 (docs/decisions.md D-038). Splitting the rows across
+/// calls lets an embedder spread the work and stay responsive. The scanner borrows nothing: it
+/// copies the rooms' edges at construction (allocates), and scan_row() allocates nothing once its
+/// scratch has grown to the busiest row.
+class RoomScanner {
+ public:
+  RoomScanner() = default;
+  explicit RoomScanner(const Config& config);
+
+  /// Row `row` of a `cols` x `rows` grid into `out[0 .. cols)`. Does nothing for cols <= 0,
+  /// rows <= 0 or a row outside 0..rows-1.
+  void scan_row(std::int32_t cols, std::int32_t rows, std::int32_t row, std::int16_t* out);
+
+  /// Total edges held (for budgeting a row's worst case).
+  std::size_t edge_count() const { return edges_.size(); }
+
+ private:
+  struct Edge {
+    double y_lo;  ///< the endpoints' y, lower first (spans() is order-free)
+    double y_hi;
+    double a_x, a_y, dx, dy;  ///< canonical form (core/src/polygon_edges.h)
+  };
+  struct RoomEdges {
+    std::size_t first = 0;  ///< into edges_
+    std::size_t count = 0;  ///< 0 for rooms that enclose nothing (< 3 vertices, collinear)
+    double y_min = 0.0;
+    double y_max = 0.0;
+  };
+  std::vector<Edge> edges_;
+  std::vector<RoomEdges> rooms_;
+  std::vector<std::int32_t> thresholds_;  ///< scratch: per crossing, cells left of it
+};
+
 /// Build the mask for `config` at config.heat.grid_cols x grid_rows into `out`, reusing its
 /// storage. Not per-frame (the mask depends only on the config), but cheap to redo.
 /// A non-positive grid size gives an empty mask (cols = rows = 0). Rooms past index 32766
@@ -114,6 +158,16 @@ struct HeatField {
 /// Implemented in core (PR 3).
 void compute_heat_field(const Config& config, const RoomMask& mask,
                         const std::vector<HeatSample>& samples, HeatField& out);
+
+/// Row-by-row form of compute_heat_field(), for embedders that spread the work: begin_heat_field()
+/// sizes and clears `out` for `mask` (false, with `out` emptied, when `mask` is not a valid mask:
+/// exactly compute_heat_field()'s refusal), then compute_heat_field_rows() fills rows
+/// [row_begin, row_end) of it, clamped to the grid. Calling it over every row gives exactly
+/// compute_heat_field()'s result; neither call allocates once `out` has held a field this size.
+bool begin_heat_field(const RoomMask& mask, HeatField& out);
+void compute_heat_field_rows(const Config& config, const RoomMask& mask,
+                             const std::vector<HeatSample>& samples, std::int32_t row_begin,
+                             std::int32_t row_end, HeatField& out);
 
 /// Returning form of compute_heat_field(); allocates. Tests and the host use it; the device
 /// keeps one HeatField per layer and calls the reuse form.

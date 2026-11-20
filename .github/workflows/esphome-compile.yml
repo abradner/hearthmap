@@ -1,0 +1,38 @@
+# Full firmware compile of the example device with the pinned ESPHome image. Manual only: a cold
+# ESP-IDF build for the ESP32-P4 downloads the toolchain and builds ~1,800 objects, too slow for
+# every pull request. The ESPHome data directory (toolchain, component mirror, ccache) is cached.
+# GitHub-hosted runners only (public repo); actions pinned by SHA.
+name: esphome-compile
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/esphome-data
+          key: esphome-2026.11.0-p4-${{ hashFiles('examples/flat/esphome/*.yaml') }}
+          restore-keys: esphome-2026.11.0-p4-
+      - name: Placeholder secrets
+        run: cp examples/flat/esphome/secrets.example.yaml examples/flat/esphome/secrets.yaml
+      - name: esphome compile
+        run: |
+          mkdir -p ~/esphome-data/cache
+          docker run --rm -e ESPHOME_DATA_DIR=/data \
+            -v ~/esphome-data:/data -v ~/esphome-data/cache:/cache -v "$PWD":/config \
+            ghcr.io/esphome/esphome:2026.11.0@sha256:6351ae811202064bb3eb49dde982609b47acd523103a66d7b9c5c1431beea055 \
+            compile examples/flat/esphome/flat-panel.yaml
+      - name: Firmware size
+        run: |
+          f=$(sudo find ~/esphome-data -name firmware.factory.bin | head -1)
+          test -n "$f"
+          ls -l "$f"
+          sha256sum "$f"

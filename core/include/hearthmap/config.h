@@ -15,6 +15,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -321,6 +322,33 @@ struct ConfigIssue {
 /// Warnings: a pin whose position is outside its room's polygon; an enabled layer no pin feeds.
 /// Implemented in core (PR 2).
 std::vector<ConfigIssue> validate(const Config& config);
+
+/// validate(), one unit at a time, for callers that must not block (the device's boot,
+/// docs/decisions.md D-038). Each step() checks one unit: first the version, canvas and room
+/// count; then one room per step; then the pin count; then one pin per step; then the layers and
+/// the remaining scalars. Stepping until step() returns true gives exactly validate()'s issues, in
+/// the same order. `config` must outlive the validator and
+/// not change while it runs. A room step does at most O(V^2) segment tests for its own V <= 64
+/// vertices (fewer for an invalid one); a pin step is a few checks and one point_in_polygon().
+class ConfigValidator {
+ public:
+  explicit ConfigValidator(const Config& config);
+  ~ConfigValidator();
+  ConfigValidator(const ConfigValidator&) = delete;
+  ConfigValidator& operator=(const ConfigValidator&) = delete;
+
+  /// Check the next unit. Returns done().
+  bool step();
+  bool done() const;
+  /// 3 + rooms + pins.
+  std::size_t steps_total() const;
+  /// The issues found so far (all of them once done()); leaves the validator's list empty.
+  std::vector<ConfigIssue> take_issues();
+
+ private:
+  struct State;
+  std::unique_ptr<State> state_;
+};
 
 /// True when `issues` contains no Error.
 inline bool usable(const std::vector<ConfigIssue>& issues) {

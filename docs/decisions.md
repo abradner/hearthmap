@@ -364,6 +364,109 @@ interpolates in `map_area`, so the screen must draw the map exactly there, and t
 map area is one config field. Open: the editor's default for new projects (D-044, `{0, 0, 960, 800}`) still
 overlaps the top bar and the HUD's left edge at x 936; it should follow this area.
 
+### D-034 core and ui_lvgl reach the firmware by a build-time copy (provisional)
+
+**Question:** ESPHome copies only a component directory's top-level files into the build, and
+`core/` and `ui_lvgl/` live outside `components/hearthmap/`. How do they get compiled? **Default:**
+the component's Python copies each library's `include/` tree to the root of the build's `src/` and
+its `src/` tree to `src/hearthmap_lib/<lib>/` (plus `host/src/summary.*`, the D-030 stopgap),
+writing only changed files and deleting stale ones in those directories. ESPHome 2026.11.0 clones
+the whole repository for a `github://` source and a local source is a working tree, so the files
+are always beside the component; the generated `src/CMakeLists.txt` globs `src/**` and has `src/`
+on the include path. **Why:** one ref pins component and library together, no network beyond
+ESPHome's own clone, a local path builds the working tree, and no second build description of core
+is needed. Rejected: `add_idf_component` (a second fetch at a ref the component cannot know, and an
+IDF-specific CMakeLists in core), `cg.add_library` with a git URL (same), a vendored copy with a
+CI equality check (two copies kept equal by a check, not by construction). Details:
+`components/hearthmap/README.md`. **Would change if:** ESPHome stops cloning the whole repository,
+or core gains an IDF component description for other reasons.
+
+### D-035 Device config errors: schema at build time, validate() at boot, never a guess (provisional)
+
+**Default:** the component checks the config against the JSON Schema while ESPHome validates the
+YAML (so `esphome config` fails), with a small built-in checker because ESPHome's image has no
+`jsonschema`; it refuses any schema keyword it does not implement, and its tests compare it with
+`jsonschema`. Semantic rules stay in core: the generated `ConfigSource` runs `validate()` at boot,
+and a refused config draws its errors on screen, logs every issue with its path and sets the
+component's error status; nothing else is rendered. A photo id with no `<id>.png` fails the build;
+a plant with no photo id gets ui_lvgl's placeholder. **Why:** D-017 puts enforcement in one place;
+a second Python copy of `validate()` would drift. Running `validate()` at boot rather than at build
+time is the honest form available without a host compiler in the build. **Would change if:** the
+build gains a host compile step, in which case the same generated tables could be validated before
+flashing.
+
+### D-036 Device readings: what is subscribed, and before time is valid (provisional)
+
+**Default:** one Home Assistant state subscription per distinct bound entity, plus one for its
+`unit_of_measurement` attribute (`Reading::unit`); `predicted_dry_at` bindings are not subscribed
+(core ignores the role in v1). R8 re-stamping applies to readings in state Value only, on every
+rebuild while the API connection with a state subscription is up. Until the configured time source
+is valid the screen says "Waiting for time" and nothing is judged; readings received before that
+carry time 0 until the first re-stamp. **Why:** a unit is part of what the overlay shows; HA
+confirming "unavailable" says nothing new about a value; and a screen of "stale" before the clock
+is set would be a false claim. **Would change if:** units prove constant enough to take from the
+role instead, halving the subscriptions.
+
+### D-037 The component lets malloc use PSRAM for large blocks (provisional)
+
+**Default:** when a device has `psram:`, the component sets `CONFIG_SPIRAM_USE_MALLOC` (and clears
+the psram component's `CONFIG_SPIRAM_USE_CAPS_ALLOC`), so allocations above
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (16 KiB by default) come from PSRAM. **Why:** ui_lvgl's
+`HeatRasterizer` holds a per-pixel room index in a `std::vector` (about 620 KiB for the example),
+more than the ESP32-P4's internal RAM can spare, and with exceptions off a failed allocation aborts.
+The heat image itself is allocated explicitly in PSRAM. **Would change if:** ui_lvgl takes an
+allocator for its working set, after which this global setting can go.
+
+### D-038 Nothing on the device blocks: scanline room maps and sliced boot and frame work (provisional)
+
+**Question:** how much work may one call do on the panel? **What happened:** the first hardware
+run with a larger config (18 rooms, a 920 x 736 map) boot-looped. `HeatRasterizer`'s constructor,
+called from the component's `setup()`, tested every map pixel against every room with
+`point_in_polygon()`, which also re-checked each polygon for zero area on every call, all in
+double precision, which the ESP32-P4 does in software (ROM routines). It ran for 7+ seconds and
+the task watchdog fired at 12 s on every boot. **Default:** (1) room ownership for any grid is
+computed by scanline (`RoomScanner`, `build_room_mask()`): per row, only the edges crossing it do
+double-precision work, with exactly `point_in_polygon()`'s arithmetic (shared in
+`core/src/polygon_edges.h`), so the answer is identical at every centre, ties included; (2)
+`validate()`'s edge-pair test rejects disjoint bounding boxes with comparisons first (exact); (3)
+the device does all boot and frame work in bounded steps from `loop()`, about 20 ms of steps per
+call: load (with `validate()`), mask rows, rasterizer rows (`HeatRasterizer::Deferred` and
+`build_rows()`), then per frame one heat-field row (`compute_heat_field_rows()`) or eight
+heat-image rows (`HeatRasterizer::render_rows()`) per step; `setup()` only subscribes and shows
+"Starting". Each boot stage logs its start and its elapsed time. **Why:** a watchdog reset is the
+one failure the screen cannot report, and the cost scaled with pixels x rooms x vertices, so a
+bigger house would only have made it worse. **Guard:** `components/hearthmap/tests/test_cpp.py`
+drives the device's pipeline on fictional configs at the schema's maximums and fails if any one
+step exceeds 5 ms on the host; the pre-fix construction took 7.2 s there, 37 ms per step.
+**Would change if:** a step proves too slow on the panel, in which case the step size shrinks.
+**Amended (second hardware run, b68f721):** the panel booted, but the single load step (build,
+whole `validate()`, colour tables) held `loop()` for 216 ms and a full heat-image repaint held
+LVGL for 645 ms. Now the build is one room or pin per step (generated `build_step()`), validation
+is one room or pin per step (core's `ConfigValidator`, which gives exactly `validate()`'s issues
+in order), each colour table is its own step, frames render the heat image into a back buffer
+and swap it in whole (so a repaint between slices never shows a half-written image), and the
+swapped-in image is invalidated in 48-row bands, one per `loop()` call at most every 25 ms. The
+host guard now bounds the mean step per stage scaled by the measured device slowdown (boot
+about 200x, frames about 55x; bounds use 300x and 100x) and caps any single step.
+
+### D-039 The panel never scales an RGB565 image; the host draws with the panel's formats (provisional)
+
+**What happened:** on the panel LVGL logged "Color format 0x12 is not enabled" about three times
+a second. LVGL 9.6's software transform of an RGB565 image needs both
+`LV_DRAW_SW_SUPPORT_RGB565` and `LV_DRAW_SW_SUPPORT_RGB565A8`
+(`src/draw/sw/lv_draw_sw_transform.c`); ESPHome 2026.11.0 enables only RGB565, ARGB8888 and
+RGB888 for this device (its `lvgl` component sets them from the display format and the YAML's
+images). ui_lvgl scaled the 128 px RGB565 plant photos to cover the 44 px pin and 52 px HUD
+discs, so those discs were not drawn. The host never saw it: its `lv_conf.h` left every format
+on. **Default:** the build generates each photo at every disc diameter ui_lvgl uses (44, 52 and
+128 px; a test reads the radii from `screen.cpp`), `ImageProvider` gains
+`plant_photo_sized(id, diameter)` (additive, default nullptr), and the Screen draws a pre-sized
+photo centred, without a transform; the host's `lv_conf.h` now has exactly the panel's format set,
+and a ui test proves a scaled RGB565 photo fails there the same way. **Rejected:** declaring
+RGB565A8 to ESPHome's LVGL from the component: it would work, but every frame would then scale
+photos in software on a 360 MHz core, and the pre-sized images cost about 9 KB of flash per photo
+instead. **Would change if:** the UI needs a disc size chosen at run time.
+
 ### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
 
 **Question:** the editor must "validate with the real schema and show errors next to the item",

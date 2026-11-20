@@ -222,6 +222,17 @@ add rather than rewrite.
   some third-party CMakeLists. doctest is consumed header-only for that reason
   (`SOURCE_SUBDIR` in `cmake/HearthmapDoctest.cmake` keeps its CMakeLists out of the build); do
   the same for any other old dependency rather than lowering policy settings globally.
+- **ESPHome's LVGL compiles only some software-renderer colour formats.** For the panel it enables
+  RGB565, ARGB8888 and RGB888; scaling or rotating an RGB565 image also needs RGB565A8, so such an
+  image logs "Color format 0x12 is not enabled" and is not drawn (D-039). `host/lvgl/lv_conf.h`
+  mirrors the panel's set so host renders take the same paths; keep the two in step when ESPHome
+  or the YAML changes what it enables.
+- **The ESP32-P4 has no double-precision hardware.** Every `double` operation is a software
+  routine of tens to hundreds of cycles, so code that is instant on a laptop can take seconds on
+  the panel. The first hardware run boot-looped on the task watchdog because a per-pixel
+  `point_in_polygon()` loop (double) ran inside `setup()` (D-038). Keep `double` out of per-pixel
+  and per-cell loops, never do unbounded work in a component's `setup()`, and check new device
+  paths with the pipeline benchmark in `components/hearthmap/tests/test_cpp.py`.
 
 ## 7. CI & Deployment
 
@@ -238,6 +249,14 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
 - **calibrate**: `pytest` for `tools/calibrate/` on Python 3.11 and 3.13, with the pinned
   `tools/calibrate/requirements-dev.txt`.
 - **format**: `clang-format --dry-run --Werror` with clang-format 19.1.7 from PyPI.
+- **component-codegen**: pytest over `components/hearthmap/tests` (the ESPHome component's
+  generator: schema checker against `jsonschema`, defaults and present bits, photos, the library
+  copy, and C++ checks linking core's real `validate()` against generated tables;
+  `HEARTHMAP_REQUIRE_CORE=1` makes those fail rather than skip).
+- **esphome-config**: `esphome config` on `examples/flat/esphome/flat-panel.yaml` with the
+  digest-pinned `ghcr.io/esphome/esphome:2026.11.0` image, plus a negative control (a broken config
+  must fail it). A full firmware compile is the manual `esphome-compile` workflow
+  (`workflow_dispatch`), too slow for every PR.
 
 Every action is pinned by commit SHA. There are no path filters: every job runs on every PR.
 
