@@ -279,7 +279,42 @@ Each is the reversible reading; each has a test that would change with it.
   to `max_items`), so warming up on healthy readings does not leave a later thirsty frame to
   allocate.
 
-### D-027 The top bar's house summary is computed on the host for now (provisional)
+### D-027 Calibration proposals: method defaults (provisional, PR 8)
+
+**Default:** `tools/calibrate` takes `wet` as the wetter of the median post-watering plateau and
+the 95th time-weighted wetness percentile, and `dry` as the drier of the median pre-watering
+trough (with at least two waterings) and the 5th percentile: top-ups of a still-moist pot have
+troughs far wetter than its dry spells. A watering is a rise of at least 20% of the sensor's
+span within 3 h. Samples hold until the next one (Home Assistant records only changes), for at
+most 7 days. A run of one value longer than 72 h is a frozen sensor, ignored, when it is
+mid-range; at either end of the range it is kept and reported as saturation, because a pot
+that reads 0 for days is the case this project exists for. Polarity is detected from the
+direction of sharp moves, else from the slow trend, and can be forced. **Why:** the brief's
+method, with defaults chosen against synthetic series; the README states each one. **Would
+change if:** real histories show a different watering signature (slow bottom watering, for
+one), which would need a different event detector rather than retuned numbers.
+
+### D-028 Default happy range is 30% to 100% of dry to wet (provisional, PR 8)
+
+**Default:** the proposed `happy_min` is 30% of the way from `dry` to `wet` and `happy_max` is
+`wet` itself, both labelled defaults (`happy_is_default: true`) to be tuned per species.
+**Why:** a `happy_max` short of `wet` would make every just-watered plant warn "too wet"
+(`effective_soil_band()` turns `happy_max` into the warn edge on the wet side), and history
+holds no evidence of over-watering. 30% gives thirst 0.7, the soil layer's default warn edge, so
+adding the default changes no plant's warning point. **Would change if:** per-species presets
+arrive in the editor.
+
+### D-029 calibration.json lists sensors as an array (provisional, PR 8)
+
+**Default:** `schema/calibration.schema.json`: `sensors` is an array of objects keyed by
+`entity_id`, each carrying `status`; only `status: "ok"` carries a `calibration`, whose shape is
+the config's `$defs/calibration` by `$ref`, with all four fields present. Sensors that cannot be
+calibrated are listed with a `message` rather than left out, so the editor can say why.
+**Why:** an array keeps the tool's order and leaves room for more than one proposal per entity
+later; reusing the config's calibration definition means the two cannot drift. **Would change
+if:** the editor's import needs something else; it is the only consumer.
+
+### D-030 The top bar's house summary is computed on the host for now (provisional)
 
 **Question:** the UI spec's top bar shows "House 24.2°   68% RH   PM2.5 2", but the view model
 carries no house-level figure. **Default:** the embedder formats the summary text and passes it to
@@ -291,7 +326,7 @@ stopgap: averaging is logic a test could check, so it belongs in core. **Would c
 grows a `ViewModel` summary field (then the host function goes, and the device gets the same
 numbers).
 
-### D-028 Choices the UI made where the spec was silent (provisional)
+### D-031 Choices the UI made where the spec was silent (provisional)
 
 Each is reversible and visible in the golden images.
 
@@ -315,7 +350,7 @@ Each is reversible and visible in the golden images.
 
 **Would change if:** the operator marks any of these against mockup A.
 
-### D-029 The example flat's map area matches the UI spec's map region (provisional)
+### D-032 The example flat's map area matches the UI spec's map region (provisional)
 
 **Default:** `examples/flat/config.json` sets `map_area` to x 40, y 76, 864 x 720: inside the
 spec's map region (x 0..920, y 64..800, about 40 px left margin), clear of the 64 px top bar and

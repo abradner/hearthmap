@@ -1,6 +1,6 @@
 // summary.h — the top bar's house summary and clock text, formatted on the host.
 //
-// Stopgap (docs/decisions.md D-027): the house summary is an average over core's assessments,
+// Stopgap (docs/decisions.md D-030): the house summary is an average over core's assessments,
 // computed here because core has no summary function yet. The averaging is tested in
 // host/tests; it belongs in core once a view-model field for it exists.
 #pragma once

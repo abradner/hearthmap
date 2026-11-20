@@ -26,7 +26,7 @@ inline Room rect_room(std::string id, double x0, double y0, double x1, double y1
 /// The fictional flat: seven rooms, the hallway an L-shaped (concave) hexagon.
 inline Config example_flat_config() {
   Config config;
-  config.canvas.map_area = CanvasRect{0, 0, 960, 800};
+  config.canvas.map_area = CanvasRect{40, 76, 864, 720};
   config.rooms.push_back(rect_room("living", 0.0, 0.0, 0.4167, 0.6));
   config.rooms.push_back(rect_room("kitchen", 0.4167, 0.0, 0.6667, 0.4));
   config.rooms.push_back(rect_room("study", 0.6667, 0.0, 1.0, 0.4));

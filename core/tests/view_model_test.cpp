@@ -329,8 +329,8 @@ TEST_CASE("pins: positions, primary, on_active_layer and active values") {
   for (std::size_t i = 0; i < vm.pins.size(); ++i) CHECK(vm.pins[i].pin_index == i);
 
   const PinView& living = pin_view(vm, c, "clim_living");
-  CHECK(living.position.x == doctest::Approx(0.2083 * 960));
-  CHECK(living.position.y == doctest::Approx(0.3 * 800));
+  CHECK(living.position.x == doctest::Approx(40 + 0.2083 * 864));
+  CHECK(living.position.y == doctest::Approx(76 + 0.3 * 720));
   CHECK(living.primary.role == Role::Temperature);
   CHECK(living.on_active_layer);  // its humidity binding feeds the humidity layer
   CHECK(*living.active_value == 48.0);
