@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "flat_fixture.h"
+#include "hearthmap/calibration.h"
 #include "hearthmap/config.h"
+#include "hearthmap/geometry.h"
 
 using namespace hearthmap;
 using namespace hearthmap::test;
@@ -122,6 +124,68 @@ TEST_CASE("polygons: self-intersecting, overlapping, repeated and degenerate") {
   CHECK_FALSE(has_error(bad({{0, 1}, {1, 1}, {1, 0}, {0, 0}}), path));
 }
 
+TEST_CASE("polygons: zero-length edges and zero area are rejected explicitly") {
+  auto bad = [](Polygon poly) {
+    Config c = flat_config();
+    c.rooms.push_back(Room{"spare", "Spare", std::move(poly), false});
+    return validate(c);
+  };
+  const std::string path = "/rooms/7/polygon";
+  // Every vertex in one place: no fold or crossing test can see it.
+  CHECK(has_error(bad({{0.5, 0.5}, {0.5, 0.5}, {0.5, 0.5}}), path));
+  CHECK(has_error(bad({{0.2, 0.3}, {0.2, 0.3}, {0.2, 0.3}, {0.2, 0.3}}), path));
+  // Two distinct points, one repeated.
+  CHECK(has_error(bad({{0.1, 0.1}, {0.1, 0.1}, {0.9, 0.9}}), path));
+  // A zero-length edge in an otherwise good square.
+  CHECK(has_error(bad({{0, 0}, {1, 0}, {1, 1}, {1, 1}, {0, 1}}), path));
+  // Collinear once rounded to doubles: the cross products are tiny but not zero.
+  CHECK(has_error(bad({{0.1, 0.1}, {0.2, 0.2}, {0.3, 0.3}}), path));
+  CHECK(has_error(bad({{0.1, 0.7}, {0.3, 0.5}, {0.7, 0.1}, {0.6, 0.2}}), path));
+  // Positive control: a real sliver (1e-6 thick) is a valid room.
+  CHECK_FALSE(has_error(bad({{0.1, 0.5}, {0.9, 0.5}, {0.9, 0.500001}}), path));
+}
+
+// validate() mirrors point_in_polygon()'s zero-area test (geometry.cpp keeps its predicate
+// private): every polygon point_in_polygon() treats as enclosing nothing, validate() rejects; a
+// thin polygon it treats as real, validate() accepts. validate() is stricter in one way on
+// purpose: it also rejects zero-length edges in polygons that do have area.
+TEST_CASE("polygons: validate() and point_in_polygon() agree on zero area") {
+  const std::vector<Polygon> degenerate = {
+      {{0.5, 0.5}, {0.5, 0.5}, {0.5, 0.5}}, {{0.1, 0.1}, {0.1, 0.1}, {0.9, 0.9}},
+      {{0.1, 0.1}, {0.2, 0.2}, {0.3, 0.3}}, {{0.1, 0.7}, {0.3, 0.5}, {0.7, 0.1}, {0.6, 0.2}},
+      {{0, 0}, {1, 0}, {0.5, 0}},           {{0.9, 0.9}, {0.9, 0.9}, {0.9, 0.9}, {0.9, 0.9}},
+  };
+  for (const Polygon& poly : degenerate) {
+    Config c = flat_config();
+    c.rooms.push_back(Room{"spare", "Spare", poly, false});
+    INFO("first vertex " << poly[0].x << "," << poly[0].y);
+    CHECK(has_error(validate(c), "/rooms/7/polygon"));
+    MapPoint centroid;
+    for (const MapPoint& v : poly) {
+      centroid.x += v.x / static_cast<double>(poly.size());
+      centroid.y += v.y / static_cast<double>(poly.size());
+    }
+    CHECK_FALSE(point_in_polygon(poly, centroid));
+    for (int i = 0; i <= 20; ++i) {
+      for (int j = 0; j <= 20; ++j) {
+        CHECK_FALSE(point_in_polygon(poly, MapPoint{i / 20.0, j / 20.0}));
+      }
+    }
+  }
+  const std::vector<Polygon> thin = {
+      {{0.1, 0.5}, {0.9, 0.5}, {0.9, 0.500001}},
+      {{0.1, 0.1}, {0.9, 0.9}, {0.9, 0.900001}},
+  };
+  for (const Polygon& poly : thin) {
+    Config c = flat_config();
+    c.rooms.push_back(Room{"spare", "Spare", poly, false});
+    CHECK_FALSE(has_error(validate(c), "/rooms/7/polygon"));
+    const MapPoint centroid{(poly[0].x + poly[1].x + poly[2].x) / 3.0,
+                            (poly[0].y + poly[1].y + poly[2].y) / 3.0};
+    CHECK(point_in_polygon(poly, centroid));
+  }
+}
+
 TEST_CASE("pins: missing primary role, a role bound twice") {
   Config c = flat_config();
   c.pins[pi(c, "air_living")].entities = {{Role::Pm25, "sensor.example_living_pm25"}};
@@ -164,6 +228,57 @@ TEST_CASE("calibration: zero width") {
   CHECK(validate(c).empty());
   cal.wet = std::numeric_limits<double>::quiet_NaN();
   check_only_error(c, "/pins/12/calibration");
+}
+
+TEST_CASE("calibration: every number must be finite, and the span representable") {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  Config clean = flat_config();
+  const std::size_t basil = pi(clean, "plant_basil");
+  auto with = [&](double dry, double wet) {
+    Config c = clean;
+    c.pins[basil].calibration->dry = dry;
+    c.pins[basil].calibration->wet = wet;
+    return c;
+  };
+  check_only_error(with(0, inf), "/pins/12/calibration");
+  check_only_error(with(-inf, 55), "/pins/12/calibration");
+  check_only_error(with(inf, inf), "/pins/12/calibration");
+  check_only_error(with(nan, 55), "/pins/12/calibration");
+  // Finite ends whose difference overflows to infinity.
+  check_only_error(with(-1e308, 1e308), "/pins/12/calibration");
+  check_only_error(with(1e308, -1e308), "/pins/12/calibration");
+
+  // Happy edges: non-finite is an error on that edge.
+  const std::size_t fiddle = pi(clean, "plant_fiddle");
+  for (double v : {inf, -inf, nan}) {
+    Config c = clean;
+    c.pins[fiddle].calibration->happy_min = v;
+    check_only_error(c, "/pins/11/calibration/happy_min");
+    c = clean;
+    c.pins[fiddle].calibration->happy_max = v;
+    check_only_error(c, "/pins/11/calibration/happy_max");
+  }
+}
+
+// validate() and moisture_fraction() share one definition of a usable span
+// (calibration_span_usable): a config validate() accepts never reports BadCalibration.
+TEST_CASE("calibration: validate() and moisture_fraction() agree on a usable span") {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double spans[][2] = {{0, 55},      {2900, 1300},    {20, 20},        {20, 20 + 0.5e-9},
+                             {20, 20.001}, {0, inf},        {-inf, 0},       {nan, 1},
+                             {1, nan},     {-1e308, 1e308}, {-1e307, 1e307}, {1e300, -1e300}};
+  for (const auto& span : spans) {
+    Config c = flat_config();
+    Calibration& cal = *c.pins[pi(c, "plant_basil")].calibration;
+    cal.dry = span[0];
+    cal.wet = span[1];
+    INFO("dry " << span[0] << " wet " << span[1]);
+    const bool accepted = !has_error(validate(c), "/pins/12/calibration");
+    CHECK(accepted == calibration_span_usable(cal));
+    CHECK(accepted == moisture_fraction(cal, 0.0).has_value());
+  }
 }
 
 TEST_CASE("calibration: happy range within dry..wet and ordered") {

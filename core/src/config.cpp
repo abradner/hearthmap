@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
@@ -200,19 +201,55 @@ bool segments_touch(MapPoint a, MapPoint b, MapPoint c, MapPoint d) {
   return false;
 }
 
-// A polygon is simple when its edges meet only where consecutive edges share a vertex, and
-// consecutive edges do not fold back over each other. Repeated vertices (including repeating
-// the first vertex at the end, which the schema forbids) fail those same tests (a zero-length
-// edge touches a non-adjacent one or folds back), as does a non-finite coordinate. Caller
-// guarantees >= 3 vertices.
+// True when every vertex lies on one line (zero area). Mirrors point_in_polygon()'s zero-area
+// test in geometry.cpp, which is private to that file; config_validate_test.cpp checks the two
+// agree. The line runs from vertex 0 to the vertex farthest from it; a vertex is off it when its
+// cross product with that direction exceeds a bound of a few ulps scaled by the coordinates'
+// magnitude, so input meant to be collinear but rounded to doubles still counts as collinear,
+// while a real sliver (1e-6 thick in map space) does not.
+bool zero_area(const Polygon& poly) {
+  const MapPoint origin = poly[0];
+  double far_x = 0.0;
+  double far_y = 0.0;
+  double far_d2 = 0.0;
+  for (const MapPoint& v : poly) {
+    const double dx = v.x - origin.x;
+    const double dy = v.y - origin.y;
+    const double d2 = dx * dx + dy * dy;
+    if (d2 > far_d2) {
+      far_d2 = d2;
+      far_x = dx;
+      far_y = dy;
+    }
+  }
+  if (!(far_d2 > 0.0)) return true;  // every vertex in one place
+  constexpr double kUlps = 16.0 * std::numeric_limits<double>::epsilon();
+  const double direction = std::fabs(far_x) + std::fabs(far_y);
+  const double origin_size = std::fabs(origin.x) + std::fabs(origin.y);
+  for (const MapPoint& v : poly) {
+    const double c = far_x * (v.y - origin.y) - far_y * (v.x - origin.x);
+    const double bound = kUlps * direction * (std::fabs(v.x) + std::fabs(v.y) + origin_size);
+    if (std::fabs(c) > bound) return false;
+  }
+  return true;
+}
+
+// A polygon is simple when it has area, no zero-length edge (a repeated vertex, including
+// repeating the first vertex at the end, which the schema forbids), its edges meet only where
+// consecutive edges share a vertex, and consecutive edges do not fold back over each other. A
+// non-finite coordinate fails too. Caller guarantees >= 3 vertices.
 bool is_simple(const Polygon& poly) {
   const std::size_t n = poly.size();
   for (const auto& v : poly) {
     if (!std::isfinite(v.x) || !std::isfinite(v.y)) return false;
   }
+  // Checked explicitly: a triangle has no non-adjacent edges, and a zero-length edge gives a
+  // zero dot product, so three identical vertices would pass every test below.
+  if (zero_area(poly)) return false;
   for (std::size_t i = 0; i < n; ++i) {
     const MapPoint a = poly[i];
     const MapPoint b = poly[(i + 1) % n];
+    if (a.x == b.x && a.y == b.y) return false;  // zero-length edge (a repeated vertex)
     // Consecutive edge (b, c): collinear and turning back means the edges overlap.
     const MapPoint c = poly[(i + 2) % n];
     if (orientation(a, b, c) == 0) {
@@ -317,11 +354,12 @@ const Room* find_room(const Config& config, const std::string& id) {
 }
 
 void check_calibration(const Calibration& cal, const std::string& base, Issues& out) {
-  const double width = cal.wet - cal.dry;
-  if (!(std::fabs(width) >= kMinCalibrationWidth)) {  // also rejects NaN
-    out.error(base, "calibration dry and wet must differ");
+  // One definition of a usable span, shared with moisture_fraction() (calibration.h).
+  if (!calibration_span_usable(cal)) {
+    out.error(base, "calibration dry and wet must be finite and differ");
     return;  // happy-range checks are meaningless on a degenerate span
   }
+  const double width = cal.wet - cal.dry;
   // Position along dry (0) .. wet (1), unclamped, so "outside the span" is visible.
   auto along = [&](double raw) { return (raw - cal.dry) / width; };
   auto in_span = [&](double raw) {
