@@ -224,3 +224,17 @@ otherwise.
 **Default:** an omitted `map_area` is `{0, 0, canvas.width, canvas.height}`; it was the left 960 x
 800 of a 1280 x 800 canvas, a default that only made sense for one panel. The example sets it
 explicitly. **Why:** a default should not encode one layout's HUD width.
+
+### D-024 Choices the core implementations made where the contract was silent (provisional)
+
+Each is the reversible reading; each has a test that would change with it.
+
+- **A non-finite number in a `Value` reading is `Unknown`** (`assess_freshness`), though sources
+  promise never to send one: showing it would print `nan`.
+- **Moisture on a pin with no calibration** (only possible in an invalid config) is treated like
+  a degenerate calibration: `BadCalibration`, in the D-012 precedence.
+- **Polygon simplicity**: a zero-length edge (a repeated vertex, including the first vertex
+  repeated at the end) or an edge that folds back over its neighbour makes a polygon non-simple.
+  When a vertex is out of range, only the per-vertex error is reported (`/rooms/i/polygon/j`),
+  not also "not simple"; when a pin's position is out of range, the outside-its-room warning is
+  skipped. `validate()` reports every problem in one pass.
