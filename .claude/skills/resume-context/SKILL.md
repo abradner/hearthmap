@@ -17,7 +17,8 @@ discovers an hour later that the tree changed, the branch moved, or the claim wa
 ## Procedure
 
 1. **Find the handoff.** Use the path if the operator gave one. Otherwise the newest file in
-   `.claude/handoffs/` — list it and name which one you picked; do not silently choose among
+   `.claude/handoffs/` that does not start with a `> RETIRED` line (step 7); if every file is
+   retired, say there is no active handoff. List it and name which one you picked; do not silently choose among
    several. If more than one is plausibly current, ask. Remember the worktree split: handoffs are
    written to the `.claude/handoffs/` of whichever worktree the session ran in, and a git worktree
    has its own working tree wherever it happens to live — so a handoff written in one is invisible
@@ -70,7 +71,8 @@ discovers an hour later that the tree changed, the branch moved, or the claim wa
    up, and a stale one is a trap for the next session — it has no way to know it is describing
    finished work. If the operator isn't around to ask, mark it stale in place (a
    `> RETIRED — landed as <ref>` line at the top) rather than deleting unilaterally. Parking again
-   mid-task writes a new file; it does not update the old one.
+   mid-task writes a new file; it does not update the old one, so when the work lands, retire
+   **every** handoff for it (earlier parks of the same branch included), not just the newest.
 
 ## Rules of thumb
 

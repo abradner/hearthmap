@@ -47,7 +47,8 @@ workflow, not neglect.
 
 - **Validation commands**: the pre-push gate is
   `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build && ctest --test-dir build --output-on-failure`,
-  plus `python3 tools/validate_examples.py` (schema checks) and the `clang-format` check from
+  plus `.venv/bin/python schema/validate.py` and `.venv/bin/python schema/test_schema.py` (schema
+  checks) and the `clang-format` check from
   `AGENTS.md` §6. Later PRs add the editor's `npm test` and the ESPHome compile; `AGENTS.md` §6
   is canonical for the list.
 - **Reviewers**: the review doc's roster, **unconfirmed** until the first PR (Codex scarce,
@@ -245,6 +246,10 @@ gh stack checkout https://github.com/<owner>/<repo>/pull/<followup>
 gh stack view --json
 gh stack merge --yes --<method>   # the repo's AGENTS.md picks it: --squash, --merge or --rebase
 ```
+
+That is the followup-in-the-train case. With a loose followup, or none, check out the **cap's** URL
+instead, so the train is selected; a loose followup then merges as a second step once the train has
+landed (`gh pr merge <followup> --<method> --match-head-commit <its sha>`).
 
 This lands that PR and everything below it atomically, the followup included, with one method: the
 normal case. A method the repo's `AGENTS.md` does not name needs the operator's word. Only when Repo specifics name **different** methods for the interstitials and the
