@@ -61,3 +61,5 @@ hearthmap:
   config: ../config.json
   photos: ../photos
   time_id: ha_time
+  # Optional: times touches in the perf log (components/hearthmap/README.md, "Measuring").
+  touchscreen_id: main_touch

@@ -124,6 +124,118 @@ def test_readings_ingest(tmp_path):
     assert "0 failures" in out
 
 
+PERF_TEST = r"""
+#include <cstdio>
+#include <cstring>
+#include "perf_stats.h"
+using hearthmap_device::PerfStats;
+using hearthmap_device::PerfWindow;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+int main() {
+  PerfStats p(5000);
+  CHECK(!p.due(1000));            // the first call starts the window
+  CHECK(!p.due(5999));
+  CHECK(p.due(6000));
+
+  // Loop gaps, across a micros() wrap.
+  p.loop_start(0xFFFFFF00u);
+  p.loop_start(0x00000100u);      // 512 us later
+  p.loop_start(0x00001100u);      // 4096 us later
+  p.own_work(300, 1700);
+  p.own_work(100, 0);
+
+  // A refresh that flushed nothing does not count; one that flushed does.
+  p.refresh_start(10000);
+  p.refresh_ready(12000, 12);
+  p.invalidated(100 * 50);
+  p.refresh_start(20000);
+  p.flush_start(21000);
+  p.flush_finish(23000, 4000);
+  p.flush_start(24000);
+  p.flush_finish(25000, 1000);
+  p.refresh_ready(70000, 70);
+  // A REFR_READY without a start (registered mid-refresh) is ignored.
+  p.refresh_ready(90000, 90);
+
+  // Touch: read -> press latency, then click -> applied -> drawn.
+  p.touch_read(100);
+  p.touch_read(130);              // the same contact read again: latency from the first read
+  p.lvgl_pressed(180);
+  p.lvgl_clicked(200);
+  p.refresh_start(205000);        // a refresh before the click was applied: not its ack
+  p.flush_start(205000); p.flush_finish(206000, 10);
+  p.refresh_ready(207000, 207);
+  p.events_applied(260);
+  p.refresh_start(300000);
+  p.flush_start(300000); p.flush_finish(301000, 10);
+  p.refresh_ready(350000, 350);   // drawn 150 ms after the click
+
+  PerfWindow w = p.take(6000);
+  CHECK(w.window_ms == 5000);
+  CHECK(w.loops == 3);
+  CHECK(w.loop_gap_max == 4096);
+  CHECK(w.own_view == 400 && w.own_heat == 1700 && w.own_max == 2000);
+  CHECK(w.refreshes == 3);
+  CHECK(w.refresh_max == 50000);
+  CHECK(w.refresh_total == 50000 + 2000 + 50000);
+  CHECK(w.flushes == 4 && w.flush_total == 2000 + 1000 + 1000 + 1000);
+  CHECK(w.flushed_px == 5020);
+  CHECK(w.invalidated_px == 5000);
+  CHECK(w.touch_reads == 2 && w.presses == 1 && w.clicks == 1);
+  CHECK(w.read_to_press_max_ms == 80);
+  CHECK(w.acks == 1 && w.click_to_ack_max_ms == 150);
+
+  // The next window starts empty; a click never applied is never acked; one drawn too late is
+  // dropped rather than reported as a latency.
+  CHECK(!p.due(10999));
+  CHECK(p.due(11000));
+  p.lvgl_clicked(7000);
+  p.refresh_start(7100000); p.flush_start(7100000); p.flush_finish(7101000, 1);
+  p.refresh_ready(7102000, 7102);
+  p.lvgl_clicked(8000);
+  p.events_applied(8001);
+  p.refresh_start(11500000); p.flush_start(11500000); p.flush_finish(11501000, 1);
+  p.refresh_ready(11502000, 11502);  // 3502 ms after the click: beyond kAckTimeoutMs
+  w = p.take(11600);
+  CHECK(w.loops == 0 && w.refreshes == 2);
+  CHECK(w.acks == 0 && w.click_to_ack_max_ms == 0);
+
+  // The log line: rates per second and the share of the window spent refreshing.
+  PerfWindow f;
+  f.window_ms = 5000;
+  f.loops = 50;
+  f.loop_gap_max = 412000;
+  f.refreshes = 12;
+  f.refresh_total = 2500000;  // 2.5 s of 5 s: 50 %
+  f.refresh_max = 402000;
+  f.flushed_px = 5000000;     // 1000 kpx/s
+  char line[400];
+  const std::size_t n = PerfStats::format(f, line, sizeof(line));
+  std::printf("%s\n", line);
+  CHECK(n == std::strlen(line));
+  CHECK(std::strstr(line, "loop 10/s, gap max 412 ms") != nullptr);
+  CHECK(std::strstr(line, "12 refr, 2500 ms (50%), max 402 ms") != nullptr);
+  CHECK(std::strstr(line, "1000 kpx/s flushed") != nullptr);
+  char tiny[8];
+  CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
+  std::printf("perf checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_perf_stats(tmp_path):
+    (tmp_path / "perf_test.cpp").write_text(PERF_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "perf_test.cpp"), str(COMPONENT / "perf_stats.cpp")],
+        [COMPONENT],
+    )
+    assert "0 failures" in out
+
+
 LOAD_TEST = r"""
 #include <cstdio>
 #include "hearthmap_gen/generated_config.h"

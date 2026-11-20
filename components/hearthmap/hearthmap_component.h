@@ -19,6 +19,10 @@
 #include "hearthmap/view_model.h"
 #include "hearthmap_gen/generated_config.h"
 #include "panel_pipeline.h"
+#include "perf_stats.h"
+#ifdef USE_TOUCHSCREEN
+#include "esphome/components/touchscreen/touchscreen.h"
+#endif
 
 namespace esphome::hearthmap_panel {
 
@@ -29,9 +33,25 @@ void hook_lvgl_log();
 uint32_t lvgl_warnings();
 uint32_t lvgl_errors();
 
+#ifdef USE_TOUCHSCREEN
+/// Tells PerfStats when the touchscreen reports a new contact, so the log can say how long LVGL
+/// took to see it. Registered only when the YAML names the touchscreen (touchscreen_id).
+class TouchProbe : public touchscreen::TouchListener {
+ public:
+  explicit TouchProbe(hearthmap_device::PerfStats* stats) : stats_(stats) {}
+  void touch(touchscreen::TouchPoint tp) override;
+
+ private:
+  hearthmap_device::PerfStats* stats_;
+};
+#endif
+
 class HearthmapComponent : public Component, public hm::ui::EventSink {
  public:
   void set_lvgl(lvgl::LvglComponent* lvgl) { lvgl_ = lvgl; }
+#ifdef USE_TOUCHSCREEN
+  void set_touchscreen(touchscreen::Touchscreen* ts) { touchscreen_ = ts; }
+#endif
   void set_time(time::RealTimeClock* clock) { clock_ = clock; }
   void set_refresh_interval_ms(uint32_t ms) { refresh_interval_ms_ = ms; }
   void set_min_redraw_interval_ms(uint32_t ms) { min_redraw_interval_ms_ = ms; }
@@ -58,6 +78,10 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void invalidate_band_();
   void show_status_(const char* text);
   void hide_status_();
+  void hook_perf_();
+  void log_perf_();
+  static void on_display_event_(lv_event_t* e);
+  static void on_indev_event_(lv_event_t* e);
 
   lvgl::LvglComponent* lvgl_ = nullptr;
   time::RealTimeClock* clock_ = nullptr;
@@ -93,6 +117,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   hearthmap_device::GeneratedPhotos photos_;
   std::unique_ptr<hm::ui::Screen> screen_;
   lv_obj_t* status_ = nullptr;
+
+  hearthmap_device::PerfStats perf_;  ///< Where the time goes; one DEBUG line per window.
+#ifdef USE_TOUCHSCREEN
+  touchscreen::Touchscreen* touchscreen_ = nullptr;
+  std::unique_ptr<TouchProbe> touch_probe_;
+#endif
 };
 
 }  // namespace esphome::hearthmap_panel

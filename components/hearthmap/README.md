@@ -24,6 +24,7 @@ hearthmap:
   # refresh_interval: 30s   re-judge freshness and redraw even when nothing changed (1s..10min)
   # min_redraw_interval: 500ms  coalesce bursts of state updates (50ms..10s)
   # heat_refresh_interval: 15s  how often changed readings may rebuild the heat image (1s..10min)
+  # touchscreen_id: ...     the touchscreen, so the perf log can time touches (optional)
 ```
 
 A full example device is `examples/flat/esphome/flat-panel.yaml`.
@@ -221,3 +222,27 @@ slices), steady frames 15-21 ms. `LVGL warnings 0, errors 0` throughout. ESPHome
 once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshes (224 ms and
 139 ms).
 
+
+## Measuring
+
+Every 5 s the component logs one line at DEBUG (tag `hearthmap`, `perf_stats.h`), always on:
+
+```
+perf 5000 ms: loop 41/s, gap max 380 ms | lvgl 12 refr, 2900 ms (58%), max 402 ms, flush 140 ms in 30, 6100 kpx/s flushed, 9800 kpx/s invalidated | hm view 18 ms, heat 410 ms, max 21 ms | touch 2 read, 2 press, 1 click, read>press max 350 ms, click>drawn max 900 ms (1)
+```
+
+- `loop N/s, gap max`: passes of ESPHome's main loop, counted as calls of this component's
+  `loop()`, and the longest time between two of them. Everything on the main loop, touch reads
+  included, waits at least that long.
+- `lvgl`: LVGL refreshes that drew something (from the display's `LV_EVENT_REFR_START` to
+  `LV_EVENT_REFR_READY`: layout, software rendering and the flushes), their total time and share
+  of the window, and the longest one. `flush` is the time inside the lvgl component's flush
+  callback (on the panel: PPA rotation and the copy into the DSI frame buffer) over that many
+  calls; the rest of a refresh is rendering. `kpx/s flushed` is pixels handed to the panel,
+  `kpx/s invalidated` pixels asked for by invalidations before LVGL joins them.
+- `hm`: this component's own time: view model and screen updates, heat-rebuild steps (boot steps
+  count as heat), and its longest single `loop()`.
+- `touch`: `read` is a new contact reported by the touchscreen (only when `touchscreen_id` is
+  set), `press` and `click` are LVGL's own input events on this display; `read>press` is the
+  worst time from a read to LVGL seeing the press; `click>drawn` the worst time from a click to
+  the end of the first refresh after the component applied it, with the number of clicks timed.

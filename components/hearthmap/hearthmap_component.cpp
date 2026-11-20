@@ -101,6 +101,7 @@ void HearthmapComponent::setup() {
                                                                       hm::ui::theme::kHeatPalette);
   this->pipeline_->set_heat_refresh_interval_ms(this->heat_refresh_interval_ms_);
   hook_lvgl_log();  // after the lvgl component's setup, whose callback this takes over
+  this->hook_perf_();
   this->subscribe_();
   this->show_status_("Starting");
   ESP_LOGI(TAG, "boot: build started (config %s, %u entities)", hearthmap_gen::kConfigSourceName,
@@ -129,8 +130,15 @@ void HearthmapComponent::subscribe_() {
 }
 
 void HearthmapComponent::loop() {
+  this->perf_.loop_start(micros());
+  this->log_perf_();
   switch (this->phase_) {
-    case Phase::Booting: this->boot_slice_(); return;
+    case Phase::Booting: {
+      const uint32_t t0 = micros();
+      this->boot_slice_();
+      this->perf_.own_work(0, micros() - t0);  // boot work is counted with the heat work
+      return;
+    }
     case Phase::Failed: return;
     case Phase::WaitingForTime:
     case Phase::Running: break;
@@ -304,6 +312,7 @@ void HearthmapComponent::show_view_() {
 }
 
 void HearthmapComponent::frame_slice_() {
+  const uint32_t view_t0 = micros();
   this->invalidate_band_();
   const uint32_t start = millis();
   // The view model: taps, a change of connection state, new readings and the clock reach the
@@ -322,6 +331,15 @@ void HearthmapComponent::frame_slice_() {
     this->refresh_view_(start, connected);
     this->show_view_();
   }
+  if (touched) this->perf_.events_applied(millis());
+  const uint32_t heat_t0 = micros();
+  // Counts this call's work when it returns, whichever way it returns.
+  struct OwnTimer {
+    hearthmap_device::PerfStats& perf;
+    uint32_t view_us;
+    uint32_t heat_t0;
+    ~OwnTimer() { perf.own_work(view_us, micros() - heat_t0); }
+  } own_timer{this->perf_, heat_t0 - view_t0, heat_t0};
 
   // The heat image, in the rest of the slice: rebuilt only when the pipeline says so.
   bool idle = false;
@@ -357,6 +375,73 @@ void HearthmapComponent::frame_slice_() {
              static_cast<unsigned>(took), static_cast<unsigned>(this->pipeline_->heat_rebuilds()),
              static_cast<unsigned>(lvgl_warnings()), static_cast<unsigned>(lvgl_errors()));
   }
+}
+
+void HearthmapComponent::hook_perf_() {
+  // LVGL's own events for the display this component draws on: every refresh, every flush and
+  // every invalidation. The lvgl component registered its rounder before this, so the areas
+  // counted here are the rounded ones it actually renders.
+  lv_display_t* disp = lv_obj_get_display(this->lvgl_->get_screen_active());
+  for (lv_event_code_t code : {LV_EVENT_INVALIDATE_AREA, LV_EVENT_REFR_START, LV_EVENT_REFR_READY,
+                               LV_EVENT_FLUSH_START, LV_EVENT_FLUSH_FINISH}) {
+    lv_display_add_event_cb(disp, on_display_event_, code, this);
+  }
+  // Presses and clicks, from every pointer input device on that display.
+  for (lv_indev_t* indev = lv_indev_get_next(nullptr); indev != nullptr;
+       indev = lv_indev_get_next(indev)) {
+    if (lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER || lv_indev_get_display(indev) != disp)
+      continue;
+    lv_indev_add_event_cb(indev, on_indev_event_, LV_EVENT_PRESSED, this);
+    lv_indev_add_event_cb(indev, on_indev_event_, LV_EVENT_CLICKED, this);
+  }
+#ifdef USE_TOUCHSCREEN
+  if (this->touchscreen_ != nullptr) {
+    this->touch_probe_ = std::make_unique<TouchProbe>(&this->perf_);
+    this->touchscreen_->register_listener(this->touch_probe_.get());
+  }
+#endif
+}
+
+void HearthmapComponent::on_display_event_(lv_event_t* e) {
+  auto* self = static_cast<HearthmapComponent*>(lv_event_get_user_data(e));
+  const uint32_t now_us = micros();
+  switch (lv_event_get_code(e)) {
+    case LV_EVENT_INVALIDATE_AREA: {
+      const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
+      if (area != nullptr) self->perf_.invalidated(lv_area_get_size(area));
+      break;
+    }
+    case LV_EVENT_REFR_START: self->perf_.refresh_start(now_us); break;
+    case LV_EVENT_REFR_READY: self->perf_.refresh_ready(now_us, millis()); break;
+    case LV_EVENT_FLUSH_START: self->perf_.flush_start(now_us); break;
+    case LV_EVENT_FLUSH_FINISH: {
+      const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
+      self->perf_.flush_finish(now_us, area != nullptr ? lv_area_get_size(area) : 0);
+      break;
+    }
+    default: break;
+  }
+}
+
+void HearthmapComponent::on_indev_event_(lv_event_t* e) {
+  auto* self = static_cast<HearthmapComponent*>(lv_event_get_user_data(e));
+  if (lv_event_get_code(e) == LV_EVENT_PRESSED) self->perf_.lvgl_pressed(millis());
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) self->perf_.lvgl_clicked(millis());
+}
+
+#ifdef USE_TOUCHSCREEN
+void TouchProbe::touch(touchscreen::TouchPoint /*tp*/) {
+  this->stats_->touch_read(millis());
+}
+#endif
+
+void HearthmapComponent::log_perf_() {
+  const uint32_t now = millis();
+  if (!this->perf_.due(now)) return;
+  const hearthmap_device::PerfWindow w = this->perf_.take(now);
+  char line[400];
+  hearthmap_device::PerfStats::format(w, line, sizeof(line));
+  ESP_LOGD(TAG, "%s", line);
 }
 
 void HearthmapComponent::show_status_(const char* text) {
