@@ -185,6 +185,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 
+# Also build ui_lvgl, the host renderer and the golden images (fetches LVGL 9.6.0, nlohmann/json
+# and lodepng at pinned hashes; host/README.md says how to regenerate a golden)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON
+cmake --build build && ctest --test-dir build --output-on-failure
+
 # Schema: validate the examples, then the negative controls
 python3 -m venv .venv && .venv/bin/pip install -r schema/requirements.txt
 .venv/bin/python schema/validate.py
@@ -225,6 +230,9 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
 
 - **core**: configure, build and `ctest` on ubuntu-latest with GCC and with Clang. The ctest
   entry fails if doctest reports zero test cases.
+- **ui-host**: the same with `-DHEARTHMAP_BUILD_UI=ON`, on GCC and Clang: ui_lvgl's and the
+  host's tests and the golden images, compared exactly. On failure the actual and diff images
+  are uploaded as an artifact.
 - **schema**: installs the pinned validator, runs `schema/validate.py` (every example config and
   fixture, plus cross-references) and `schema/test_schema.py` (mutations that must be rejected).
 - **calibrate**: `pytest` for `tools/calibrate/` on Python 3.11 and 3.13, with the pinned

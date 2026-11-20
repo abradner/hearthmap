@@ -314,6 +314,56 @@ calibrated are listed with a `message` rather than left out, so the editor can s
 later; reusing the config's calibration definition means the two cannot drift. **Would change
 if:** the editor's import needs something else; it is the only consumer.
 
+### D-030 The top bar's house summary is computed on the host for now (provisional)
+
+**Question:** the UI spec's top bar shows "House 24.2°   68% RH   PM2.5 2", but the view model
+carries no house-level figure. **Default:** the embedder formats the summary text and passes it to
+`Screen::update()`; the host computes it (`host/src/summary.cpp`) as the mean of fresh
+temperature and humidity assessments that feed their layers on indoor pins, and the mean fresh
+indoor PM2.5, using core's `assess()` and `feeds_layer()`. A part with no fresh reading is left
+out. **Why:** keeps ui_lvgl free of logic and unblocks the screen tonight. This is a principle-2
+stopgap: averaging is logic a test could check, so it belongs in core. **Would change if:** core
+grows a `ViewModel` summary field (then the host function goes, and the device gets the same
+numbers).
+
+### D-031 Choices the UI made where the spec was silent (provisional)
+
+Each is reversible and visible in the golden images.
+
+- **Room pulse colour follows severity** (warn amber, danger red); the spec names only the warn
+  colour, for its humidity example.
+- **Rooms with no data** for the active layer are drawn as dark diagonal stripes, so "no sensor"
+  never reads as a colour (D-005). Outdoor rooms get the spec's garden fill without rounded
+  corners.
+- **Pin badges stay at full strength on dimmed (off-layer) pins**, so a thirsty plant is badged
+  on every tab like its HUD row; the danger pulse runs only on the active layer.
+- **Plain pin values sit on a dark translucent pill**, so a value in its status colour reads on
+  heat of the same colour.
+- **Soil pins** (a probe with no plant) use the plant disc and moisture ring with no leaf.
+- **The HUD's empty state** reads "Nothing needs water" and hides the count.
+- **The overlay's sparkline** section says "No history yet": no source of history exists in the
+  contract. The plant overlay always shows its three stats (soil temp, air humidity, battery),
+  with "none" where the pin binds no such sensor.
+- **Thirst verdicts**: danger dry "water now", warn dry "water soon", warn or danger wet (thirst
+  below comfort) "too wet", ok "happy", stale "no data".
+- **Fonts**: built-in Montserrat at even sizes, so the spec's 21 px is 20 px.
+- **Room labels move rather than hide under pins**: limited to the room's width with an
+  ellipsis, dropped below three characters, and placed in the first free corner of the room
+  (ui_lvgl/README.md, "Layout rules"). The HUD gap shrinks (not the cards) so seven cards and
+  "+N more" fit.
+
+**Would change if:** the operator marks any of these against mockup A.
+
+### D-032 The example flat's map area matches the UI spec's map region (provisional)
+
+**Default:** `examples/flat/config.json` sets `map_area` to x 40, y 76, 864 x 720: inside the
+spec's map region (x 0..920, y 64..800, about 40 px left margin), clear of the 64 px top bar and
+the HUD column, and at the flat's 12:10 aspect (72 px per grid unit). **Why:** core hit-tests and
+interpolates in `map_area`, so the screen must draw the map exactly there, and the previous
+0,0,960,800 overlapped both the top bar and the HUD. **Would change if:** the layout changes; the
+map area is one config field. Open: the editor's default for new projects (D-044, `{0, 0, 960, 800}`) still
+overlaps the top bar and the HUD's left edge at x 936; it should follow this area.
+
 ### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
 
 **Question:** the editor must "validate with the real schema and show errors next to the item",

@@ -670,7 +670,7 @@ TEST_CASE("compute_heat_field: the example flat's field is the same on every pla
   auto samples = fixtures::example_flat_temperatures();
   samples.push_back({{0.05F, 0.55F}, 0, 17.0F});  // a gradient in the living room
   const RoomMask mask = build_room_mask(config);
-  CHECK(fnv1a(compute_heat_field(config, mask, samples)) == 0x2c0702a208c05dfdULL);
+  CHECK(fnv1a(compute_heat_field(config, mask, samples)) == 0x9bf8914b763f6046ULL);
   config.heat.idw_power = 3.0;
-  CHECK(fnv1a(compute_heat_field(config, mask, samples)) == 0x098e16e1daa4e02fULL);
+  CHECK(fnv1a(compute_heat_field(config, mask, samples)) == 0xc47ca1f15d38ab42ULL);
 }
