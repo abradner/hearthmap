@@ -15,13 +15,22 @@ namespace hearthmap {
 /// functions below still define behaviour for them.
 inline constexpr double kMinCalibrationWidth = 1e-9;
 
+/// True when `calibration`'s dry..wet span can be used: dry and wet are finite, wet - dry is
+/// finite (does not overflow), and |wet - dry| >= kMinCalibrationWidth. The one definition of a
+/// usable span: validate() rejects a calibration exactly when this is false, and
+/// moisture_fraction() returns std::nullopt for every raw value exactly when this is false, so a
+/// config validate() accepts never reports BadCalibration. Happy edges are not part of the span
+/// (validate() checks them separately). Implemented in core (PR 2).
+bool calibration_span_usable(const Calibration& calibration);
+
 /// Moisture as a fraction of the calibrated span: (raw - dry) / (wet - dry), clamped to 0..1.
 ///
 /// - Inverted ranges (wet < dry, typical of capacitive ADC probes) need no special case: the
 ///   formula handles either direction, so a raw value at `wet` gives 1.0 and at `dry` gives 0.0.
 /// - Readings beyond either end clamp (wetter than wet -> 1.0, drier than dry -> 0.0).
-/// - Zero-width range (|wet - dry| < kMinCalibrationWidth): std::nullopt. Core reports the pin
-///   as Stale with reason Freshness::BadCalibration rather than guess (severity.h).
+/// - Unusable span (calibration_span_usable() false: zero-width, non-finite dry or wet, or a
+///   width that overflows): std::nullopt. Core reports the pin as Stale with reason
+///   Freshness::BadCalibration rather than guess (severity.h).
 /// - The span is closed: `dry` and `wet` themselves are inside it (validate() accepts a happy
 ///   edge equal to either).
 /// - Non-finite `raw`: std::nullopt.

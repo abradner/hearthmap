@@ -68,8 +68,11 @@ set per layer.
 
 **Default:** every `ConfigSource` (host JSON parser, generated tables) fills the schema's
 defaults; core's structs always hold concrete values. `default_band()` in `config.h` is the one
-copy of the band defaults; `schema/README.md` documents the same numbers (an automated check
-that they agree is stated, not yet enforced: PR 2). Sources also record which band fields the
+copy of the band defaults; `schema/README.md` documents the same numbers. ctest's
+`core.defaults_match_docs` (`core/tests/check_defaults.py`) compares the compiled defaults with
+that table, the README's other default cells and every `default` keyword in the schema, and fails
+on any difference; `core.defaults_check_self_test` plants a mismatch in each source and fails
+unless every one is caught (was: "stated, not yet enforced: PR 2"). Sources also record which band fields the
 config set (`LayerConfig::present`), so `validate()` can judge the Fahrenheit rule (D-011) without
 the source re-implementing it. **Why:** one place decides what a default is;
 core functions never branch on "was this set". **Would change if:** runtime config editing on the
@@ -244,6 +247,37 @@ UI spec. **Default:** neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,7
 spec's comfort-quiet diverging colours on its #0d1013 background. **Why:** principle 3 (quiet
 when fine): on a dark panel a light grey neutral would make a healthy house the brightest thing on
 the wall. **Would change if:** a light theme is added; it passes its own `Palette`.
+
+### D-026 Choices the core implementations made where the contract was silent (provisional)
+
+Each is the reversible reading; each has a test that would change with it.
+
+- **A non-finite number in a `Value` reading is `Unknown`** (`assess_freshness`), though sources
+  promise never to send one: showing it would print `nan`.
+- **A calibration span is usable** only when dry, wet and wet - dry are finite and |wet - dry|
+  is at least `kMinCalibrationWidth`: one predicate, `calibration_span_usable()`, used by both
+  `validate()` and `moisture_fraction()`, so a valid config never reports `BadCalibration`.
+- **Moisture on a pin with no calibration** (only possible in an invalid config) is treated like
+  a degenerate calibration: `BadCalibration`, in the D-012 precedence.
+- **Polygon simplicity**: a zero-length edge (a repeated vertex, including the first vertex
+  repeated at the end), zero area (every vertex on one line, by the same test
+  `point_in_polygon()` uses to enclose nothing), or an edge that folds back over its neighbour
+  makes a polygon non-simple. Both are checked explicitly, not left to the crossing tests.
+  When a vertex is out of range, only the per-vertex error is reported (`/rooms/i/polygon/j`),
+  not also "not simple"; when a pin's position is out of range, the outside-its-room warning is
+  skipped. `validate()` reports every problem in one pass.
+- **HUD ordering** uses a stable insertion sort (no allocation, n <= 256). Under the current
+  `effective_soil_band()`, "Danger before Warn" never contradicts "thirst descending" (a Warn
+  plant's thirst is at most its `danger_above`, which is at least the layer's), so that rule has
+  no observable test today; it is implemented as written in case the band algorithm changes.
+- **Overlay storage reuse**: a reused `ViewModel` keeps its overlay rows' storage while an
+  overlay stays open; closing it releases them, and reopening allocates once. Each row's unit
+  is reserved to `kOverlayUnitCapacity` (16 bytes) when the row is created, so a reading that
+  arrives later with a real unit does not allocate; a longer unit is shown in full and may
+  allocate (`Reading::unit` has no length bound, so no fixed buffer can promise more).
+- **HUD storage** is reserved for every Plant pin (all candidates are collected before the cut
+  to `max_items`), so warming up on healthy readings does not leave a later thirsty frame to
+  allocate.
 
 ### D-027 Calibration proposals: method defaults (provisional, PR 8)
 
