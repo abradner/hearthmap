@@ -36,6 +36,18 @@ class ImageProvider {
  public:
   virtual ~ImageProvider() = default;
   virtual const lv_image_dsc_t* plant_photo(std::string_view photo_id) const = 0;
+
+  /// The photo for `photo_id` pre-sized to exactly `diameter` x `diameter` pixels, or nullptr
+  /// when the provider has none at that size (the default). The Screen asks once per photo id
+  /// and disc diameter at construction, with the same lifetime rule as plant_photo(). A photo at
+  /// its disc's own size is drawn without scaling; a plant_photo() of another size is scaled to
+  /// cover the disc, which needs LVGL's software transform for its colour format, a feature the
+  /// device's LVGL build compiles out for RGB565 (docs/decisions.md D-039).
+  virtual const lv_image_dsc_t* plant_photo_sized(std::string_view photo_id, int diameter) const {
+    (void)photo_id;
+    (void)diameter;
+    return nullptr;
+  }
 };
 
 }  // namespace hearthmap::ui

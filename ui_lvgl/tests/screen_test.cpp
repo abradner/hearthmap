@@ -666,7 +666,9 @@ TEST_CASE("map taps are reported in canvas pixels when the Screen's parent is of
   deps.fonts = builtin_fonts();
   deps.sink = &sink;
   Screen screen(holder, config, nullptr, deps);
-  screen.update(test::temperature_vm(config), HeaderText{"09:00", "House"}, 1000);
+  ViewModel vm = test::temperature_vm(config);
+  vm.pins[1].on_active_layer = true;  // drawn at full strength, so the pixel is the photo's own
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
   display.render();
   display.tap(100 + 300, 50 + 300);  // canvas (300, 300), inside the map
   REQUIRE(sink.events.size() == 1);
@@ -765,4 +767,114 @@ TEST_CASE("deleting the Screen's parent first leaves a Screen that is safe to up
   screen->update(test::temperature_vm(config), HeaderText{"09:01", "House"}, 1060);
   CHECK(screen->writes() == before);  // nothing touched
   screen.reset();                     // must not delete the freed root again
+}
+
+// --- Photos the way the device supplies them (docs/decisions.md D-039) ----------------------
+//
+// The panel's LVGL is built without RGB565A8, and LVGL's software transform of an RGB565 image
+// needs it: a 128 px RGB565 photo scaled down to a 44 px pin disc logs "Color format 0x12 is not
+// enabled" and draws nothing. The host's lv_conf.h now has the device's format set, so these
+// tests see what the panel sees.
+
+namespace {
+
+int g_not_enabled = 0;
+void count_lvgl_warnings(lv_log_level_t level, const char* buf) {
+  if (level >= LV_LOG_LEVEL_WARN && std::string(buf).find("is not enabled") != std::string::npos) {
+    ++g_not_enabled;
+  }
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
+// RGB565 photos, filled with one colour, at the overlay size and (optionally) every disc size.
+struct DevicePhotos : ImageProvider {
+  struct Img {
+    std::vector<std::uint16_t> px;
+    lv_image_dsc_t dsc{};
+  };
+  std::map<int, Img> by_size;
+  bool sized = true;
+  static constexpr std::uint16_t kColour = 0x07E0;  // pure green
+  explicit DevicePhotos(bool with_sizes) : sized(with_sizes) {
+    for (int s : {44, 52, 128}) {
+      Img& i = by_size[s];
+      i.px.assign(static_cast<std::size_t>(s * s), kColour);
+      i.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+      i.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+      i.dsc.header.w = static_cast<std::uint32_t>(s);
+      i.dsc.header.h = static_cast<std::uint32_t>(s);
+      i.dsc.header.stride = static_cast<std::uint32_t>(s * 2);
+      i.dsc.data_size = static_cast<std::uint32_t>(s * s * 2);
+      i.dsc.data = reinterpret_cast<const std::uint8_t*>(i.px.data());
+    }
+  }
+  const lv_image_dsc_t* plant_photo(std::string_view id) const override {
+    return id == "fern" ? &by_size.at(128).dsc : nullptr;
+  }
+  const lv_image_dsc_t* plant_photo_sized(std::string_view id, int diameter) const override {
+    if (!sized || id != "fern") return nullptr;
+    auto it = by_size.find(diameter);
+    return it == by_size.end() ? nullptr : &it->second.dsc;
+  }
+};
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+// Draw the small config with `photos` and return the framebuffer pixel at the fern pin's centre.
+// Counts LVGL's "format not enabled" warnings into g_not_enabled while it draws.
+std::uint16_t fern_centre_pixel(const ImageProvider& photos) {
+  host::HeadlessDisplay display{1280, 800};
+  // After the display exists: the first lv_init() resets LVGL's print callback.
+  g_not_enabled = 0;
+  lv_log_register_print_cb(count_lvgl_warnings);
+  Config config = test::small_config();
+  RecordingSink sink;
+  HeatRasterizer raster{config};
+  std::vector<Rgb565> heat(raster.pixel_count(), 0);
+  lv_image_dsc_t heat_dsc{};
+  heat_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+  heat_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+  heat_dsc.header.w = static_cast<std::uint32_t>(raster.width());
+  heat_dsc.header.h = static_cast<std::uint32_t>(raster.height());
+  heat_dsc.header.stride = static_cast<std::uint32_t>(raster.width() * 2);
+  heat_dsc.data_size = static_cast<std::uint32_t>(heat.size() * 2);
+  heat_dsc.data = reinterpret_cast<const std::uint8_t*>(heat.data());
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  deps.photos = &photos;
+  Screen screen(display.screen(), config, &heat_dsc, deps);
+  ViewModel vm = test::temperature_vm(config);
+  vm.pins[1].on_active_layer = true;  // drawn at full strength, so the pixel is the photo's own
+  screen.update(vm, HeaderText{"09:00", "House"}, 1000);
+  display.render();
+  const CanvasRect& a = config.canvas.map_area;
+  const int x = a.x + static_cast<int>(0.1 * a.width);
+  const int y = a.y + static_cast<int>(0.1 * a.height);
+  const std::uint16_t px =
+      display.framebuffer()[static_cast<std::size_t>(y) * 1280U + static_cast<std::size_t>(x)];
+  lv_log_register_print_cb(nullptr);
+  return px;
+}
+
+}  // namespace
+
+TEST_CASE("pre-sized RGB565 photos are drawn without a transform") {
+  DevicePhotos photos(true);
+  const std::uint16_t px = fern_centre_pixel(photos);
+  CHECK(g_not_enabled == 0);
+  CHECK(px == DevicePhotos::kColour);
+}
+
+TEST_CASE("an RGB565 photo that must be scaled hits the device's missing format, here too") {
+  // The positive control for the test above: without pre-sized photos the host now fails the way
+  // the panel did, so a regression to scaling shows up on a laptop.
+  DevicePhotos photos(false);
+  const std::uint16_t px = fern_centre_pixel(photos);
+  CHECK(g_not_enabled > 0);
+  CHECK(px != DevicePhotos::kColour);
 }
