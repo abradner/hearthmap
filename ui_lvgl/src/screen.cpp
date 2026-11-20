@@ -334,6 +334,11 @@ struct Screen::Impl {
     if (indev == nullptr) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
+    // Display coordinates -> canvas: the root sits at its parent's origin, wherever that is.
+    lv_area_t root;
+    lv_obj_get_coords(self(e)->w.root, &root);
+    p.x -= root.x1;
+    p.y -= root.y1;
     self(e)->send(
         UiEvent::tap_map(CanvasPoint{static_cast<double>(p.x), static_cast<double>(p.y)}));
   }
@@ -449,7 +454,7 @@ struct Screen::Impl {
     const std::int32_t avail = (x2 - x1) - inset_l - inset_r;
     const std::int32_t least =
         room.name.size() <= 3 ? full : text_width(room.name.substr(0, 3) + "...", font);
-    if (avail < least) {
+    if (full > avail && avail < least) {
       lv_obj_set_hidden(label, true);
       return;
     }
@@ -664,15 +669,20 @@ struct Screen::Impl {
     lv_obj_set_pos(w.hud_empty, theme::kHudX, theme::kHudY + kHudTitleHeight);
     lv_obj_set_hidden(w.hud_empty, true);
 
-    const auto cap = static_cast<std::size_t>(std::max<std::int32_t>(0, config.hud.max_items));
-    hud_pin_ids.assign(cap, std::string());
-    // Gap between cards: the spec's 10 px, reduced (never the cards) so `cap` cards plus the
+    // Gap between cards: the spec's 10 px, reduced (never the cards) so the cards plus the
     // "+N more" line end kHudBottomMargin above the screen's bottom edge. Below 4 px it stops
-    // shrinking; the schema allows caps up to 20, which cannot fit (the spec's cap is 7).
+    // shrinking, and the pool holds only the cards that then fit: with a larger max_items the
+    // items beyond the pool are counted in "+N more" (update_hud).
     const int start = theme::kHudY + kHudTitleHeight;
-    const int n = static_cast<int>(cap);
     // int32_t is long on the ESP32-P4 toolchain: name every conversion to int.
     const int more_h = static_cast<int>(lv_font_get_line_height(f.px20));
+    const int usable =
+        static_cast<int>(config.canvas.height) - kHudBottomMargin - more_h - 2 - start;
+    const int fits = std::max(1, usable / (theme::kHudCardHeight + 4));
+    const auto cap = static_cast<std::size_t>(
+        std::min<std::int32_t>(std::max<std::int32_t>(0, config.hud.max_items), fits));
+    hud_pin_ids.assign(cap, std::string());
+    const int n = static_cast<int>(cap);
     int gap = theme::kHudCardGap;
     if (n > 0) {
       const int room = static_cast<int>(config.canvas.height) - kHudBottomMargin - more_h - 2 -
@@ -947,7 +957,9 @@ struct Screen::Impl {
       l.stale = !fresh;
       if (fresh) {
         l.ring_permille = ring_permille(*pv.primary.value);
-        l.ring_colour = severity_colour(pv.primary.severity);
+        // Moisture feeding a disabled soil layer is not judged (D-020): a neutral ring.
+        l.ring_colour = config.layer(Layer::Soil).enabled ? severity_colour(pv.primary.severity)
+                                                          : theme::kTextSecondary;
       }
     } else if (pv.on_active_layer) {
       if (pv.active_value.has_value()) {
@@ -974,7 +986,14 @@ struct Screen::Impl {
       if (prev.has_value() && *prev == look) continue;
       const bool first = !prev.has_value();
       if (first || prev->dim != look.dim) {
-        lv_obj_set_style_opa(w.pin[i], look.dim ? LV_OPA_40 : LV_OPA_COVER, 0);
+        // Dim the disc or the dot and value, never the badge (it stays at full strength).
+        const lv_opa_t opa = look.dim ? LV_OPA_40 : LV_OPA_COVER;
+        if (pin_disc[i].holder != nullptr) {
+          lv_obj_set_style_opa(pin_disc[i].holder, opa, 0);
+        } else {
+          lv_obj_set_style_opa(pin_dot[i], opa, 0);
+          lv_obj_set_style_opa(w.pin_value[i], opa, 0);
+        }
         count();
       }
       if (first || prev->badge != look.badge) {
@@ -1053,10 +1072,12 @@ struct Screen::Impl {
       li.colour = severity_colour(item.severity);
       look.items.push_back(li);
     }
-    look.overflow = vm.hud.overflow;
+    // Items beyond the card pool (a max_items larger than the screen holds) join "+N more".
+    const std::size_t total = vm.hud.items.size() + vm.hud.overflow;
+    if (look.items.size() > w.hud_card.size()) look.items.resize(w.hud_card.size());
+    look.overflow = total - look.items.size();
     if (hud_look.has_value() && *hud_look == look) return;
 
-    const std::size_t total = look.items.size() + look.overflow;
     set_text(w.hud_count, std::to_string(total));
     lv_obj_align_to(w.hud_count, hud_title, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
     set_hidden(w.hud_count, total == 0);
@@ -1133,8 +1154,15 @@ struct Screen::Impl {
     o.stale = !fresh;
     if (o.pot) {
       if (prow != nullptr) {
-        o.verdict = thirst_verdict(prow->assessment);
-        o.status_colour = severity_colour(prow->assessment.severity);
+        if (config.layer(Layer::Soil).enabled) {
+          o.verdict = thirst_verdict(prow->assessment);
+          o.status_colour = severity_colour(prow->assessment.severity);
+        } else {
+          // Not judged (D-020): the percentage alone, in a neutral colour, never "happy".
+          o.verdict =
+              fresh ? std::to_string(moisture_percent(*prow->assessment.value)) + "%" : "no data";
+          o.status_colour = theme::kTextSecondary;
+        }
         if (fresh) {
           o.ring_permille = ring_permille(*prow->assessment.value);
           o.bar_permille =
