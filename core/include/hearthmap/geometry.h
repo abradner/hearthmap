@@ -78,7 +78,12 @@ inline bool contains(const CanvasRect& r, CanvasPoint p) {
 /// Boundary rule (so adjacent rooms never both claim a point): a point exactly on an edge is
 /// inside for left and top edges and outside for right and bottom edges, in the sense of the
 /// standard half-open crossing-number test (an edge (a, b) counts a crossing when
-/// (a.y > p.y) != (b.y > p.y) and p.x < the edge's x at p.y). Implemented in core (PR 3).
+/// (a.y > p.y) != (b.y > p.y) and p.x < the edge's x at p.y). Each edge is evaluated in a
+/// canonical vertex order, so two polygons that share an edge (the same two vertices, walked in
+/// either direction) compute bit-identical crossings for it: a point on a shared diagonal wall
+/// goes to exactly one of them. (An edge split at different vertices in the two polygons gets no
+/// such guarantee.) Fewer than three vertices,
+/// or zero area: never inside. Implemented in core (PR 3).
 bool point_in_polygon(const Polygon& polygon, MapPoint p);
 
 }  // namespace hearthmap
