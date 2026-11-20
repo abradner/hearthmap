@@ -118,7 +118,7 @@ declares), a `HeatRasterizer` writing into a heat image buffer the glue allocate
 asks) and the generated photos as the `ImageProvider`. The heat image is redrawn only when the
 active layer or the heat field changed. The top bar's house summary uses the host's
 `house_summary()` (`host/src/summary.cpp`, copied into the build like the libraries): a stopgap
-until core has a view-model field for it (docs/decisions.md D-027).
+until core has a view-model field for it (docs/decisions.md D-030).
 
 ## Memory and cost (example config, 1280 x 800, measured from the build and the headers)
 

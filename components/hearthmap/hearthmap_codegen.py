@@ -648,7 +648,7 @@ def library_files(repo_root: Path) -> dict[str, Path]:
             for f in sorted(tree.rglob("*")):
                 if f.is_file() and f.suffix in _SOURCE_SUFFIXES:
                     out[prefix + f.relative_to(tree).as_posix()] = f
-    # Stopgap, docs/decisions.md D-027: the top bar's house summary is computed in host/ until
+    # Stopgap, docs/decisions.md D-030: the top bar's house summary is computed in host/ until
     # core grows a view-model field for it. The device uses the same two files rather than a
     # second implementation; they depend on core only.
     for name in HOST_SHARED_FILES:

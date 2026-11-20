@@ -314,7 +314,7 @@ calibrated are listed with a `message` rather than left out, so the editor can s
 later; reusing the config's calibration definition means the two cannot drift. **Would change
 if:** the editor's import needs something else; it is the only consumer.
 
-### D-027 The top bar's house summary is computed on the host for now (provisional)
+### D-030 The top bar's house summary is computed on the host for now (provisional)
 
 **Question:** the UI spec's top bar shows "House 24.2°   68% RH   PM2.5 2", but the view model
 carries no house-level figure. **Default:** the embedder formats the summary text and passes it to
@@ -326,7 +326,7 @@ stopgap: averaging is logic a test could check, so it belongs in core. **Would c
 grows a `ViewModel` summary field (then the host function goes, and the device gets the same
 numbers).
 
-### D-028 Choices the UI made where the spec was silent (provisional)
+### D-031 Choices the UI made where the spec was silent (provisional)
 
 Each is reversible and visible in the golden images.
 
@@ -347,24 +347,29 @@ Each is reversible and visible in the golden images.
 - **Thirst verdicts**: danger dry "water now", warn dry "water soon", warn or danger wet (thirst
   below comfort) "too wet", ok "happy", stale "no data".
 - **Fonts**: built-in Montserrat at even sizes, so the spec's 21 px is 20 px.
+- **Room labels move rather than hide under pins**: limited to the room's width with an
+  ellipsis, dropped below three characters, and placed in the first free corner of the room
+  (ui_lvgl/README.md, "Layout rules"). The HUD gap shrinks (not the cards) so seven cards and
+  "+N more" fit.
 
 **Would change if:** the operator marks any of these against mockup A.
 
-### D-029 The example flat's map area matches the UI spec's map region (provisional)
+### D-032 The example flat's map area matches the UI spec's map region (provisional)
 
 **Default:** `examples/flat/config.json` sets `map_area` to x 40, y 76, 864 x 720: inside the
 spec's map region (x 0..920, y 64..800, about 40 px left margin), clear of the 64 px top bar and
 the HUD column, and at the flat's 12:10 aspect (72 px per grid unit). **Why:** core hit-tests and
 interpolates in `map_area`, so the screen must draw the map exactly there, and the previous
 0,0,960,800 overlapped both the top bar and the HUD. **Would change if:** the layout changes; the
-map area is one config field.
+map area is one config field. Open: the editor's default for new projects (D-044, `{0, 0, 960, 800}`) still
+overlaps the top bar and the HUD's left edge at x 936; it should follow this area.
 
 ### D-034 core and ui_lvgl reach the firmware by a build-time copy (provisional)
 
 **Question:** ESPHome copies only a component directory's top-level files into the build, and
 `core/` and `ui_lvgl/` live outside `components/hearthmap/`. How do they get compiled? **Default:**
 the component's Python copies each library's `include/` tree to the root of the build's `src/` and
-its `src/` tree to `src/hearthmap_lib/<lib>/` (plus `host/src/summary.*`, the D-027 stopgap),
+its `src/` tree to `src/hearthmap_lib/<lib>/` (plus `host/src/summary.*`, the D-030 stopgap),
 writing only changed files and deleting stale ones in those directories. ESPHome 2026.11.0 clones
 the whole repository for a `github://` source and a local source is a working tree, so the files
 are always beside the component; the generated `src/CMakeLists.txt` globs `src/**` and has `src/`
@@ -411,3 +416,67 @@ the psram component's `CONFIG_SPIRAM_USE_CAPS_ALLOC`), so allocations above
 more than the ESP32-P4's internal RAM can spare, and with exceptions off a failed allocation aborts.
 The heat image itself is allocated explicitly in PSRAM. **Would change if:** ui_lvgl takes an
 allocator for its working set, after which this global setting can go.
+
+### D-040 The editor repeats some `validate()` checks, as politeness (provisional)
+
+**Question:** the editor must "validate with the real schema and show errors next to the item",
+but several rules (unique ids, room references, polygon simplicity, calibration width, happy
+range, band order, Fahrenheit, moisture role, map area) live in core's `validate()`, which the
+browser cannot run. **Default:** the editor validates with the schema (Ajv, pinned) and repeats
+those checks in `editor/src/lib/validate.ts`, blocking export on any error. Core stays the
+enforcement (D-017): deleting the editor's copies changes where the author sees a problem, not
+what the firmware accepts (AGENTS.md §8, layered checks). Numbered D-040 rather than the next
+free number to avoid colliding with other PRs written the same night. **Would change if:** core
+is compiled to WebAssembly for the editor, which would replace the copies with the real thing.
+
+### D-041 Editor export: schema key order, no defaults written, 4-decimal coordinates (provisional)
+
+**Default:** the exported `config.json` orders keys as the schema declares them (read from the
+schema at runtime), except `entities`, which keeps the author's order; the editor never writes a
+schema default the author did not set (empty fields show the default as a placeholder); edits
+round map coordinates to 4 decimals (0.1 px on a 960 px map). A loaded config is exported
+unchanged apart from formatting, which the round-trip test checks against `examples/flat/`.
+**Why:** a config that grows defaults on every save hides what the author chose, and a stable
+key order keeps diffs in the private repo small. **Would change if:** codegen wants a fully
+populated config (it should apply defaults itself, D-007).
+
+### D-042 Plant photos are exported as 128 x 128 PNG, centre-cropped (provisional)
+
+**Default:** every image, whether attached in the inspector or opened with a project or zip, is
+decoded, cut to its largest centred square and re-encoded as a 128 x 128 PNG, saved as
+`photos/<photo-id>.png`; only re-encoded photos can enter the editor's store (a branded type), so
+no original bytes or metadata (EXIF, GPS) reach an export, and a file that does not decode is
+rejected. A folder export offers to remove `photos/<photo-id>.png` files an earlier export left
+that no pin references; a referenced photo not loaded this session is kept on disk. Only photos some pin references are exported; photos are not
+autosaved (they would fill `localStorage`), so after a reload the editor warns until they are
+attached again. **Why:** 128 px is the largest size the UI spec draws a plant photo (the detail
+overlay's 64 px radius disc); the ESPHome component converts to RGB565 at build time. **Would
+change if:** the overlay grows, or the component wants a fixed RGB565 blob from the editor.
+
+### D-043 The editor reads tools/calibrate's interchange format as that tool defines it (provisional)
+
+**Default:** `schema/calibration.schema.json` is owned by the calibrate tool (D-029); the editor
+compiles against it and tests its importer on the tool's own example output
+(`tools/calibrate/examples/calibration.json`), read in place. Import applies every `status: "ok"`
+sensor's calibration (all four fields) to each soil or plant pin whose `entities.moisture` matches, replacing the pin's
+calibration as a whole; failed sensors are skipped with their message; confidence, warnings and
+`happy_is_default` are shown, never written into the config. **Would change if:** the tool's
+format changes (its schema is the contract).
+
+### D-044 New editor projects set `map_area` to the panel layout explicitly (provisional)
+
+**Default:** a blank project writes `canvas.map_area` = `{0, 0, 960, 800}`, the map region of the
+UI spec's 1280 x 800 layout, rather than relying on the whole-canvas default (D-023), which would
+put the map under the HUD. "Match plan shape" keeps the area inside 960 x 800. **Would change
+if:** the panel layout changes.
+
+### D-045 Editor UI structure: pure `lib/`, tested; thin vanilla-TS `ui/` (provisional)
+
+**Question:** no convention existed for a web UI in this repo (AGENTS.md §8, "building structure
+where no convention is stated"). **Default:** no framework. Everything a test can check is a pure
+function in `editor/src/lib/` or `editor/src/preview/scene.ts` (data in, data out, Vitest);
+`editor/src/ui/` renders state with a small hyperscript helper and canvas code, and is covered by
+the Playwright smoke test only. Config edits are pure functions over an immutable config, and undo
+is a list of snapshots. **Why:** minimal dependencies (two at runtime: Ajv and fflate) and the
+same "logic where tests reach it" rule as core (principle 2). **Would change if:** the UI grows
+enough that a component framework pays for itself; `lib/` would not change.
