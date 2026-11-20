@@ -28,3 +28,23 @@ add_test(NAME core.unit COMMAND hearthmap_core_tests --no-version)
 # in addition to the exit-code check.
 set_tests_properties(core.unit PROPERTIES
   FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
+
+# Defaults agreement (docs/decisions.md D-007): default_band() and Config's member defaults,
+# as compiled, must equal the numbers schema/README.md documents and the "default" keywords in
+# schema/hearthmap.schema.json. dump_defaults prints what core holds; check_defaults.py
+# compares. The self-test plants a mismatch in each source and requires the check to fail.
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+add_executable(hearthmap_dump_defaults dump_defaults.cpp)
+target_link_libraries(hearthmap_dump_defaults PRIVATE hearthmap::core)
+hearthmap_strict_warnings(hearthmap_dump_defaults)
+
+add_test(NAME core.defaults_match_docs
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/check_defaults.py"
+          --dump "$<TARGET_FILE:hearthmap_dump_defaults>"
+          --readme "${PROJECT_SOURCE_DIR}/schema/README.md"
+          --schema "${PROJECT_SOURCE_DIR}/schema/hearthmap.schema.json")
+add_test(NAME core.defaults_check_self_test
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/check_defaults.py" --self-test
+          --dump "$<TARGET_FILE:hearthmap_dump_defaults>"
+          --readme "${PROJECT_SOURCE_DIR}/schema/README.md"
+          --schema "${PROJECT_SOURCE_DIR}/schema/hearthmap.schema.json")

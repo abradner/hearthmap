@@ -230,7 +230,7 @@ enum class TemperatureUnit : std::uint8_t { Celsius, Fahrenheit };
 
 /// The schema's documented default band for `layer` (Celsius for temperature). These are the
 /// values every ConfigSource fills in for an omitted field; schema/README.md lists the same
-/// numbers and the CI schema check asserts the two agree (stated, not yet enforced: PR 2).
+/// numbers, and ctest's core.defaults_match_docs fails when the two disagree.
 constexpr Band default_band(Layer layer) {
   switch (layer) {
     case Layer::Temperature: return Band{19.0, 24.0, 16.0, 27.0, 12.0, 32.0, 10.0, 34.0};

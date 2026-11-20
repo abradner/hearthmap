@@ -68,8 +68,11 @@ set per layer.
 
 **Default:** every `ConfigSource` (host JSON parser, generated tables) fills the schema's
 defaults; core's structs always hold concrete values. `default_band()` in `config.h` is the one
-copy of the band defaults; `schema/README.md` documents the same numbers (an automated check
-that they agree is stated, not yet enforced: PR 2). Sources also record which band fields the
+copy of the band defaults; `schema/README.md` documents the same numbers. ctest's
+`core.defaults_match_docs` (`core/tests/check_defaults.py`) compares the compiled defaults with
+that table, the README's other default cells and every `default` keyword in the schema, and fails
+on any difference; `core.defaults_check_self_test` plants a mismatch in each source and fails
+unless every one is caught (was: "stated, not yet enforced: PR 2"). Sources also record which band fields the
 config set (`LayerConfig::present`), so `validate()` can judge the Fahrenheit rule (D-011) without
 the source re-implementing it. **Why:** one place decides what a default is;
 core functions never branch on "was this set". **Would change if:** runtime config editing on the
