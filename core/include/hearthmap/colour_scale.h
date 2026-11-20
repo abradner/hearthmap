@@ -56,12 +56,13 @@ constexpr Rgb888 lerp(Rgb888 a, Rgb888 b, double t) {
   return Rgb888{ch(a.r, b.r), ch(a.g, b.g), ch(a.b, b.b)};
 }
 
-/// The three anchor colours of the scale. Defaults: a quiet warm grey, a clear blue, a clear
-/// red. ui_lvgl may pass a different palette (e.g. a dark theme); core never assumes these.
+/// The three anchor colours of the scale. Defaults are the UI spec's dark-theme heatmap colours
+/// (docs/decisions.md D-025): neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,73,72).
+/// ui_lvgl may pass a different palette; core never assumes these.
 struct Palette {
-  Rgb888 neutral{0xD8, 0xD4, 0xCC};
-  Rgb888 cold{0x2B, 0x6C, 0xD8};
-  Rgb888 hot{0xD8, 0x3A, 0x2B};
+  Rgb888 neutral{30, 35, 41};
+  Rgb888 cold{42, 120, 214};
+  Rgb888 hot{227, 73, 72};
 };
 
 /// Colour for `value` under `band`:
@@ -98,7 +99,9 @@ struct ColourLut {
 
   /// The entry nearest `value`: index = round((value - lo) / (hi - lo) * (n - 1)), clamped to
   /// 0..n-1. A non-finite value or an empty table gives 0 (black); callers colour only cells
-  /// in CellState::Value, which are finite. Never allocates.
+  /// in CellState::Value, which are finite. A degenerate table (hi <= lo, from a band
+  /// validate() rejects) gives entries.front() for value <= lo and entries.back() otherwise.
+  /// Never allocates.
   /// Implemented in core (PR 3).
   Rgb565 lookup(float value) const;
 };
