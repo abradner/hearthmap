@@ -5,6 +5,8 @@
 // scale_max. Severity does not affect colour (pins and pulsing carry severity).
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "hearthmap/config.h"
@@ -49,20 +51,22 @@ constexpr Rgb888 lerp(Rgb888 a, Rgb888 b, double t) {
   return Rgb888{ch(a.r, b.r), ch(a.g, b.g), ch(a.b, b.b)};
 }
 
-/// The three anchor colours of the scale. Defaults: a quiet warm grey, a clear blue, a clear
-/// red. ui_lvgl may pass a different palette (e.g. a dark theme); core never assumes these.
+/// The three anchor colours of the scale. Defaults are the UI spec's dark-theme heatmap colours
+/// (docs/decisions.md D-018): neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,73,72).
+/// ui_lvgl may pass a different palette; core never assumes these.
 struct Palette {
-  Rgb888 neutral{0xD8, 0xD4, 0xCC};
-  Rgb888 cold{0x2B, 0x6C, 0xD8};
-  Rgb888 hot{0xD8, 0x3A, 0x2B};
+  Rgb888 neutral{30, 35, 41};
+  Rgb888 cold{42, 120, 214};
+  Rgb888 hot{227, 73, 72};
 };
 
 /// Colour for `value` under `band`:
 /// - comfort_min <= value <= comfort_max: palette.neutral.
 /// - value < comfort_min: lerp(neutral, cold, t), t = (comfort_min - value) /
-///   (comfort_min - scale_min); when comfort_min <= scale_min the cold side is a step: cold.
+///   (comfort_min - scale_min); when comfort_min <= scale_min the cold side is neutral
+///   (ruling R9: no gradient room means no colour, not a jump to full cold).
 /// - value > comfort_max: lerp(neutral, hot, t), t = (value - comfort_max) /
-///   (scale_max - comfort_max); when scale_max <= comfort_max: hot.
+///   (scale_max - comfort_max); when scale_max <= comfort_max the hot side is neutral.
 /// - Non-finite value: palette.neutral (callers should never pass one; heat cells with no data
 ///   are not coloured through this function).
 /// Implemented in core (PR 3).
@@ -72,5 +76,28 @@ Rgb888 colour_for(const Band& band, double value, const Palette& palette = Palet
 inline Rgb565 colour565_for(const Band& band, double value, const Palette& palette = Palette{}) {
   return to_rgb565(colour_for(band, value, palette));
 }
+
+/// A per-band lookup table, so a heat field is coloured with one float multiply and an array
+/// read per cell instead of a colour_for() call (ruling R11). Fixed size: building or using one
+/// never allocates. Colour is resolved per heat cell, never per screen pixel.
+struct ColourTable {
+  static constexpr std::size_t kEntries = 256;
+  /// entries[i] = colour565_for(band, scale_min + i * (scale_max - scale_min) / (kEntries - 1)).
+  std::array<Rgb565, kEntries> entries{};
+  Rgb565 neutral = 0;
+  float comfort_min = 0.0F;
+  float comfort_max = 0.0F;
+  float scale_min = 0.0F;
+  float scale_max = 0.0F;
+
+  /// - Non-finite value, or comfort_min <= value <= comfort_max (exact, not quantised): neutral.
+  /// - value <= scale_min: entries.front(); value >= scale_max: entries.back().
+  /// - Otherwise the entry nearest the value (round half up).
+  /// Outside the comfort band this differs from colour565_for() by at most half a table step.
+  Rgb565 lookup(float value) const;
+};
+
+/// Build the table for `band` and `palette`.
+ColourTable make_colour_table(const Band& band, const Palette& palette = Palette{});
 
 }  // namespace hearthmap
