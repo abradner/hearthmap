@@ -134,3 +134,26 @@ confident 0% or 100%.
 **Default:** `layers.default` is `temperature`. **Why:** the HUD already lists thirsty plants
 on every tab, so the map's first view complements it rather than duplicating it. **Would change
 if:** the operator prefers the soil layer first; it is one config field.
+
+### D-017 Heat fields are bit-reproducible; core never fuses multiply-adds (provisional)
+
+**Question:** how deterministic must `compute_heat_field()` be? **Default:** the same inputs give
+byte-identical cells, on the same build and across IEEE-754 platforms, for integer `idw_power`
+values 1..8. Core is compiled with `-ffp-contract=off` (Clang contracts `a*b+c` into fused
+multiply-adds by default, GCC does in GNU modes), never with fast-math; cells and samples are
+iterated in a fixed order; integer powers use multiplication and at most one `sqrtf`, both exactly
+rounded, instead of `powf`, whose rounding differs between C libraries. A golden hash of the
+example flat's field (`core/tests/heat_field_test.cpp`) is checked on every compiler CI runs.
+Non-integer powers use `powf` and are reproducible only within one C library. **Why:** golden
+images (PR 5) depend on the field; an image that changes with the compiler is a flaky test.
+**Would change if:** a non-integer power becomes the default (then a portable power function
+belongs in core), or the firmware toolchain needs contraction for speed (it does not today: the
+P4 has no double-precision FPU, and the heat field is float).
+
+### D-018 The default palette is the UI spec's dark heatmap (provisional)
+
+**Question:** `Palette`'s defaults were a light warm grey, blue and red that appear nowhere in the
+UI spec. **Default:** neutral rgb(30,35,41), cold rgb(42,120,214), hot rgb(227,73,72), the
+spec's comfort-quiet diverging colours on its #0d1013 background. **Why:** principle 3 (quiet
+when fine): on a dark panel a light grey neutral would make a healthy house the brightest thing on
+the wall. **Would change if:** a light theme is added; it passes its own `Palette`.

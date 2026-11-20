@@ -15,6 +15,9 @@ set(HEARTHMAP_CORE_HEADERS
 # Implementations land in PR 2 (config validation, calibration, severity), PR 3 (geometry,
 # heat field, colour scale) and PR 4 (view model). Add each new .cpp here.
 set(HEARTHMAP_CORE_SOURCES
+  src/colour_scale.cpp
+  src/geometry.cpp
+  src/heat_field.cpp
 )
 
 # Header self-containment: one generated translation unit per public header, each including
@@ -34,3 +37,9 @@ add_library(hearthmap::core ALIAS hearthmap_core)
 target_include_directories(hearthmap_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(hearthmap_core PUBLIC cxx_std_17)
 hearthmap_strict_warnings(hearthmap_core)
+# Determinism (docs/decisions.md D-017): heat fields feed golden images, so core's arithmetic must
+# not depend on whether the compiler chose to fuse a*b+c. Clang contracts by default; GCC does in
+# GNU modes. Fast-math is never enabled for core.
+if(NOT MSVC)
+  target_compile_options(hearthmap_core PRIVATE -ffp-contract=off)
+endif()
