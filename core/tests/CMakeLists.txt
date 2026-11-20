@@ -26,3 +26,10 @@ target_link_libraries(hearthmap_heat_bench PRIVATE hearthmap::core)
 hearthmap_strict_warnings(hearthmap_heat_bench)
 add_test(NAME core.heat_bench COMMAND hearthmap_heat_bench)
 
+# Host-only eyeballing helper: renders the example flat's heat field to PNG or PPM. The smoke
+# test proves it runs and writes a file; looking at the picture is a human's job.
+add_executable(hearthmap_heat_dump heat_dump.cpp)
+target_link_libraries(hearthmap_heat_dump PRIVATE hearthmap::core)
+hearthmap_strict_warnings(hearthmap_heat_dump)
+add_test(NAME core.heat_dump_smoke
+  COMMAND hearthmap_heat_dump "${CMAKE_CURRENT_BINARY_DIR}/heat_dump_smoke.ppm")
