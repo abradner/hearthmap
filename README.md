@@ -6,7 +6,7 @@ A wall panel that shows a heatmap of a house from Home Assistant sensors: a pin 
 pulsing rooms where something is wrong, and a list of the plants that need water.
 
 The target is an ESP32-P4 board with a 10.1" capacitive touch screen, used in landscape at
-1280 x 800, running [ESPHome](https://esphome.io) with LVGL 9.5. The rendering logic is a tested
+1280 x 800, running [ESPHome](https://esphome.io) with LVGL 9.6. The rendering logic is a tested
 C++ library; a host renderer links the same code to produce PNGs; a browser editor places pins on
 a floor plan.
 
@@ -35,7 +35,7 @@ Dependencies point inward only:
    (ESPHome component)         (PNG renderer, golden tests)
             \                    /
              v                  v
-               ui_lvgl/  ---------> LVGL 9.5
+               ui_lvgl/  ---------> LVGL 9.6
                (object tree, diffing)
                     |
                     v
@@ -82,4 +82,4 @@ python3 -m venv .venv && .venv/bin/pip install -r schema/requirements.txt
 
 ## Licence
 
-No licence has been chosen yet, so no reuse licence is granted for now.
+Apache-2.0. See [LICENSE](LICENSE).

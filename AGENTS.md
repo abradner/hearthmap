@@ -16,7 +16,7 @@ public/private rule is the one most likely to be broken by accident.
 A wall panel that shows a house as a heatmap built from Home Assistant sensors: a pin per sensor,
 pulsing rooms where something is wrong, and a HUD column listing the plants that need water. The
 target hardware is an ESP32-P4 board with a 10.1" capacitive touch screen used in landscape at
-1280 x 800, running ESPHome with LVGL 9.5. Status: PR 1 (scaffold and contracts). Core logic,
+1280 x 800, running ESPHome with LVGL 9.6. Status: PR 1 (scaffold and contracts). Core logic,
 the LVGL UI, the host renderer, the pin editor, the ESPHome component and a calibration tool
 follow in that order (each directory's README says which PR fills it).
 
@@ -81,7 +81,7 @@ A conflict with a principle is a stop-and-check, never something to quietly work
 | Layer | Technology | Notes |
 |---|---|---|
 | Core library | C++17, CMake >= 3.21 | No dependencies. Warnings are errors (`cmake/HearthmapWarnings.cmake`). No exceptions, no RTTI (D-002) |
-| UI | LVGL 9.5.0 (PR 5) | The version ESPHome pins; `ui_lvgl/` depends on core + LVGL only |
+| UI | LVGL 9.6.0 (PR 5) | The version ESPHome pins; `ui_lvgl/` depends on core + LVGL only |
 | Host renderer | C++17 + LVGL headless (PR 5) | `host/`: renders view models to PNG for golden-image tests |
 | Firmware | ESPHome external component (PR 7) | Python codegen (`components/hearthmap/__init__.py`) + thin C++ glue |
 | Editor | Vite + TypeScript, static (PR 6) | `editor/`: no backend, GitHub Pages |
@@ -550,13 +550,12 @@ or, where the plan was silent, chosen as the reversible option and marked provis
 
 - Project: hearthmap, greenfield. Purpose and principles 2–4: drafted from the plan,
   provisional (§2).
-- Stack: decided by the plan (C++17 core, LVGL 9.5, ESPHome, Vite + TypeScript, Python).
+- Stack: decided by the plan (C++17 core, LVGL 9.6, ESPHome, Vite + TypeScript, Python).
 - Tracker: none named. Provisional: GitHub issues on this repo; decisions in
   `docs/decisions.md` (D-014). The template's "external tracker" lines were rewritten to say so.
 - Visibility: **public**. Hence: no lineage block, no private names, a public/private rule in §4,
   and no self-hosted runners.
-- Licence: **none added.** The template ships Apache-2.0; the licence choice is the operator's
-  and was left open. Until one is added, no reuse licence is granted.
+- Licence: **Apache-2.0**, chosen by the operator on 2026-11-20 (`LICENSE`).
 - Merge strategy: squash (provisional; GitHub default for a single-commit-per-PR flow).
 - Review bots: Codex (scarce), CodeRabbit (per-PR), Copilot, **all unconfirmed**: no PR had been
   reviewed when this was written. `docs/pr-review-machinery.md` §1 says so in place.
