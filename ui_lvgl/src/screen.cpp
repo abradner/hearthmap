@@ -546,7 +546,7 @@ struct Screen::Impl {
     lv_obj_set_pos(w.hud_empty, theme::kHudX, theme::kHudY + kHudTitleHeight);
     lv_obj_set_hidden(w.hud_empty, true);
 
-    const auto cap = static_cast<std::size_t>(std::max(0, config.hud.max_items));
+    const auto cap = static_cast<std::size_t>(std::max<std::int32_t>(0, config.hud.max_items));
     hud_pin_ids.assign(cap, std::string());
     for (std::size_t i = 0; i < cap; ++i) {
       lv_obj_t* card = make_box(w.root);
