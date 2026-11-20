@@ -1,0 +1,52 @@
+# --- Universal ---
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+*.swp
+*.swo
+
+# Local agent config (per-machine permissions — never shared)
+.claude/settings.local.json
+
+# Session context handoffs (park-context skill) — local working state, and they
+# can carry session detail that shouldn't land in a public repo's history
+.claude/handoffs/
+
+# Env files — commit templates (.env.template*), never real values
+.env
+.env.*
+!.env.template
+!.env.template.*
+
+# IDE local state (uncomment if unwanted in this repo)
+# .idea/
+# .vscode/
+
+# --- C++ / CMake ---
+/build/
+/build-*/
+/cmake-build-*/
+compile_commands.json
+CMakeUserPresets.json
+.cache/
+
+# --- Python (schema validation, ESPHome component, calibrate tool) ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Node/TypeScript (editor/, from PR 6) ---
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# --- ESPHome (components/hearthmap example builds, from PR 7) ---
+.esphome/
+secrets.yaml
+
+# --- Real configs never live here (AGENTS.md §4). A guard, not a guarantee. ---
+/private/
+*.private.json

@@ -1,0 +1,165 @@
+{
+  "$schema": "../../../schema/readings.schema.json",
+  "description": "Sensors that cannot be trusted: kitchen temperature 12h old, study temperature 3.5h old (past the 3h default), bathroom humidity unavailable, snake plant unknown, bedroom CO2 missing. Boundaries that stay fresh: tomato 4h old under its 6h override, lavender exactly 3h old.",
+  "now": "2026-01-15T09:00:00Z",
+  "readings": {
+    "sensor.example_balcony_humidity": {
+      "value": 80,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_balcony_temperature": {
+      "value": 9.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_basil_moisture": {
+      "value": 30,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bathroom_humidity": {
+      "value": "unavailable",
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bathroom_temperature": {
+      "value": 22.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_climate_battery": {
+      "value": 88,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_humidity": {
+      "value": 52,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_temperature": {
+      "value": 19.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_voc": {
+      "value": 110,
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fern_battery": {
+      "value": 95,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fern_moisture": {
+      "value": 55,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_battery": {
+      "value": 84,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_humidity": {
+      "value": 50,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_moisture": {
+      "value": 45,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_temperature": {
+      "value": 21.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_hall_temperature": {
+      "value": 20.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_kitchen_temperature": {
+      "value": 22.0,
+      "unit": "°C",
+      "last_updated": "2026-01-14T21:00:00Z"
+    },
+    "sensor.example_lavender_moisture": {
+      "value": 22,
+      "unit": "%",
+      "last_updated": "2026-01-15T06:00:00Z"
+    },
+    "sensor.example_living_co2": {
+      "value": 620,
+      "unit": "ppm",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_humidity": {
+      "value": 48,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_pm25": {
+      "value": 6,
+      "unit": "µg/m³",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_temperature": {
+      "value": 21.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_monstera_battery": {
+      "value": 91,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_monstera_moisture": {
+      "value": 35,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_planter_moisture": {
+      "value": 35,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_pothos_moisture_raw": {
+      "value": 2000,
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_snake_battery": {
+      "value": 77,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_snake_moisture": {
+      "value": "unknown",
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_study_humidity": {
+      "value": 45,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_study_temperature": {
+      "value": 20.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T05:30:00Z"
+    },
+    "sensor.example_tomato_moisture": {
+      "value": 40,
+      "unit": "%",
+      "last_updated": "2026-01-15T05:00:00Z"
+    },
+    "sensor.example_tomato_temperature": {
+      "value": 8.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    }
+  }
+}

@@ -1,0 +1,493 @@
+{
+  "$schema": "../../schema/hearthmap.schema.json",
+  "version": 1,
+  "canvas": {
+    "width": 1280,
+    "height": 800,
+    "orientation": "landscape",
+    "map_area": {
+      "x": 0,
+      "y": 0,
+      "width": 960,
+      "height": 800
+    }
+  },
+  "temperature_unit": "C",
+  "rooms": [
+    {
+      "id": "living",
+      "name": "Living room",
+      "polygon": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.4167,
+          0.0
+        ],
+        [
+          0.4167,
+          0.6
+        ],
+        [
+          0.0,
+          0.6
+        ]
+      ]
+    },
+    {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "polygon": [
+        [
+          0.4167,
+          0.0
+        ],
+        [
+          0.6667,
+          0.0
+        ],
+        [
+          0.6667,
+          0.4
+        ],
+        [
+          0.4167,
+          0.4
+        ]
+      ]
+    },
+    {
+      "id": "study",
+      "name": "Study",
+      "polygon": [
+        [
+          0.6667,
+          0.0
+        ],
+        [
+          1.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.4
+        ],
+        [
+          0.6667,
+          0.4
+        ]
+      ]
+    },
+    {
+      "id": "hallway",
+      "name": "Hallway",
+      "polygon": [
+        [
+          0.4167,
+          0.4
+        ],
+        [
+          1.0,
+          0.4
+        ],
+        [
+          1.0,
+          0.6
+        ],
+        [
+          0.5833,
+          0.6
+        ],
+        [
+          0.5833,
+          1.0
+        ],
+        [
+          0.4167,
+          1.0
+        ]
+      ]
+    },
+    {
+      "id": "bathroom",
+      "name": "Bathroom",
+      "polygon": [
+        [
+          0.5833,
+          0.6
+        ],
+        [
+          0.7917,
+          0.6
+        ],
+        [
+          0.7917,
+          1.0
+        ],
+        [
+          0.5833,
+          1.0
+        ]
+      ]
+    },
+    {
+      "id": "bedroom",
+      "name": "Bedroom",
+      "polygon": [
+        [
+          0.7917,
+          0.6
+        ],
+        [
+          1.0,
+          0.6
+        ],
+        [
+          1.0,
+          1.0
+        ],
+        [
+          0.7917,
+          1.0
+        ]
+      ]
+    },
+    {
+      "id": "balcony",
+      "name": "Balcony",
+      "polygon": [
+        [
+          0.0,
+          0.6
+        ],
+        [
+          0.4167,
+          0.6
+        ],
+        [
+          0.4167,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "outdoor": true
+    }
+  ],
+  "pins": [
+    {
+      "id": "clim_living",
+      "kind": "temperature",
+      "name": "Living room",
+      "position": [
+        0.2083,
+        0.3
+      ],
+      "room": "living",
+      "entities": {
+        "temperature": "sensor.example_living_temperature",
+        "humidity": "sensor.example_living_humidity"
+      }
+    },
+    {
+      "id": "clim_kitchen",
+      "kind": "temperature",
+      "name": "Kitchen",
+      "position": [
+        0.5417,
+        0.2
+      ],
+      "room": "kitchen",
+      "entities": {
+        "temperature": "sensor.example_kitchen_temperature"
+      }
+    },
+    {
+      "id": "clim_study",
+      "kind": "temperature",
+      "name": "Study",
+      "position": [
+        0.8333,
+        0.2
+      ],
+      "room": "study",
+      "entities": {
+        "temperature": "sensor.example_study_temperature",
+        "humidity": "sensor.example_study_humidity"
+      }
+    },
+    {
+      "id": "clim_hall",
+      "kind": "temperature",
+      "name": "Hallway",
+      "position": [
+        0.5,
+        0.5
+      ],
+      "room": "hallway",
+      "entities": {
+        "temperature": "sensor.example_hall_temperature"
+      }
+    },
+    {
+      "id": "clim_bedroom",
+      "kind": "temperature",
+      "name": "Bedroom",
+      "position": [
+        0.8958,
+        0.75
+      ],
+      "room": "bedroom",
+      "entities": {
+        "temperature": "sensor.example_bedroom_temperature",
+        "humidity": "sensor.example_bedroom_humidity",
+        "battery": "sensor.example_bedroom_climate_battery"
+      }
+    },
+    {
+      "id": "hum_bathroom",
+      "kind": "humidity",
+      "name": "Bathroom",
+      "position": [
+        0.6875,
+        0.75
+      ],
+      "room": "bathroom",
+      "entities": {
+        "humidity": "sensor.example_bathroom_humidity",
+        "temperature": "sensor.example_bathroom_temperature"
+      }
+    },
+    {
+      "id": "clim_balcony",
+      "kind": "temperature",
+      "name": "Balcony",
+      "position": [
+        0.2083,
+        0.7
+      ],
+      "room": "balcony",
+      "entities": {
+        "temperature": "sensor.example_balcony_temperature",
+        "humidity": "sensor.example_balcony_humidity"
+      }
+    },
+    {
+      "id": "air_living",
+      "kind": "air_quality",
+      "name": "Living room air",
+      "position": [
+        0.3333,
+        0.1
+      ],
+      "room": "living",
+      "entities": {
+        "co2": "sensor.example_living_co2",
+        "pm25": "sensor.example_living_pm25"
+      }
+    },
+    {
+      "id": "air_bedroom",
+      "kind": "air_quality",
+      "name": "Bedroom air",
+      "position": [
+        0.825,
+        0.66
+      ],
+      "room": "bedroom",
+      "entities": {
+        "co2": "sensor.example_bedroom_co2",
+        "voc": "sensor.example_bedroom_voc"
+      }
+    },
+    {
+      "id": "soil_planter",
+      "kind": "soil",
+      "name": "Planter box",
+      "position": [
+        0.2083,
+        0.94
+      ],
+      "room": "balcony",
+      "entities": {
+        "moisture": "sensor.example_planter_moisture"
+      },
+      "calibration": {
+        "dry": 1,
+        "wet": 60
+      }
+    },
+    {
+      "id": "plant_monstera",
+      "kind": "plant",
+      "name": "Monstera",
+      "position": [
+        0.0833,
+        0.1
+      ],
+      "room": "living",
+      "entities": {
+        "moisture": "sensor.example_monstera_moisture",
+        "battery": "sensor.example_monstera_battery"
+      },
+      "photo": "monstera",
+      "calibration": {
+        "dry": 5,
+        "wet": 60
+      }
+    },
+    {
+      "id": "plant_fiddle",
+      "kind": "plant",
+      "name": "Fiddle-leaf fig",
+      "position": [
+        0.375,
+        0.5
+      ],
+      "room": "living",
+      "entities": {
+        "moisture": "sensor.example_fiddle_moisture",
+        "temperature": "sensor.example_fiddle_temperature",
+        "humidity": "sensor.example_fiddle_humidity",
+        "battery": "sensor.example_fiddle_battery"
+      },
+      "photo": "fiddle-leaf-fig",
+      "calibration": {
+        "dry": 10,
+        "wet": 70,
+        "happy_min": 25,
+        "happy_max": 60
+      }
+    },
+    {
+      "id": "plant_basil",
+      "kind": "plant",
+      "name": "Basil",
+      "position": [
+        0.625,
+        0.06
+      ],
+      "room": "kitchen",
+      "entities": {
+        "moisture": "sensor.example_basil_moisture",
+        "predicted_dry_at": "sensor.example_basil_predicted_dry_at"
+      },
+      "photo": "basil",
+      "calibration": {
+        "dry": 0,
+        "wet": 55
+      }
+    },
+    {
+      "id": "plant_pothos",
+      "kind": "plant",
+      "name": "Pothos",
+      "position": [
+        0.95,
+        0.06
+      ],
+      "room": "study",
+      "entities": {
+        "moisture": "sensor.example_pothos_moisture_raw"
+      },
+      "calibration": {
+        "dry": 2900,
+        "wet": 1300
+      }
+    },
+    {
+      "id": "plant_snake",
+      "kind": "plant",
+      "name": "Snake plant",
+      "position": [
+        0.9583,
+        0.94
+      ],
+      "room": "bedroom",
+      "entities": {
+        "moisture": "sensor.example_snake_moisture",
+        "battery": "sensor.example_snake_battery"
+      },
+      "photo": "snake-plant",
+      "calibration": {
+        "dry": 3,
+        "wet": 40
+      }
+    },
+    {
+      "id": "plant_fern",
+      "kind": "plant",
+      "name": "Boston fern",
+      "position": [
+        0.6167,
+        0.94
+      ],
+      "room": "bathroom",
+      "entities": {
+        "moisture": "sensor.example_fern_moisture",
+        "battery": "sensor.example_fern_battery"
+      },
+      "calibration": {
+        "dry": 15,
+        "wet": 80,
+        "happy_min": 40
+      }
+    },
+    {
+      "id": "plant_tomato",
+      "kind": "plant",
+      "name": "Cherry tomato",
+      "position": [
+        0.3667,
+        0.94
+      ],
+      "room": "balcony",
+      "entities": {
+        "moisture": "sensor.example_tomato_moisture",
+        "temperature": "sensor.example_tomato_temperature"
+      },
+      "photo": "tomato",
+      "calibration": {
+        "dry": 2,
+        "wet": 65
+      },
+      "stale_after_s": 21600
+    },
+    {
+      "id": "plant_lavender",
+      "kind": "plant",
+      "name": "Lavender",
+      "position": [
+        0.05,
+        0.66
+      ],
+      "room": "balcony",
+      "entities": {
+        "moisture": "sensor.example_lavender_moisture"
+      },
+      "calibration": {
+        "dry": 0,
+        "wet": 50
+      }
+    }
+  ],
+  "layers": {
+    "default": "temperature",
+    "air": {
+      "warn_above": 1000
+    }
+  },
+  "stale_after_s": 10800,
+  "hud": {
+    "max_items": 4
+  },
+  "heat": {
+    "grid_cols": 48,
+    "grid_rows": 40,
+    "idw_power": 2
+  }
+}

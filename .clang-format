@@ -1,0 +1,11 @@
+---
+# clang-format 19.1.7 (pinned in CI: .github/workflows/ci.yml). Applies to core/, ui_lvgl/,
+# host/ and components/hearthmap/ C++; never to third-party code.
+BasedOnStyle: Google
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: WithoutElse
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Preserve
