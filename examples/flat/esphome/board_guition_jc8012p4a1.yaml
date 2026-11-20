@@ -1,0 +1,77 @@
+# Hardware package: Guition JC8012P4A1, a 10.1" 800x1280 MIPI-DSI panel on an ESP32-P4, with an
+# ESP32-C6 for Wi-Fi. Upstream ESPHome components only; values from the board's published
+# schematic and ESPHome's own model presets (mipi_dsi "JC8012P4A1", gsl3670 "GUITION-JC8012P4A1").
+#
+# Needs ESPHome 2026.11.0 or later.
+
+substitutions:
+  # Two panel batches ship under this board name; both are upstream mipi_dsi models.
+  # The wrong one gives a blank, striped or flickering screen: try "JC8012P4A1-V2".
+  display_model: "JC8012P4A1"
+  # The panel is natively portrait; LVGL rotates in software to give 1280x800 landscape.
+  # "270" turns it the other way up.
+  lvgl_rotation: "90"
+
+esp32:
+  variant: esp32p4
+  # Early P4 silicon (chip revision below v3, e.g. v1.3) needs this; production rev3 parts do not.
+  engineering_sample: true
+  flash_size: 16MB
+  cpu_frequency: 360MHz
+  framework:
+    type: esp-idf
+    advanced:
+      enable_idf_experimental_features: true  # 200 MHz PSRAM
+
+esp_ldo:
+  - channel: 3   # VDD_MIPI_DPHY
+    voltage: 2.5V
+
+psram:
+  mode: hex
+  speed: 200MHz
+
+esp32_hosted:
+  variant: ESP32C6
+  reset_pin: GPIO54
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+
+i2c:
+  - id: i2c_main
+    sda: GPIO7
+    scl: GPIO8
+    frequency: 400kHz
+
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO23
+    frequency: 20000Hz
+    min_power: 0.03
+    zero_means_zero: true
+
+light:
+  - platform: monochromatic
+    name: "Display backlight"
+    id: display_backlight
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+
+display:
+  - platform: mipi_dsi
+    id: main_display
+    model: ${display_model}
+    update_interval: never
+    auto_clear_enabled: false
+
+touchscreen:
+  - platform: gsl3670
+    id: main_touch
+    model: GUITION-JC8012P4A1
+    display: main_display
+    i2c_id: i2c_main

@@ -123,3 +123,52 @@ jobs:
           files=$(git ls-files '*.h' '*.hpp' '*.c' '*.cpp')
           if [ -z "$files" ]; then echo "no C/C++ files found: refusing to pass vacuously"; exit 1; fi
           echo "$files" | xargs clang-format --dry-run --Werror
+
+  # The ESPHome component's generator (components/hearthmap/hearthmap_codegen.py): schema checker
+  # held to the reference validator, defaults and present bits, photo conversion, the library
+  # copy, and C++ checks that link core's real validate() against generated tables.
+  component-codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r components/hearthmap/tests/requirements.txt
+      - name: pytest
+        env:
+          # Fail, rather than skip, the C++ tests that need core's implementation.
+          HEARTHMAP_REQUIRE_CORE: "1"
+          CXX: g++
+        run: python -m pytest -v components/hearthmap/tests
+
+  # `esphome config` on the example device with the pinned ESPHome image: the component's YAML
+  # schema, the build-time config and photo checks, and every other component in the example.
+  # A full compile is a separate, manual workflow (esphome-compile.yml).
+  esphome-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Placeholder secrets
+        run: cp examples/flat/esphome/secrets.example.yaml examples/flat/esphome/secrets.yaml
+      - name: esphome config
+        run: |
+          docker run --rm -v "$PWD":/config \
+            ghcr.io/esphome/esphome:2026.11.0@sha256:6351ae811202064bb3eb49dde982609b47acd523103a66d7b9c5c1431beea055 \
+            config examples/flat/esphome/flat-panel.yaml
+      - name: A broken config fails the same command (negative control)
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("examples/flat/config.json")
+          d = json.loads(p.read_text())
+          d["pins"][0]["position"] = [0.5, 2]
+          p.write_text(json.dumps(d))
+          PY
+          if docker run --rm -v "$PWD":/config \
+              ghcr.io/esphome/esphome:2026.11.0@sha256:6351ae811202064bb3eb49dde982609b47acd523103a66d7b9c5c1431beea055 \
+              config examples/flat/esphome/flat-panel.yaml; then
+            echo "esphome config accepted a config with a position outside 0..1"; exit 1
+          fi
+          git checkout -- examples/flat/config.json
