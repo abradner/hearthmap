@@ -657,11 +657,12 @@ struct Screen::Impl {
     // shrinking; the schema allows caps up to 20, which cannot fit (the spec's cap is 7).
     const int start = theme::kHudY + kHudTitleHeight;
     const int n = static_cast<int>(cap);
-    const int more_h = lv_font_get_line_height(f.px20);
+    // int32_t is long on the ESP32-P4 toolchain: name every conversion to int.
+    const int more_h = static_cast<int>(lv_font_get_line_height(f.px20));
     int gap = theme::kHudCardGap;
     if (n > 0) {
-      const int room =
-          config.canvas.height - kHudBottomMargin - more_h - 2 - start - n * theme::kHudCardHeight;
+      const int room = static_cast<int>(config.canvas.height) - kHudBottomMargin - more_h - 2 -
+                       start - n * theme::kHudCardHeight;
       gap = std::max(4, std::min(theme::kHudCardGap, room / n));
     }
     for (std::size_t i = 0; i < cap; ++i) {
