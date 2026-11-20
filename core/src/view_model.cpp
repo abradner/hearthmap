@@ -75,9 +75,18 @@ std::optional<HudItem> hud_candidate(const Config& config, std::size_t index,
 }
 
 // Fills `hud` in place. The candidates are collected straight into hud.items, sorted, then cut
-// to the cap, so a warmed-up rebuild reuses the vector's storage and does not allocate.
+// to the cap; the storage is reserved for every Plant pin, so a warmed-up rebuild does not
+// allocate whichever plants are thirsty.
 void build_hud(const Config& config, const std::vector<PinView>& pins, Hud& hud) {
   hud.items.clear();
+  // Every Plant pin is a possible candidate, and all candidates are collected before the cut
+  // to max_items, so reserve for all of them: a no-op once warm, whatever the readings were
+  // then, so plants turning thirsty later never allocates.
+  std::size_t plants = 0;
+  for (const auto& pin : config.pins) {
+    if (pin.kind == PinKind::Plant) ++plants;
+  }
+  hud.items.reserve(plants);
   for (const auto& pv : pins) {
     if (auto item = hud_candidate(config, pv.pin_index, pv.primary)) hud.items.push_back(*item);
   }
@@ -101,7 +110,8 @@ void build_hud(const Config& config, const std::vector<PinView>& pins, Hud& hud)
   hud.items.resize(shown);  // shrinking keeps the capacity
 }
 
-// Fills `view` in place, reusing its rows' storage (and each row's unit string).
+// Fills `view` in place, reusing its rows' storage (and each row's unit string, reserved to
+// kOverlayUnitCapacity when the row is created).
 void build_overlay(const Config& config, std::size_t index, const Readings& readings, Timestamp now,
                    OverlayView& view) {
   const Pin& pin = config.pins[index];
@@ -112,7 +122,10 @@ void build_overlay(const Config& config, std::size_t index, const Readings& read
     if (role == Role::PredictedDryAt) continue;  // reserved, not shown in v1
     const EntityBinding* binding = find_binding(pin, role);
     if (binding == nullptr) continue;
-    if (view.rows.size() <= n) view.rows.emplace_back();
+    if (view.rows.size() <= n) {
+      view.rows.emplace_back();
+      view.rows.back().unit.reserve(kOverlayUnitCapacity);  // a unit arriving later fits
+    }
     OverlayRow& row = view.rows[n++];
     row.assessment = assess(config, pin, role, readings, now).value_or(missing_assessment(role));
     if (const Reading* r = readings.find(binding->entity_id)) {
@@ -183,6 +196,7 @@ void build_view_model(const Config& config, const Readings& readings, Timestamp 
   out.active_layer = shown_layer(config, ui_state.active_layer);
   const bool layer_enabled = config.layer(out.active_layer).enabled;
   out.tabs.clear();
+  out.tabs.reserve(kLayerCount);  // a no-op once warm, whichever layers are enabled
   for (Layer l : kAllLayers) {
     if (config.layer(l).enabled) out.tabs.push_back(l);
   }

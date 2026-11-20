@@ -150,6 +150,10 @@ struct Hud {
 };
 
 /// One row of the detail overlay: a bound role and what is known about it.
+/// Bytes reserved for each overlay row's unit when the row is created (see build_view_model()'s
+/// allocation contract). Real units ("°C", "%", "µg/m³", "ppm") fit with room to spare.
+inline constexpr std::size_t kOverlayUnitCapacity = 16;
+
 struct OverlayRow {
   Assessment assessment;                  ///< role, freshness, value, raw, severity.
   std::string unit;                       ///< From the reading when present, else empty.
@@ -180,10 +184,13 @@ struct ViewModel {
 /// Everything the screen shows for (config, readings, now, ui_state), written into `out`,
 /// reusing its vectors' and strings' storage. Allocation (D-022): once warmed up with the same
 /// config, a rebuild does not allocate while the overlay state is unchanged (ui_state.overlay_pin
-/// the same as on the previous rebuild into `out`; readings, now and the active layer may change).
-/// Opening an overlay may allocate once; closing it releases its rows. If ui_state.active_layer is
-/// disabled, the view model uses config.default_layer instead (ViewModel::active_layer says which).
-/// Implemented in core (PR 4).
+/// the same as on the previous rebuild into `out`; readings, now and the active layer may change,
+/// including readings going missing, arriving, or making any number of plants thirsty), provided
+/// no reading shown in the overlay has a unit longer than kOverlayUnitCapacity bytes. A longer
+/// unit is still shown in full but may allocate. Opening an overlay may allocate once (each row's
+/// unit is reserved to kOverlayUnitCapacity then); closing it releases its rows. If
+/// ui_state.active_layer is disabled, the view model uses config.default_layer instead
+/// (ViewModel::active_layer says which). Implemented in core (PR 4).
 void build_view_model(const Config& config, const Readings& readings, Timestamp now,
                       const UiState& ui_state, ViewModel& out);
 

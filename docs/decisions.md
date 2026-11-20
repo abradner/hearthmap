@@ -271,4 +271,10 @@ Each is the reversible reading; each has a test that would change with it.
   plant's thirst is at most its `danger_above`, which is at least the layer's), so that rule has
   no observable test today; it is implemented as written in case the band algorithm changes.
 - **Overlay storage reuse**: a reused `ViewModel` keeps its overlay rows' storage while an
-  overlay stays open; closing it releases them, and reopening allocates once.
+  overlay stays open; closing it releases them, and reopening allocates once. Each row's unit
+  is reserved to `kOverlayUnitCapacity` (16 bytes) when the row is created, so a reading that
+  arrives later with a real unit does not allocate; a longer unit is shown in full and may
+  allocate (`Reading::unit` has no length bound, so no fixed buffer can promise more).
+- **HUD storage** is reserved for every Plant pin (all candidates are collected before the cut
+  to `max_items`), so warming up on healthy readings does not leave a later thirsty frame to
+  allocate.

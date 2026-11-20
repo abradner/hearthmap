@@ -99,6 +99,68 @@ TEST_CASE("a closed overlay stays allocation-free on later frames") {
   CHECK(allocations_during(vm_frame, &ctx) == 0);
 }
 
+TEST_CASE("warmed up on healthy readings, plants turning thirsty does not allocate") {
+  // The HUD's storage must not depend on how many plants were thirsty during warm-up.
+  for (const bool overlay : {false, true}) {
+    INFO("overlay open: " << overlay);
+    VmCtx ctx;
+    ctx.readings = flat_all_ok();
+    if (overlay) ctx.ui.overlay_pin = std::string("plant_fiddle");
+    vm_frame(&ctx);  // warm up: HUD empty
+    REQUIRE(ctx.vm.hud.items.empty());
+    CHECK(allocations_during(vm_frame, &ctx) == 0);
+    ctx.readings = flat_thirsty_many();
+    CHECK(allocations_during(vm_frame, &ctx) == 0);
+    CHECK_FALSE(ctx.vm.hud.items.empty());
+  }
+}
+
+TEST_CASE("same overlay open, a missing reading arrives with a unit within capacity") {
+  REQUIRE(kOverlayUnitCapacity == 16);
+  VmCtx ctx;
+  ctx.readings = flat_all_ok();
+  ctx.readings.by_entity.erase("sensor.example_fiddle_battery");
+  ctx.ui.overlay_pin = std::string("plant_fiddle");
+  vm_frame(&ctx);  // warm up with the battery row empty
+  CHECK(allocations_during(vm_frame, &ctx) == 0);
+  // The reading arrives with a unit of exactly the capacity: longer than libstdc++'s inline
+  // string buffer (15), so an unreserved row would allocate here.
+  Reading battery;
+  battery.state = ReadingState::Value;
+  battery.value = 80;
+  battery.unit = std::string(kOverlayUnitCapacity, 'u');
+  battery.last_updated = kFlatNow;
+  ctx.readings.by_entity["sensor.example_fiddle_battery"] = battery;
+  CHECK(allocations_during(vm_frame, &ctx) == 0);
+  bool shown = false;
+  for (const auto& row : ctx.vm.overlay->rows) {
+    if (row.assessment.role == Role::Battery) {
+      shown = true;
+      CHECK(row.unit == battery.unit);
+    }
+  }
+  CHECK(shown);
+}
+
+TEST_CASE("a unit longer than the capacity is still shown in full") {
+  // Allowed to allocate (view_model.h); only correctness is checked.
+  VmCtx ctx;
+  ctx.readings = flat_all_ok();
+  ctx.ui.overlay_pin = std::string("plant_fiddle");
+  vm_frame(&ctx);
+  const std::string long_unit(3 * kOverlayUnitCapacity, 'w');
+  ctx.readings.by_entity["sensor.example_fiddle_battery"].unit = long_unit;
+  vm_frame(&ctx);
+  bool shown = false;
+  for (const auto& row : ctx.vm.overlay->rows) {
+    if (row.assessment.role == Role::Battery) {
+      shown = true;
+      CHECK(row.unit == long_unit);
+    }
+  }
+  CHECK(shown);
+}
+
 TEST_CASE("a warmed-up heat_samples does not allocate") {
   struct Ctx {
     Config config = flat_config();
