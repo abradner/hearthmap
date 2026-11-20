@@ -178,9 +178,11 @@ struct ViewModel {
 };
 
 /// Everything the screen shows for (config, readings, now, ui_state), written into `out`,
-/// reusing its vectors' and strings' storage: once warmed up with the same config, a rebuild
-/// does not allocate (D-022). If ui_state.active_layer is disabled, the view model uses
-/// config.default_layer instead (ViewModel::active_layer says which).
+/// reusing its vectors' and strings' storage. Allocation (D-022): once warmed up with the same
+/// config, a rebuild does not allocate while the overlay state is unchanged (ui_state.overlay_pin
+/// the same as on the previous rebuild into `out`; readings, now and the active layer may change).
+/// Opening an overlay may allocate once; closing it releases its rows. If ui_state.active_layer is
+/// disabled, the view model uses config.default_layer instead (ViewModel::active_layer says which).
 /// Implemented in core (PR 4).
 void build_view_model(const Config& config, const Readings& readings, Timestamp now,
                       const UiState& ui_state, ViewModel& out);
