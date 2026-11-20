@@ -19,6 +19,12 @@ set(HEARTHMAP_CORE_SOURCES
   src/geometry.cpp
   src/heat_field.cpp
 )
+# PR 2: config validation, calibration, severity.
+list(APPEND HEARTHMAP_CORE_SOURCES
+  src/calibration.cpp
+  src/config.cpp
+  src/severity.cpp
+)
 
 # Header self-containment: one generated translation unit per public header, each including
 # only that header, compiled with core's strict warnings. A header that forgets an #include,

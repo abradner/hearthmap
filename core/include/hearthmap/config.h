@@ -230,7 +230,7 @@ enum class TemperatureUnit : std::uint8_t { Celsius, Fahrenheit };
 
 /// The schema's documented default band for `layer` (Celsius for temperature). These are the
 /// values every ConfigSource fills in for an omitted field; schema/README.md lists the same
-/// numbers and the CI schema check asserts the two agree (stated, not yet enforced: PR 2).
+/// numbers, and ctest's core.defaults_match_docs fails when the two disagree.
 constexpr Band default_band(Layer layer) {
   switch (layer) {
     case Layer::Temperature: return Band{19.0, 24.0, 16.0, 27.0, 12.0, 32.0, 10.0, 34.0};
@@ -299,18 +299,21 @@ struct ConfigIssue {
 ///   version != kSchemaVersion; canvas width or height outside 1..4096; map_area x or y < 0,
 ///   width or height < 1, or not inside the canvas; no rooms, more than 64 rooms, more than 256
 ///   pins; a room or pin id not matching ^[a-z][a-z0-9_]*$ or longer than 48 characters; a room
-///   or pin name empty or longer than 48 characters (counted in bytes); a polygon with fewer
+///   or pin name that is not valid UTF-8, is empty, or is longer than 48 characters (counted in
+///   Unicode code points, as the schema's maxLength counts them); a polygon with fewer
 ///   than 3 or more than 64 vertices; a polygon vertex or pin position with x or y outside 0..1
 ///   (or non-finite); an entity id not matching ^[a-z0-9_]+\.[a-z0-9_]+$; a photo on a pin
 ///   that is not a Plant, or a photo id not matching ^[a-z0-9][a-z0-9_-]{0,47}$; stale_after or
 ///   a pin's stale_after < 1; grid_cols or grid_rows outside 2..256; idw_power not in (0, 8]
 ///   (or non-finite); hud.max_items outside 1..20; a non-finite band value.
 /// Errors, semantic rules:
-///   duplicate room or pin ids; a pin naming an unknown room; a self-intersecting polygon; a pin
+///   duplicate room or pin ids; a pin naming an unknown room; a polygon that is not simple
+///   (edges cross or overlap, a zero-length edge, or zero area); a pin
 ///   missing its primary role, binding a role twice, binding Moisture when it is not Soil or
 ///   Plant (D-018), or (Soil/Plant) missing its calibration, or (other kinds) carrying one; a
-///   zero-width calibration (|wet - dry| < kMinCalibrationWidth, calibration.h); a happy_min or
-///   happy_max outside the dry..wet span (endpoints count as inside), or happy_min wetter than
+///   calibration whose span is unusable (calibration_span_usable() false, calibration.h:
+///   zero-width, non-finite, or overflowing); a happy_min or happy_max that is non-finite or
+///   outside the dry..wet span (endpoints count as inside), or happy_min wetter than
 ///   happy_max; band ordering violated (see Band) on any layer, enabled or not; a landscape
 ///   canvas with width <= height or portrait with height <= width; default_layer disabled;
 ///   temperature_unit Fahrenheit while layers[Temperature].present != kAllBandFields, reported
