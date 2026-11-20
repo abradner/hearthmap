@@ -1,0 +1,5 @@
+pytest==9.2.0
+# The version in ghcr.io/esphome/esphome:2026.11.0, which runs the photo conversion on a real build.
+pillow==13.0.0
+# Reference validator the build-time checker is compared against (same pin as schema/).
+jsonschema==4.23.0

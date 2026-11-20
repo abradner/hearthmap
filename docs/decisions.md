@@ -358,3 +358,56 @@ the HUD column, and at the flat's 12:10 aspect (72 px per grid unit). **Why:** c
 interpolates in `map_area`, so the screen must draw the map exactly there, and the previous
 0,0,960,800 overlapped both the top bar and the HUD. **Would change if:** the layout changes; the
 map area is one config field.
+
+### D-034 core and ui_lvgl reach the firmware by a build-time copy (provisional)
+
+**Question:** ESPHome copies only a component directory's top-level files into the build, and
+`core/` and `ui_lvgl/` live outside `components/hearthmap/`. How do they get compiled? **Default:**
+the component's Python copies each library's `include/` tree to the root of the build's `src/` and
+its `src/` tree to `src/hearthmap_lib/<lib>/` (plus `host/src/summary.*`, the D-027 stopgap),
+writing only changed files and deleting stale ones in those directories. ESPHome 2026.11.0 clones
+the whole repository for a `github://` source and a local source is a working tree, so the files
+are always beside the component; the generated `src/CMakeLists.txt` globs `src/**` and has `src/`
+on the include path. **Why:** one ref pins component and library together, no network beyond
+ESPHome's own clone, a local path builds the working tree, and no second build description of core
+is needed. Rejected: `add_idf_component` (a second fetch at a ref the component cannot know, and an
+IDF-specific CMakeLists in core), `cg.add_library` with a git URL (same), a vendored copy with a
+CI equality check (two copies kept equal by a check, not by construction). Details:
+`components/hearthmap/README.md`. **Would change if:** ESPHome stops cloning the whole repository,
+or core gains an IDF component description for other reasons.
+
+### D-035 Device config errors: schema at build time, validate() at boot, never a guess (provisional)
+
+**Default:** the component checks the config against the JSON Schema while ESPHome validates the
+YAML (so `esphome config` fails), with a small built-in checker because ESPHome's image has no
+`jsonschema`; it refuses any schema keyword it does not implement, and its tests compare it with
+`jsonschema`. Semantic rules stay in core: the generated `ConfigSource` runs `validate()` at boot,
+and a refused config draws its errors on screen, logs every issue with its path and sets the
+component's error status; nothing else is rendered. A photo id with no `<id>.png` fails the build;
+a plant with no photo id gets ui_lvgl's placeholder. **Why:** D-017 puts enforcement in one place;
+a second Python copy of `validate()` would drift. Running `validate()` at boot rather than at build
+time is the honest form available without a host compiler in the build. **Would change if:** the
+build gains a host compile step, in which case the same generated tables could be validated before
+flashing.
+
+### D-036 Device readings: what is subscribed, and before time is valid (provisional)
+
+**Default:** one Home Assistant state subscription per distinct bound entity, plus one for its
+`unit_of_measurement` attribute (`Reading::unit`); `predicted_dry_at` bindings are not subscribed
+(core ignores the role in v1). R8 re-stamping applies to readings in state Value only, on every
+rebuild while the API connection with a state subscription is up. Until the configured time source
+is valid the screen says "Waiting for time" and nothing is judged; readings received before that
+carry time 0 until the first re-stamp. **Why:** a unit is part of what the overlay shows; HA
+confirming "unavailable" says nothing new about a value; and a screen of "stale" before the clock
+is set would be a false claim. **Would change if:** units prove constant enough to take from the
+role instead, halving the subscriptions.
+
+### D-037 The component lets malloc use PSRAM for large blocks (provisional)
+
+**Default:** when a device has `psram:`, the component sets `CONFIG_SPIRAM_USE_MALLOC` (and clears
+the psram component's `CONFIG_SPIRAM_USE_CAPS_ALLOC`), so allocations above
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (16 KiB by default) come from PSRAM. **Why:** ui_lvgl's
+`HeatRasterizer` holds a per-pixel room index in a `std::vector` (about 620 KiB for the example),
+more than the ESP32-P4's internal RAM can spare, and with exceptions off a failed allocation aborts.
+The heat image itself is allocated explicitly in PSRAM. **Would change if:** ui_lvgl takes an
+allocator for its working set, after which this global setting can go.
