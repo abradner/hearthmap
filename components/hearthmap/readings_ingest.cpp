@@ -1,8 +1,9 @@
 #include "readings_ingest.h"
 
+#include <charconv>
 #include <cmath>
-#include <cstdlib>
 #include <string>
+#include <system_error>
 
 namespace hearthmap_device {
 
@@ -57,9 +58,14 @@ hearthmap::Reading parse_state(std::string_view state, hearthmap::Timestamp now)
   r.state = hearthmap::ReadingState::Unknown;
   const std::string_view t = trim(state);
   if (!is_decimal(t)) return r;
-  const std::string copy(t);  // strtod needs a terminator
-  const double v = std::strtod(copy.c_str(), nullptr);
-  if (!std::isfinite(v)) return r;  // e.g. "1e999"
+  // std::from_chars: locale-independent ('.' whatever LC_NUMERIC says) and must consume the
+  // whole token. It takes no leading '+', which is_decimal() allows.
+  std::string_view digits = t;
+  if (!digits.empty() && digits.front() == '+') digits.remove_prefix(1);
+  double v = 0.0;
+  const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), v);
+  if (ec != std::errc() || end != digits.data() + digits.size()) return r;  // e.g. "1e999"
+  if (!std::isfinite(v)) return r;
   r.state = hearthmap::ReadingState::Value;
   r.value = v;
   return r;

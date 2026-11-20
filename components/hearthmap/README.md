@@ -164,8 +164,21 @@ the device's measured slowdown stays under 50 ms, and caps any single step:
 | Schema maximum, 64 comb rooms of 64 vertices, 256 pins, 256 x 256 grid, 1280 x 800 map | 20 ms | 60-70 us (mask) | about 35 ms |
 | Schema maximum, all 256 pins in one room | 20 ms | 60 us (mask) | about 60 ms |
 
-Device estimates (the second run measured the panel-sized case's mask stage at 50 ms and its
-raster stage at 229 ms, about 200x the host; redraw frames at about 55x): every boot step about
-1-15 ms for the panel-sized config and under about 20 ms at the schema maximum; each colour
-table about 15 ms; frame steps a few milliseconds; a heat-image band repaint about 645 / 16 =
-40 ms. The boot logs report the longest step of each stage, which is how to check.
+Measured on the panel (ESP32-P4 rev v1.3 at 360 MHz, 2d81b5a, a private config of the
+panel-sized shape: 18 rooms, 22 pins, 75 entities, a 920 x 736 map):
+
+| Boot stage | Wall time | Longest single step |
+|---|---|---|
+| build | 451 ms over 1 slice (mostly waiting for the next `loop()` call) | 0.25 ms |
+| validate | 6 ms | 0.68 ms |
+| prepare (colour tables, scanner) | 10 ms | 2.5 ms |
+| mask | 70 ms | 13.0 ms |
+| raster | 238 ms over 6 slices | 0.84 ms |
+| screen (two 1,354,240 B heat buffers; rasterizer 710,747 B) | 233 ms, one call | - |
+| boot complete | 1,011 ms | - |
+
+Frames: first frame 1,446 ms, a frame with a new heat image 1,100 ms (both spread over many
+slices), steady frames 15-21 ms. `LVGL warnings 0, errors 0` throughout. ESPHome still warns
+once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshes (224 ms and
+139 ms).
+

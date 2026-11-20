@@ -16,7 +16,7 @@ namespace hearthmap_device {
 /// - "unavailable" -> Unavailable; "unknown" -> Unknown (HA's own spellings, exact match).
 /// - A decimal number (optional sign, digits, optional fraction, optional exponent, surrounding
 ///   ASCII spaces allowed) that is finite -> Value. Locale-independent: '.' is the only decimal
-///   point.
+///   point, whatever the C locale says (std::from_chars).
 /// - Anything else, including an empty string, "nan", "inf" and a number with trailing text
 ///   ("21.5 C"), -> Unknown (readings.h: sources map non-finite numbers to Unknown).
 hearthmap::Reading parse_state(std::string_view state, hearthmap::Timestamp now);

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "esphome/components/lvgl/lvgl_esphome.h"
@@ -76,6 +77,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool first_frame_logged_ = false;
   uint32_t frame_started_ms_ = 0;
   uint32_t last_frame_ms_ = 0;
+  std::string frame_summary_;  ///< The top bar's summary for the frame in progress.
 
   hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
   hm::Rgb565* heat_back_ = nullptr;    ///< The second buffer frames render into.

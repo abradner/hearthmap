@@ -50,6 +50,7 @@ def _build_and_run(tmp_path: Path, sources: list[str], includes: list[Path]) -> 
 
 
 GLUE_TEST = r"""
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include "readings_ingest.h"
@@ -94,6 +95,19 @@ int main() {
   CHECK(hearthmap_device::restamp(rs, true, 999) == 1);
   CHECK(rs.find("sensor.a")->last_updated == 999);
   CHECK(rs.find("sensor.b")->last_updated == 50);
+  // Locale independence: a comma-decimal locale must not change how "21.5" parses.
+  const char* comma_locales[] = {"de_DE.UTF-8", "de_DE.utf8", "fr_FR.UTF-8", "fr_FR.utf8", "de_DE"};
+  const char* used = nullptr;
+  for (const char* l : comma_locales) {
+    if (std::setlocale(LC_NUMERIC, l) != nullptr) { used = l; break; }
+  }
+  if (used != nullptr) {
+    value("21.5", 21.5); value("-0.25e1", -2.5);
+    std::setlocale(LC_NUMERIC, "C");
+    std::printf("comma locale checked: %s\n", used);
+  } else {
+    std::printf("no comma locale installed\n");
+  }
   std::printf("glue checks done, %d failures\n", failures);
   return failures == 0 ? 0 : 1;
 }
@@ -233,8 +247,8 @@ def _max_config(one_big_room: bool) -> dict:
 
 PIPELINE_DRIVER = r"""
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <string>
@@ -242,11 +256,19 @@ PIPELINE_DRIVER = r"""
 #include "hearthmap_gen/generated_config.h"
 #include "panel_pipeline.h"
 using namespace hearthmap;
-using Clock = std::chrono::steady_clock;
 using Stage = hearthmap_device::PanelPipeline::Stage;
-static double ms(Clock::time_point a, Clock::time_point b) {
-  return std::chrono::duration<double, std::milli>(b - a).count();
-}
+// This thread's CPU time in ms: the driver is single-threaded and synchronous, so a step's CPU
+// time is its work, and a runner pausing the process between instructions does not inflate it
+// the way wall time does.
+struct Clock {
+  using time_point = double;
+  static double now() {
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return double(ts.tv_sec) * 1e3 + double(ts.tv_nsec) / 1e6;
+  }
+};
+static double ms(double a, double b) { return b - a; }
 int main() {
   hearthmap_gen::GeneratedConfigSource source;
   hearthmap_device::PanelPipeline::Builder builder;
@@ -310,15 +332,21 @@ int main() {
     auto t0 = Clock::now();
     p.begin_frame(readings, 1000, initial_ui_state(p.config()));
     double d = ms(t0, Clock::now()); if (d > this_worst) this_worst = d; ++fsteps;
+    ftotal += d;
+    if (p.front() != shown) front_untouched = false;
     bool done = false;
     while (!done) {
       auto t = Clock::now();
       done = p.frame_step(1);  // the device's kFieldRowsPerStep
       double e = ms(t, Clock::now()); if (e > this_worst) this_worst = e; ++fsteps;
+      ftotal += e;  // only the pipeline calls are timed
       // The image on screen must not change until the frame publishes (Codex P1, D-038).
-      if (!done && !std::equal(before.begin(), before.end(), shown)) front_untouched = false;
+      // The image on screen must not change until the frame publishes (Codex P1, D-038): the
+      // front pointer stays put and its pixels unchanged. Checked outside the timed intervals.
+      if (!done && (p.front() != shown || !std::equal(before.begin(), before.end(), shown))) {
+        front_untouched = false;
+      }
     }
-    ftotal += ms(t0, Clock::now());
     if (this_worst < fworst) fworst = this_worst;
     published += p.published() ? 1 : 0;
     readings.by_entity.begin()->second.value += 1.0;  // force a field change, so a redraw

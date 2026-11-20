@@ -229,6 +229,10 @@ bool HearthmapComponent::start_screen_() {
   // A second buffer: frames render into the back one and swap it in whole (PanelPipeline).
   this->heat_back_ = allocator.allocate(raster.pixel_count());
   if (this->heat_back_ == nullptr) {
+    // Nothing holds the first buffer yet (neither the pipeline nor the screen): give it back
+    // rather than keep ~1.3 MiB for a component that has stopped.
+    allocator.deallocate(this->heat_pixels_, raster.pixel_count());
+    this->heat_pixels_ = nullptr;
     ESP_LOGE(TAG, "no memory for the second heat image buffer");
     this->phase_ = Phase::Failed;
     this->show_status_("hearthmap: not enough memory for the heat image");
@@ -292,6 +296,10 @@ void HearthmapComponent::frame_slice_() {
     hearthmap_device::restamp(this->readings_,
                               api::global_api_server->is_connected_with_state_subscription(), now);
     this->pipeline_->begin_frame(this->readings_, now, this->ui_state_);
+    // The top bar's summary from the same readings and time as the frame's view model, so a
+    // state that arrives between slices cannot pair a new summary with the older map; it marks
+    // the readings dirty and shows in the next frame.
+    this->frame_summary_ = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
     this->dirty_ = false;
     this->frame_active_ = true;
     this->frame_started_ms_ = start;
@@ -314,7 +322,7 @@ void HearthmapComponent::frame_slice_() {
   }
   hm::ui::HeaderText header;
   header.clock = this->clock_->now().strftime("%H:%M");
-  header.summary = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
+  header.summary = this->frame_summary_;
   this->screen_->update(this->pipeline_->view(), header, now);
   this->frame_active_ = false;
   const uint32_t took = millis() - this->frame_started_ms_;
@@ -330,7 +338,10 @@ void HearthmapComponent::frame_slice_() {
 
 void HearthmapComponent::show_status_(const char* text) {
   if (this->status_ == nullptr) {
-    this->status_ = lv_label_create(lv_layer_top());
+    // The top layer of the display this component's LVGL instance drives (not LVGL's default
+    // display, which can be another one when a device has two LVGL instances).
+    this->status_ = lv_label_create(
+        lv_display_get_layer_top(lv_obj_get_display(this->lvgl_->get_screen_active())));
     lv_obj_set_size(this->status_, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(this->status_, lv_color_hex(hm::ui::theme::kBackground), 0);
     lv_obj_set_style_bg_opa(this->status_, LV_OPA_COVER, 0);

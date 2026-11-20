@@ -24,8 +24,16 @@ class _Adapter:
     def __init__(self, gen, schema):
         self.gen, self.schema = gen, schema
 
+    class _Error:
+        def __init__(self, path, message):
+            self.path, self.message = path, message
+
+        def __repr__(self):
+            return f"{self.path or '/'}: {self.message}"
+
     def iter_errors(self, doc):
-        return iter(self.gen.check_schema(self.schema, doc))
+        # test_schema.py reads `.message` from each error, as jsonschema's errors have.
+        return iter(self._Error(p, m) for p, m in self.gen.check_schema(self.schema, doc))
 
 
 def _load_test_schema_module():
@@ -103,3 +111,8 @@ def test_error_paths_are_json_pointers(gen, schema, example):
     example["pins"][3]["position"] = [0.5, 2]
     errors = gen.check_schema(schema, example)
     assert ("/pins/3/position/1", "must be <= 1") in errors
+
+
+def test_adapter_errors_carry_a_message(gen, schema):
+    errors = list(_Adapter(gen, schema).iter_errors({"version": 2}))
+    assert errors and all(isinstance(e.message, str) for e in errors)

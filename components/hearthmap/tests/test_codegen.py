@@ -340,3 +340,57 @@ def test_pin_stale_after_is_range_checked_at_its_path(gen, schema, example):
     with pytest.raises(gen.ConfigError) as e:
         gen.emit_config_source(example, schema, "e.json")
     assert e.value.path == "/pins/2/stale_after_s"
+
+
+# ---- review round (PR 14, CodeRabbit) --------------------------------------------------------
+
+
+def test_unreadable_photo_file_is_refused_at_its_pin(gen, example, tmp_path):
+    for pid in gen.photo_ids(example):
+        Image.new("RGB", (4, 4)).save(tmp_path / f"{pid}.png")
+    (tmp_path / "monstera.png").write_bytes(b"")  # exists, but no image
+    with pytest.raises(gen.ConfigError) as e:
+        gen.check_photos(example, tmp_path)
+    assert e.value.path.endswith("/photo") and "monstera.png" in e.value.message
+    (tmp_path / "monstera.png").write_bytes(b"\x89PNG\r\n\x1a\n not really")
+    with pytest.raises(gen.ConfigError):
+        gen.check_photos(example, tmp_path)
+
+
+def test_unsupported_schema_keyword_fails_even_where_the_config_has_nothing(gen, schema, minimal):
+    import copy
+
+    s = copy.deepcopy(schema)
+    s["$defs"]["heat"]["maxProperties"] = 3  # heat is omitted in `minimal`
+    with pytest.raises(gen.SchemaUnsupported):
+        gen.check_schema(s, minimal)
+    # Keys inside annotations and property names are not keywords.
+    s2 = copy.deepcopy(schema)
+    s2["$defs"]["heat"]["description"] = {"maxProperties": 1}
+    assert gen.check_schema(s2, minimal) == []
+
+
+def test_unknown_member_paths_are_escaped_json_pointers(gen, schema, minimal):
+    minimal["a/b~c"] = 1
+    errors = gen.check_schema(schema, minimal)
+    assert any(p == "/a~1b~0c" for p, _ in errors), errors
+
+
+@pytest.mark.parametrize("where", ["room", "pin"])
+def test_lone_surrogate_in_a_name_is_a_config_error(gen, schema, example, where):
+    if where == "room":
+        example["rooms"][1]["name"] = "Kitchen \ud800"
+        path = "/rooms/1/name"
+    else:
+        example["pins"][2]["name"] = "\udfff"
+        path = "/pins/2/name"
+    with pytest.raises(gen.ConfigError) as e:
+        gen.emit_config_source(example, schema, "e.json")
+    assert e.value.path == path
+
+
+def test_config_filename_never_reaches_a_cpp_comment(gen, schema, minimal):
+    src = gen.emit_config_source(minimal, schema, "evil\nint x = ;\n.json").source
+    assert "\nint x = ;" not in src  # no line of source starts with the injected text
+    assert "// Source" not in src
+    assert 'kConfigSourceName = "evil\\012int x = ;\\012.json";' in src
