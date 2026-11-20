@@ -108,11 +108,14 @@ export function openFiles(files: readonly NamedBytes[]): OpenedProject {
 const EXPORTED_PHOTO = /^[a-z0-9][a-z0-9_-]{0,47}\.png$/;
 
 /**
- * Files in an export folder's photos/ directory that a new export should remove: names the
- * editor itself would have written (EXPORTED_PHOTO) that the new export does not contain.
- * Anything else in the folder (other names, other extensions, subfolders) is never listed.
+ * Files in an export folder's photos/ directory that a new export may remove: names the editor
+ * itself would have written (EXPORTED_PHOTO) that the new export does not contain AND that no
+ * pin references. `referenced` is every photo id the exported config names, whether or not its
+ * image is in memory: after a reload the config comes back without its photos, and those files
+ * on disk are still the config's photos. Anything else in the folder is never listed.
  */
-export function staleExportedPhotos(existing: readonly string[], files: readonly NamedBytes[]): string[] {
+export function staleExportedPhotos(existing: readonly string[], files: readonly NamedBytes[], referenced: Iterable<string>): string[] {
   const keep = new Set(files.filter((f) => f.name.startsWith("photos/")).map((f) => f.name.slice("photos/".length)));
+  for (const id of referenced) keep.add(`${id}.png`);
   return existing.filter((n) => EXPORTED_PHOTO.test(n) && !keep.has(n)).sort();
 }

@@ -310,7 +310,7 @@ decoded, cut to its largest centred square and re-encoded as a 128 x 128 PNG, sa
 `photos/<photo-id>.png`; only re-encoded photos can enter the editor's store (a branded type), so
 no original bytes or metadata (EXIF, GPS) reach an export, and a file that does not decode is
 rejected. A folder export offers to remove `photos/<photo-id>.png` files an earlier export left
-that the config no longer uses. Only photos some pin references are exported; photos are not
+that no pin references; a referenced photo not loaded this session is kept on disk. Only photos some pin references are exported; photos are not
 autosaved (they would fill `localStorage`), so after a reload the editor warns until they are
 attached again. **Why:** 128 px is the largest size the UI spec draws a plant photo (the detail
 overlay's 64 px radius disc); the ESPHome component converts to RGB565 at build time. **Would

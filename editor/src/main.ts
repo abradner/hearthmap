@@ -106,8 +106,12 @@ function checkedExport(): ReturnType<typeof exportFiles> | undefined {
   return exportFiles(store.config, store.state.photos);
 }
 
-function exportedMessage(where: string, missing: string[]): void {
-  const tail = missing.length ? `. No image loaded for: ${missing.join(", ")}` : "";
+function exportedMessage(where: string, missing: string[], toFolder = false): void {
+  const tail = missing.length
+    ? toFolder
+      ? `. Not loaded this session, so not rewritten (any copy already in the folder was kept): ${missing.map((m) => `photos/${m}.png`).join(", ")}`
+      : `. No image loaded for: ${missing.join(", ")}`
+    : "";
   store.set({ message: { text: `Exported ${where}${tail}`, kind: missing.length ? "error" : "info" } });
 }
 
@@ -149,9 +153,12 @@ async function exportToFolder(): Promise<void> {
     const photosDir = await dir.getDirectoryHandle("photos", { create: true });
     const existing: string[] = [];
     for await (const name of photosDir.keys()) existing.push(name);
-    const stale = staleExportedPhotos(existing, out.files);
+    // Every photo the config names is kept, including ones whose image is not loaded this
+    // session (photos are not autosaved): those files stay on disk, not rewritten.
+    const referenced = store.config.pins.map((p) => p.photo).filter((x): x is string => x !== undefined);
+    const stale = staleExportedPhotos(existing, out.files, referenced);
     let removed: string[] = [];
-    if (stale.length && confirm(`Remove photos from an earlier export that this config no longer uses?\n\n${stale.map((n) => `photos/${n}`).join("\n")}`)) {
+    if (stale.length && confirm(`Remove photos from an earlier export that no pin in this config references?\n\n${stale.map((n) => `photos/${n}`).join("\n")}`)) {
       for (const n of stale) await photosDir.removeEntry(n);
       removed = stale;
     }
@@ -159,6 +166,7 @@ async function exportToFolder(): Promise<void> {
     exportedMessage(
       `to the chosen folder${removed.length ? `; removed ${removed.map((n) => `photos/${n}`).join(", ")}` : ""}${kept.length ? `; left unused ${kept.map((n) => `photos/${n}`).join(", ")}` : ""}`,
       out.missing,
+      true,
     );
   } catch (e) {
     store.set({ message: { text: `Could not write to that folder: ${(e as Error).message}. Use Download zip instead.`, kind: "error" } });

@@ -42,13 +42,19 @@ describe("autosave load uses the structural guard", () => {
 describe("staleExportedPhotos", () => {
   const files = [{ name: "config.json", bytes: new Uint8Array() }, { name: "photos/basil.png", bytes: new Uint8Array() }];
   it("lists photos the editor would have written that the new export does not contain", () => {
-    expect(staleExportedPhotos(["basil.png", "monstera.png", "old-fern.png"], files)).toEqual(["monstera.png", "old-fern.png"]);
+    expect(staleExportedPhotos(["basil.png", "monstera.png", "old-fern.png"], files, ["basil"])).toEqual(["monstera.png", "old-fern.png"]);
   });
   it("never lists files outside the editor's own name pattern", () => {
-    expect(staleExportedPhotos(["Holiday.png", "notes.txt", "basil.jpg", ".DS_Store", "a/b.png", "x.png.bak", "-x.png"], files)).toEqual([]);
+    expect(staleExportedPhotos(["Holiday.png", "notes.txt", "basil.jpg", ".DS_Store", "a/b.png", "x.png.bak", "-x.png"], files, ["basil"])).toEqual([]);
+  });
+  it("never lists a photo the config still references, even when its image is not in memory", () => {
+    // After a reload the config is restored but photos are not, so the export omits monstera.png;
+    // it is still the config's photo and must stay on disk.
+    const referenced = ["basil", "monstera"];
+    expect(staleExportedPhotos(["basil.png", "monstera.png", "old-fern.png"], files, referenced)).toEqual(["old-fern.png"]);
   });
   it("lists nothing when the export holds every photo there", () => {
-    expect(staleExportedPhotos(["basil.png"], files)).toEqual([]);
+    expect(staleExportedPhotos(["basil.png"], files, ["basil"])).toEqual([]);
   });
 });
 

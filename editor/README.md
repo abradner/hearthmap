@@ -52,7 +52,8 @@ SCREENSHOTS=1 npm run e2e -- -g screenshots      # regenerate docs/img/editor-*.
   below; errors block export and are listed next to the offending room, pin or layer. Download a
   zip, or write into a folder through the File System Access API where the browser has it. A
   folder export offers to remove `photos/<photo-id>.png` files an earlier export left there that
-  the config no longer uses; nothing else in the folder is touched.
+  no pin references (a referenced photo whose image is not loaded this session is kept, not
+  rewritten); nothing else in the folder is touched.
 
 ## Home Assistant token
 
