@@ -292,12 +292,20 @@ export function setTemperatureUnit(config: Config, unit: "C" | "F" | undefined):
 
 /**
  * Size the map area to a floor plan's proportions, as large as fits in the space the panel
- * leaves for the map (the default map area). Keeps the area anchored at the default origin.
+ * leaves for the map (the default map area) and inside the canvas. Keeps the area anchored at
+ * the default origin.
  */
 export function fitMapAreaToAspect(config: Config, imageWidth: number, imageHeight: number): Config {
   if (!(imageWidth > 0 && imageHeight > 0)) return config;
-  const maxW = PANEL_MAP_AREA.width;
-  const maxH = PANEL_MAP_AREA.height;
+  // The panel's region, cut to the canvas, so the area always lies inside it (core's
+  // validate() refuses one that does not). A canvas too small for the region's origin uses its
+  // own corner.
+  const { width: cw, height: ch } = config.canvas;
+  const fits = PANEL_MAP_AREA.x < cw && PANEL_MAP_AREA.y < ch;
+  const x = fits ? PANEL_MAP_AREA.x : 0;
+  const y = fits ? PANEL_MAP_AREA.y : 0;
+  const maxW = fits ? Math.min(PANEL_MAP_AREA.width, cw - x) : cw;
+  const maxH = fits ? Math.min(PANEL_MAP_AREA.height, ch - y) : ch;
   const aspect = imageWidth / imageHeight;
   let width = maxW;
   let height = Math.round(maxW / aspect);
@@ -305,5 +313,7 @@ export function fitMapAreaToAspect(config: Config, imageWidth: number, imageHeig
     height = maxH;
     width = Math.round(maxH * aspect);
   }
-  return { ...config, canvas: { ...config.canvas, map_area: { x: 0, y: 0, width: Math.max(1, width), height: Math.max(1, height) } } };
+  width = Math.min(maxW, Math.max(1, width));
+  height = Math.min(maxH, Math.max(1, height));
+  return { ...config, canvas: { ...config.canvas, map_area: { x, y, width, height } } };
 }

@@ -2,9 +2,10 @@
 
 #include <utility>
 
+#include "clock_text.h"
 #include "hearthmap/ui/fonts.h"
+#include "hearthmap/ui/format.h"
 #include "hearthmap/ui/theme.h"
-#include "summary.h"
 
 namespace hearthmap::host {
 
@@ -62,8 +63,7 @@ void App::render_heat(Layer layer) {
 void App::refresh() {
   build_view_model(config_, readings_, now_, state_, vm_);
   if (heat_layer_ != vm_.active_layer) render_heat(vm_.active_layer);
-  ui::HeaderText header{clock_text(now_, utc_offset_minutes_),
-                        house_summary(config_, readings_, now_)};
+  ui::HeaderText header{clock_text(now_, utc_offset_minutes_), ui::summary_text(vm_.summary)};
   screen_->update(vm_, header, now_);
 }
 

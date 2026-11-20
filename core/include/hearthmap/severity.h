@@ -56,7 +56,6 @@ inline Seconds effective_stale_after(const Pin& pin, const Config& config) {
 /// - nullptr -> Missing; state Unavailable -> Unavailable; state Unknown -> Unknown.
 /// - age = now - last_updated. age > stale_after -> TooOld. age == stale_after is still Fresh.
 /// - A last_updated in the future (clock skew between HA and the panel) counts as age 0.
-/// Implemented in core (PR 2).
 Freshness assess_freshness(const Reading* reading, Timestamp now, Seconds stale_after);
 
 /// Severity of a trusted value against a band. Never returns Stale.
@@ -65,7 +64,6 @@ Freshness assess_freshness(const Reading* reading, Timestamp now, Seconds stale_
 /// value < warn_below -> Warn; value > warn_above -> Warn. A value exactly on a threshold gets
 /// the less severe side. Absent thresholds never match. The comfort band does not affect
 /// severity (it only affects colour).
-/// Implemented in core (PR 2).
 Severity classify(const Band& band, double value);
 
 /// Everything core knows about one binding on one pin at one moment.
@@ -95,7 +93,6 @@ struct Assessment {
 /// `pin` must belong to `config` (its room is looked up for the outdoor rule). Freshness follows
 /// the precedence on Freshness: assess_freshness() first, then, for Moisture, a degenerate
 /// calibration turns Fresh or TooOld into BadCalibration.
-/// Implemented in core (PR 2).
 std::optional<Assessment> assess(const Config& config, const Pin& pin, Role role,
                                  const Readings& readings, Timestamp now);
 

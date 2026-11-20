@@ -302,6 +302,8 @@ struct Screen::Impl {
   // Previous shown state. Empty optionals mean "never shown": the first update writes all.
   std::optional<std::string> clock_text;
   std::optional<std::string> summary_text;
+  std::optional<bool> summary_offline;
+  std::optional<bool> heat_dimmed;
   std::optional<std::vector<Layer>> tab_layers;
   std::optional<Layer> tab_active;
   std::vector<std::optional<Severity>> room_pulse;
@@ -884,15 +886,25 @@ struct Screen::Impl {
     count();
   }
 
-  void update_header(const HeaderText& h) {
+  void update_header(const HeaderText& h, bool offline) {
     const bool clock_changed = clock_text != h.clock;
     if (clock_changed) {
       set_text(w.clock, h.clock);
       clock_text = h.clock;
     }
-    if (summary_text != h.summary) {
-      set_text(w.summary, h.summary);
-      summary_text = h.summary;
+    // Offline replaces the summary (D-046): its averages come from readings nobody is
+    // confirming any more, and the warning is what matters while the source is away.
+    static const std::string kOffline = "Offline";
+    const std::string& summary = offline ? kOffline : h.summary;
+    if (summary_text != summary) {
+      set_text(w.summary, summary);
+      summary_text = summary;
+    }
+    if (summary_offline != offline) {
+      lv_obj_set_style_text_color(w.summary, hex(offline ? theme::kWarn : theme::kTextSecondary),
+                                  0);
+      count();
+      summary_offline = offline;
     }
     if (clock_changed) {
       // The summary follows the clock, whose width depends on its text.
@@ -1156,7 +1168,7 @@ struct Screen::Impl {
     return s;
   }
 
-  OverlayLook overlay_of(const ViewModel& vm, Timestamp now) const {
+  OverlayLook overlay_of(const ViewModel& vm, Timestamp now, bool restamped) const {
     OverlayLook o;
     if (!vm.overlay.has_value() || vm.overlay->pin_index >= config.pins.size()) return o;
     const OverlayView& ov = *vm.overlay;
@@ -1167,11 +1179,16 @@ struct Screen::Impl {
     o.pot = in_pot(pin.kind);
     const Role primary = primary_role(pin.kind);
     const OverlayRow* prow = find_row(ov, primary);
-    std::string seen = "never seen";
-    if (prow != nullptr && prow->last_updated.has_value()) {
-      seen = format_seen(now - *prow->last_updated);
+    // Re-stamped times say only "the source is connected" (D-012), never when the sensor last
+    // reported, so they get no "seen" text at all (D-046).
+    o.subtitle = room_name(pin.room_id);
+    if (!restamped) {
+      std::string seen = "never seen";
+      if (prow != nullptr && prow->last_updated.has_value()) {
+        seen = format_seen(now - *prow->last_updated);
+      }
+      o.subtitle += "   " + seen;
     }
-    o.subtitle = room_name(pin.room_id) + "   " + seen;
     const bool fresh = prow != nullptr && prow->assessment.freshness == Freshness::Fresh &&
                        prow->assessment.value.has_value();
     o.stale = !fresh;
@@ -1214,8 +1231,16 @@ struct Screen::Impl {
     return o;
   }
 
-  void update_overlay(const ViewModel& vm, Timestamp now) {
-    OverlayLook o = overlay_of(vm, now);
+  void update_heat_dim(bool behind) {
+    if (heat_dimmed == behind || w.heat_image == nullptr) return;
+    // A style change invalidates the whole image: one full map repaint each way (D-047).
+    lv_obj_set_style_image_opa(w.heat_image, behind ? LV_OPA_40 : LV_OPA_COVER, 0);
+    count();
+    heat_dimmed = behind;
+  }
+
+  void update_overlay(const ViewModel& vm, Timestamp now, bool restamped) {
+    OverlayLook o = overlay_of(vm, now, restamped);
     if (overlay_look.has_value() && *overlay_look == o) return;
     const OverlayLook* prev = overlay_look.has_value() ? &*overlay_look : nullptr;
     if (prev == nullptr || prev->open != o.open) set_hidden(w.scrim, !o.open);
@@ -1303,14 +1328,16 @@ Screen::~Screen() {
   if (impl_ && impl_->w.root != nullptr) lv_obj_delete(impl_->w.root);
 }
 
-void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now) {
+void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now,
+                    const SourceStatus& status) {
   if (impl_->w.root == nullptr) return;  // the tree went with its parent
-  impl_->update_header(header);
+  impl_->update_header(header, status.offline);
+  impl_->update_heat_dim(status.heat_behind);
   impl_->update_tabs(vm);
   impl_->update_rooms(vm);
   impl_->update_pins(vm);
   impl_->update_hud(vm);
-  impl_->update_overlay(vm, now);
+  impl_->update_overlay(vm, now, status.restamped);
 }
 
 void Screen::invalidate_heat() {

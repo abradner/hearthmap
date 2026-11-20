@@ -9,6 +9,7 @@
 
 #include "hearthmap/config.h"
 #include "hearthmap/severity.h"
+#include "hearthmap/view_model.h"
 
 namespace hearthmap::ui {
 
@@ -30,6 +31,11 @@ std::string format_value(Role role, double value);
 
 /// Label for a role in the overlay's stats ("Soil temp" for a temperature probe in a pot).
 std::string role_label(Role role, PinKind kind);
+
+/// The top bar's words for core's HouseSummary: "House 21.4°   52% RH   PM2.5 6" (temperature
+/// one decimal with a degree sign, humidity and PM2.5 whole numbers, parts three spaces apart),
+/// leaving out any part that is nullopt; "House: no data" when all are.
+std::string summary_text(const HouseSummary& summary);
 
 /// The tab label for a layer: "Temp", "Humidity", "Soil", "Air".
 std::string layer_label(Layer layer);

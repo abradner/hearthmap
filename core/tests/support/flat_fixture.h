@@ -2,8 +2,9 @@
 //
 // Mirrors examples/flat/config.json and its readings fixtures field for field, with the
 // schema defaults filled in the way a ConfigSource would (docs/decisions.md D-007). If the
-// example changes, change this too; the host renderer's golden images (PR 5) are the check
-// that the JSON and this copy agree.
+// example changes, change this too. Nothing checks that the two agree: the host renderer's
+// golden images render the JSON, never this copy, so a drift here passes every test. Compare
+// them by hand whenever either changes.
 #pragma once
 
 #include <cstddef>

@@ -576,3 +576,36 @@ TEST_CASE("disabled soil layer: plants unjudged on their pins, HUD still lists t
   CHECK(vm.hud.items.size() == 4);
   CHECK(vm.hud.items[0].severity == Severity::Danger);
 }
+
+// ---- house_summary() (D-049) ----------------------------------------------------------------
+
+TEST_CASE("house_summary: means of fresh indoor readings that feed their layer, and PM2.5") {
+  const Config c = flat_config();
+  const HouseSummary s = house_summary(c, flat_all_ok(), kFlatNow);
+  // Temperatures feeding the layer indoors: 21.5, 22.0, 20.5, 20.0, 19.5 and the bathroom's
+  // 22.5 (a humidity pin's temperature feeds; a plant's pot probe does not; the balcony is
+  // outdoor) -> 21.0. Humidity: 48, 45, 52, 58 -> 50.75. PM2.5: 6.
+  REQUIRE(s.temperature.has_value());
+  CHECK(*s.temperature == doctest::Approx(21.0));
+  REQUIRE(s.humidity.has_value());
+  CHECK(*s.humidity == doctest::Approx(50.75));
+  REQUIRE(s.pm25.has_value());
+  CHECK(*s.pm25 == doctest::Approx(6.0));
+  // build_view_model() carries the same numbers.
+  const ViewModel vm = build_view_model(c, flat_all_ok(), kFlatNow, initial_ui_state(c));
+  CHECK(vm.summary.temperature == s.temperature);
+  CHECK(vm.summary.humidity == s.humidity);
+  CHECK(vm.summary.pm25 == s.pm25);
+}
+
+TEST_CASE("house_summary: no fresh reading leaves a part empty; outdoor pins never count") {
+  Config c = flat_config();
+  CHECK_FALSE(house_summary(c, Readings{}, kFlatNow).temperature.has_value());
+  CHECK_FALSE(house_summary(c, Readings{}, kFlatNow).pm25.has_value());
+  // Make every room outdoor: nothing is indoors any more, so nothing averages.
+  for (Room& r : c.rooms) r.outdoor = true;
+  const HouseSummary s = house_summary(c, flat_all_ok(), kFlatNow);
+  CHECK_FALSE(s.temperature.has_value());
+  CHECK_FALSE(s.humidity.has_value());
+  CHECK_FALSE(s.pm25.has_value());
+}

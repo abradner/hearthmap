@@ -1,5 +1,5 @@
-// Tests for the inline helpers that ship in core's headers in PR 1. Everything declared but
-// not defined in the headers is tested by the PR that implements it.
+// Tests for the inline helpers in core's headers. Functions defined in core/src/ have their
+// own test files.
 #include <doctest/doctest.h>
 
 #include <cstdint>

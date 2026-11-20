@@ -24,8 +24,9 @@ SCREENSHOTS=1 npm run e2e -- -g screenshots      # regenerate docs/img/editor-*.
   metadata survive); files that are not images are reported and dropped. The config autosaves to `localStorage`; photos, the floor plan and
   any token never do. Undo/redo covers every config edit (a drag is one step).
 - **Floor plan.** Load an image as a tracing backdrop (opacity slider; never exported). "Match
-  plan shape" sizes `canvas.map_area` to the image's proportions within the panel's 960 x 800
-  map space, so the plan is not stretched (`schema/README.md`, Coordinates).
+  plan shape" sizes `canvas.map_area` to the image's proportions within the panel's map region
+  (920 x 736 at x 0, y 64: below the top bar, left of the HUD), so the plan is not stretched
+  (`schema/README.md`, Coordinates).
 - **Rooms.** Draw polygons corner by corner; drag corners; drag the dot on an edge (or
   double-click the edge) to add a corner; select a corner and press Delete to remove it. Snaps to
   existing corners and to horizontal/vertical from neighbouring corners (Alt suspends). Rename,

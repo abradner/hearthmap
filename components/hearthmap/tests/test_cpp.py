@@ -325,30 +325,31 @@ int main() {
   // frames' worst steps (a shared runner's noise hits one frame, not every one).
   double fworst = 1e9, ftotal = 0; int fsteps = 0, published = 0;
   bool front_untouched = true;
+  p.set_heat_refresh_interval_ms(0);  // every frame's changed readings rebuild: worst case
   for (int frame = 0; frame < 3; ++frame) {
     const Rgb565* shown = p.front();
     const std::vector<Rgb565> before(shown, shown + p.rasterizer().pixel_count());
     double this_worst = 0;
+    const std::uint32_t mono = 1000U * std::uint32_t(frame + 1);
     auto t0 = Clock::now();
-    p.begin_frame(readings, 1000, initial_ui_state(p.config()));
+    p.update(readings, 1000, initial_ui_state(p.config()), mono);
     double d = ms(t0, Clock::now()); if (d > this_worst) this_worst = d; ++fsteps;
     ftotal += d;
     if (p.front() != shown) front_untouched = false;
     bool done = false;
     while (!done) {
       auto t = Clock::now();
-      done = p.frame_step(1);  // the device's kFieldRowsPerStep
+      done = p.heat_step(1, mono);  // the device's kFieldRowsPerStep
       double e = ms(t, Clock::now()); if (e > this_worst) this_worst = e; ++fsteps;
       ftotal += e;  // only the pipeline calls are timed
-      // The image on screen must not change until the frame publishes (Codex P1, D-038).
-      // The image on screen must not change until the frame publishes (Codex P1, D-038): the
+      // The image on screen must not change until the rebuild publishes (Codex P1, D-038): the
       // front pointer stays put and its pixels unchanged. Checked outside the timed intervals.
       if (!done && (p.front() != shown || !std::equal(before.begin(), before.end(), shown))) {
         front_untouched = false;
       }
     }
     if (this_worst < fworst) fworst = this_worst;
-    published += p.published() ? 1 : 0;
+    published += p.take_published() ? 1 : 0;
     readings.by_entity.begin()->second.value += 1.0;  // force a field change, so a redraw
   }
   std::printf("FRAME steps=%d total_ms=%.2f worst_step_ms=%.3f published=%d front_untouched=%d\n", fsteps,
@@ -464,6 +465,163 @@ def test_every_pipeline_step_is_bounded_at_schema_maximums(gen, schema, tmp_path
     assert float(frame["worst_step_ms"]) < HOST_STEP_CAP_MS, frame
     assert frame["published"] == "3", frame
     assert frame["front_untouched"] == "1", frame  # the shown image never half-written
+
+
+# ---------------------------------------------------------------------------------------------
+# When the heat image is rebuilt, and that taps never wait for it (docs/decisions.md D-047).
+#
+# On the panel one rebuild takes about a second. Rebuilding for every changed reading kept the
+# pipeline permanently mid-rebuild with chatty sensors, and taps, applied only between frames,
+# waited behind it. The view model is now rebuilt at once on every update(); the heat image is
+# rebuilt at once for the first draw and a layer change, at most once per interval for changed
+# readings, and never for unchanged ones.
+# ---------------------------------------------------------------------------------------------
+
+HEAT_POLICY_TEST = r"""
+#include <cstdio>
+#include <vector>
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+// Runs heat work to idle at `mono`; returns how many swaps happened.
+static int drain(Pipeline& p, std::uint32_t mono) {
+  int guard = 0;
+  while (!p.heat_step(1, mono) && ++guard < 1000000) {}
+  return p.take_published() ? 1 : 0;
+}
+
+int main() {
+  hearthmap_gen::GeneratedConfigSource source;
+  Pipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  Pipeline p(builder, Palette{});
+  while (p.stage() != Pipeline::Stage::Ready && p.stage() != Pipeline::Stage::Refused) p.boot_step(4);
+  if (p.stage() != Pipeline::Stage::Ready) { std::printf("REFUSED\n"); return 2; }
+  std::vector<Rgb565> a(p.rasterizer().pixel_count()), b(p.rasterizer().pixel_count());
+  p.set_heat_buffers(a.data(), b.data());
+  p.set_heat_refresh_interval_ms(15000);
+
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 20.0 + double(i % 5) * 0.4; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  // A temperature entity: changing it changes the temperature layer's samples.
+  Reading* temp = nullptr;
+  for (const Pin& pin : p.config().pins) {
+    for (const EntityBinding& bnd : pin.entities) {
+      if (bnd.role == Role::Temperature && feeds_layer(pin.kind, Role::Temperature) && temp == nullptr) {
+        temp = &rs.by_entity.find(bnd.entity_id)->second;
+      }
+    }
+  }
+  if (temp == nullptr) { std::printf("NO TEMPERATURE PIN\n"); return 2; }
+  UiState st = initial_ui_state(p.config());
+  st.active_layer = Layer::Temperature;
+
+  // The first image is drawn at once, whatever the interval; the map is dimmed until it lands.
+  p.update(rs, 1000, st, 0);
+  CHECK(p.heat_behind());
+  CHECK(drain(p, 0) == 1);
+  CHECK(!p.heat_behind());
+
+  // Unchanged readings never rebuild, even long after the interval.
+  p.update(rs, 1000, st, 20000);
+  CHECK(drain(p, 20000) == 0);
+  p.update(rs, 1000, st, 40000);
+  CHECK(drain(p, 40000) == 0);
+  CHECK(p.heat_rebuilds() == 1);
+
+  // A changed reading after the interval rebuilds at once (the last start was at 0).
+  temp->value += 1.0;
+  p.update(rs, 1000, st, 40000);
+  CHECK(drain(p, 40000) == 1);
+  // Readings changing every frame within the interval: no further rebuild, though the view
+  // model (pins, HUD, overlay) follows every one of them.
+  int extra = 0;
+  for (std::uint32_t t = 40500; t < 55000; t += 500) {
+    temp->value += 0.25;
+    p.update(rs, 1000, st, t);
+    extra += drain(p, t);
+  }
+  CHECK(extra == 0);
+  CHECK(p.heat_rebuilds() == 2);
+  // The held-back change lands once the interval has passed, with no new reading (heat_step
+  // alone), and exactly once.
+  CHECK(drain(p, 55000) == 1);
+  CHECK(drain(p, 56000) == 0);
+  CHECK(p.heat_rebuilds() == 3);
+
+  // Only the layer changed, well inside the interval: rebuilt at once, dimmed until it lands.
+  std::vector<Layer> others;
+  for (Layer l : p.view().tabs) if (l != Layer::Temperature) others.push_back(l);
+  if (others.size() < 2) { std::printf("NEED THREE LAYERS\n"); return 2; }
+  UiState st2 = st;
+  st2.active_layer = others[0];
+  p.update(rs, 1000, st2, 56500);
+  CHECK(p.view().active_layer == others[0]);
+  CHECK(p.heat_behind());
+  CHECK(drain(p, 56500) == 1);
+  CHECK(!p.heat_behind());
+
+  // A tap during a rebuild is in the very next view model, without waiting for the image.
+  UiState st3 = st2;
+  st3.active_layer = Layer::Temperature;
+  p.update(rs, 1000, st3, 57000);
+  for (int k = 0; k < 3; ++k) CHECK(!p.heat_step(1, 57000));  // rebuild in flight
+  UiState st4 = apply(p.config(), st3, UiEvent::tap_hud_item(p.config().pins[0].id));
+  CHECK(st4.overlay_pin.has_value());
+  p.update(rs, 1000, st4, 57010);
+  CHECK(p.view().overlay.has_value());
+  CHECK(p.view().active_layer == Layer::Temperature);
+  CHECK(p.heat_behind());               // still the other layer's image: dimmed
+  CHECK(!p.heat_step(1, 57010));        // the rebuild is still going
+  CHECK(!p.take_published());
+
+  // A layer change during a rebuild restarts it for the new layer, and that is what lands.
+  UiState st5 = st4;
+  st5.active_layer = others[1];
+  p.update(rs, 1000, st5, 57020);
+  CHECK(drain(p, 57020) == 1);
+  CHECK(!p.heat_behind());
+  CHECK(p.view().active_layer == others[1]);
+
+  // Tabbing away and straight back cancels the rebuild: the shown image is current again.
+  const std::uint32_t before = p.heat_rebuilds();
+  UiState st6 = st5;
+  st6.active_layer = others[0];
+  p.update(rs, 1000, st6, 57100);
+  CHECK(!p.heat_step(1, 57100));
+  p.update(rs, 1000, st5, 57110);
+  CHECK(!p.heat_behind());
+  CHECK(drain(p, 57110) == 0);
+  CHECK(p.heat_rebuilds() == before + 1);
+
+  std::printf("heat policy checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_heat_rebuild_policy_and_immediate_taps(gen, schema, example, tmp_path):
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(HEAT_POLICY_TEST)
+    text = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core],
+        [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
+    )
+    assert "0 failures" in text, text
 
 
 UNKNOWN_TEST = r"""

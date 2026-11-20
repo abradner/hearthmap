@@ -20,7 +20,7 @@ inline constexpr double kMinCalibrationWidth = 1e-9;
 /// usable span: validate() rejects a calibration exactly when this is false, and
 /// moisture_fraction() returns std::nullopt for every raw value exactly when this is false, so a
 /// config validate() accepts never reports BadCalibration. Happy edges are not part of the span
-/// (validate() checks them separately). Implemented in core (PR 2).
+/// (validate() checks them separately).
 bool calibration_span_usable(const Calibration& calibration);
 
 /// Moisture as a fraction of the calibrated span: (raw - dry) / (wet - dry), clamped to 0..1.
@@ -34,11 +34,9 @@ bool calibration_span_usable(const Calibration& calibration);
 /// - The span is closed: `dry` and `wet` themselves are inside it (validate() accepts a happy
 ///   edge equal to either).
 /// - Non-finite `raw`: std::nullopt.
-/// Implemented in core (PR 2).
 std::optional<double> moisture_fraction(const Calibration& calibration, double raw);
 
 /// 1 - moisture_fraction(), with the same nullopt cases.
-/// Implemented in core (PR 2).
 std::optional<double> thirst(const Calibration& calibration, double raw);
 
 /// The soil band that applies to one plant or soil pin: the layer's band with the pin's happy
@@ -58,7 +56,6 @@ std::optional<double> thirst(const Calibration& calibration, double raw);
 /// Neither present, or the calibration degenerate (thirst() is nullopt): `layer` unchanged.
 /// Both present: validate() guarantees happy_min is not wetter than happy_max, so step 3 has
 /// nothing to repair on the comfort edges.
-/// Implemented in core (PR 2).
 Band effective_soil_band(const Band& layer, const Calibration& calibration);
 
 }  // namespace hearthmap

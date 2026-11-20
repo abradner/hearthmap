@@ -12,11 +12,19 @@ add_executable(hearthmap_core_tests
   heat_field_test.cpp
   pipeline_test.cpp
   room_scanner_test.cpp
+  semantic_cases_test.cpp
   severity_test.cpp
   view_model_test.cpp
   support/flat_fixture.cpp
 )
 target_include_directories(hearthmap_core_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+
+# schema/semantic-cases.json, shared with the editor's tests, as a generated C++ table.
+include("${CMAKE_CURRENT_SOURCE_DIR}/semantic_cases.cmake")
+set(_semantic_json "${PROJECT_SOURCE_DIR}/schema/semantic-cases.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_semantic_json}")
+hearthmap_semantic_cases("${_semantic_json}" "${CMAKE_CURRENT_BINARY_DIR}/generated/semantic_cases.h")
+target_include_directories(hearthmap_core_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 target_link_libraries(hearthmap_core_tests PRIVATE hearthmap::core hearthmap_doctest)
 hearthmap_strict_warnings(hearthmap_core_tests)

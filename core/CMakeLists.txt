@@ -12,21 +12,14 @@ set(HEARTHMAP_CORE_HEADERS
   view_model.h
 )
 
-# Implementations land in PR 2 (config validation, calibration, severity), PR 3 (geometry,
-# heat field, colour scale) and PR 4 (view model). Add each new .cpp here.
+# Every implementation file. Add each new .cpp here.
 set(HEARTHMAP_CORE_SOURCES
+  src/calibration.cpp
   src/colour_scale.cpp
+  src/config.cpp
   src/geometry.cpp
   src/heat_field.cpp
-)
-# PR 2: config validation, calibration, severity.
-list(APPEND HEARTHMAP_CORE_SOURCES
-  src/calibration.cpp
-  src/config.cpp
   src/severity.cpp
-)
-# PR 4: view model, HUD, hit-testing.
-list(APPEND HEARTHMAP_CORE_SOURCES
   src/view_model.cpp
 )
 

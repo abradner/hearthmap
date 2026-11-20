@@ -54,6 +54,13 @@ inline constexpr Palette kHeatPalette{Rgb888{30, 35, 41}, Rgb888{42, 120, 214},
 inline constexpr int kScreenWidth = 1280;
 inline constexpr int kScreenHeight = 800;
 inline constexpr int kTopBarHeight = 64;
+/// The map region (ui spec, "Regions": x 0..920, y 64..800): where a config's map_area belongs,
+/// below the top bar and clear of the HUD column. The editor's default for new projects is this
+/// rectangle (editor/test/defaults.test.ts reads these constants).
+inline constexpr int kMapRegionX = 0;
+inline constexpr int kMapRegionY = kTopBarHeight;
+inline constexpr int kMapRegionWidth = 920;
+inline constexpr int kMapRegionHeight = 800 - kTopBarHeight;
 inline constexpr int kHudX = 936;
 inline constexpr int kHudY = 76;
 inline constexpr int kHudWidth = 328;

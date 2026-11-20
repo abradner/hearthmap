@@ -35,6 +35,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_time(time::RealTimeClock* clock) { clock_ = clock; }
   void set_refresh_interval_ms(uint32_t ms) { refresh_interval_ms_ = ms; }
   void set_min_redraw_interval_ms(uint32_t ms) { min_redraw_interval_ms_ = ms; }
+  void set_heat_refresh_interval_ms(uint32_t ms) { heat_refresh_interval_ms_ = ms; }
 
   // After LVGL (PROCESSOR) and the YAML-built widgets (PROCESSOR - 5).
   float get_setup_priority() const override { return setup_priority::PROCESSOR - 10.0f; }
@@ -52,6 +53,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool start_screen_();
   void subscribe_();
   void frame_slice_();
+  void refresh_view_(uint32_t start_ms, bool connected);
+  void show_view_();
   void invalidate_band_();
   void show_status_(const char* text);
   void hide_status_();
@@ -60,6 +63,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   time::RealTimeClock* clock_ = nullptr;
   uint32_t refresh_interval_ms_ = 30000;
   uint32_t min_redraw_interval_ms_ = 500;
+  uint32_t heat_refresh_interval_ms_ = 15000;
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline
@@ -73,11 +77,13 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   hm::UiState ui_state_;
   std::vector<hm::UiEvent> pending_;
   bool dirty_ = true;
-  bool frame_active_ = false;
-  bool first_frame_logged_ = false;
-  uint32_t frame_started_ms_ = 0;
-  uint32_t last_frame_ms_ = 0;
-  std::string frame_summary_;  ///< The top bar's summary for the frame in progress.
+  bool viewed_ = false;     ///< At least one view model has been shown.
+  bool connected_ = false;  ///< The API connection state the last view was built with.
+  bool first_heat_logged_ = false;
+  bool heat_active_ = false;  ///< A heat rebuild is in flight (for the timing log).
+  bool dimmed_ = false;       ///< The last Screen update dimmed the heat image.
+  uint32_t heat_started_ms_ = 0;
+  uint32_t last_view_ms_ = 0;
 
   hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
   hm::Rgb565* heat_back_ = nullptr;    ///< The second buffer frames render into.

@@ -1,7 +1,7 @@
 # Host tests: unit tests for the JSON source, the fixture parser and the top-bar text, and the
 # golden images (host/README.md, "Golden images").
 
-add_executable(hearthmap_host_tests main.cpp json_config_test.cpp summary_test.cpp app_test.cpp)
+add_executable(hearthmap_host_tests main.cpp json_config_test.cpp top_bar_test.cpp app_test.cpp)
 target_link_libraries(hearthmap_host_tests PRIVATE hearthmap_host hearthmap_doctest)
 target_compile_definitions(hearthmap_host_tests PRIVATE
   HEARTHMAP_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
@@ -76,3 +76,15 @@ add_test(NAME golden.comparison_can_fail
     "-DPLANT=$<TARGET_FILE:hearthmap_plant_pixel>" "-DDIFF=$<TARGET_FILE:hearthmap-imgdiff>"
     "-DGOLDEN=${_golden_dir}/all-ok.png" "-DOUTDIR=${_out_dir}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/comparison_can_fail.cmake")
+
+# `hearthmap-render --check`, the pre-flash check (components/hearthmap/README.md): the example
+# passes, and a config the schema accepts but validate() refuses fails with the issue's path.
+add_test(NAME host.check_accepts_example
+  COMMAND "${CMAKE_COMMAND}" "-DRENDER=$<TARGET_FILE:hearthmap-render>"
+    "-DCONFIG=${_flat}/config.json" -DEXPECT_RC=0 "-DEXPECT_TEXT=ok: no errors"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_check.cmake")
+add_test(NAME host.check_refuses_collinear_room
+  COMMAND "${CMAKE_COMMAND}" "-DRENDER=$<TARGET_FILE:hearthmap-render>"
+    "-DCONFIG=${CMAKE_CURRENT_SOURCE_DIR}/check/collinear-room.json" -DEXPECT_RC=1
+    "-DEXPECT_TEXT=error at /rooms/0/polygon"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_check.cmake")

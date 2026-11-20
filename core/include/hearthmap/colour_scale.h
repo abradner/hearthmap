@@ -74,7 +74,6 @@ struct Palette {
 ///   (scale_max - comfort_max); when scale_max <= comfort_max the hot side is neutral.
 /// - Non-finite value: palette.neutral (callers should never pass one; heat cells with no data
 ///   are not coloured through this function).
-/// Implemented in core (PR 3).
 Rgb888 colour_for(const Band& band, double value, const Palette& palette = Palette{});
 
 /// to_rgb565(colour_for(...)). The reference for one value; the heat image uses ColourLut.
@@ -102,18 +101,15 @@ struct ColourLut {
   /// in CellState::Value, which are finite. A degenerate table (hi <= lo, from a band
   /// validate() rejects) gives entries.front() for value <= lo and entries.back() otherwise.
   /// Never allocates.
-  /// Implemented in core (PR 3).
   Rgb565 lookup(float value) const;
 };
 
 /// Fill `out` with `size` entries for `band` and `palette` (a size below 2 is treated as 2).
 /// Reuses out.entries' storage: once it has held `size` entries, a rebuild does not allocate.
 /// Build once per config (or palette change) per layer, not per frame.
-/// Implemented in core (PR 3).
 void build_colour_lut(const Band& band, const Palette& palette, std::size_t size, ColourLut& out);
 
 /// Returning form of build_colour_lut(); allocates.
-/// Implemented in core (PR 3).
 ColourLut build_colour_lut(const Band& band, const Palette& palette = Palette{},
                            std::size_t size = kDefaultColourLutSize);
 

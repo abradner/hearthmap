@@ -262,11 +262,10 @@ def test_library_files_mapping(gen, tmp_path):
     (tmp_path / "core/src/notes.md").write_text("x")
     files = gen.library_files(tmp_path)
     (tmp_path / "host/src").mkdir(parents=True)
-    (tmp_path / "host/src/summary.cpp").write_text("//")
-    (tmp_path / "host/src/app.cpp").write_text("//")  # host-only: never copied
+    (tmp_path / "host/src/clock_text.cpp").write_text("//")  # host-only: never copied (D-049)
+    (tmp_path / "host/src/app.cpp").write_text("//")
     files = gen.library_files(tmp_path)
-    assert set(files) == {"hearthmap/config.h", "hearthmap_lib/core/config.cpp",
-                          "hearthmap_lib/host/summary.cpp"}
+    assert set(files) == {"hearthmap/config.h", "hearthmap_lib/core/config.cpp"}
     assert gen.public_include_roots(files) == {"hearthmap"}
 
 

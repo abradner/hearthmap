@@ -207,10 +207,26 @@ describe("layers and settings", () => {
   });
 
   it("fits the map area to a floor plan's proportions inside the panel's map space", () => {
-    expect(fitMapAreaToAspect(blankConfig(), 2000, 1000).canvas.map_area).toEqual({ x: 0, y: 0, width: 960, height: 480 });
-    expect(fitMapAreaToAspect(blankConfig(), 1000, 2000).canvas.map_area).toEqual({ x: 0, y: 0, width: 400, height: 800 });
+    expect(fitMapAreaToAspect(blankConfig(), 2000, 1000).canvas.map_area).toEqual({ x: 0, y: 64, width: 920, height: 460 });
+    expect(fitMapAreaToAspect(blankConfig(), 1000, 2000).canvas.map_area).toEqual({ x: 0, y: 64, width: 368, height: 736 });
     const c = blankConfig();
     expect(fitMapAreaToAspect(c, 0, 10)).toBe(c);
+  });
+
+  it("keeps the fitted map area inside a canvas smaller than the panel's", () => {
+    // Review finding: on a 1280 x 768 canvas the region's bottom (800) is off the canvas.
+    const short = { ...blankConfig(), canvas: { ...blankConfig().canvas, height: 768 } };
+    const fitted = fitMapAreaToAspect(short, 1250, 1000).canvas.map_area!;
+    expect(fitted.y + fitted.height).toBeLessThanOrEqual(768);
+    expect(fitted).toEqual({ x: 0, y: 64, width: 880, height: 704 });
+    const narrow = { ...blankConfig(), canvas: { ...blankConfig().canvas, width: 800, height: 600 } };
+    const n = fitMapAreaToAspect(narrow, 2000, 1000).canvas.map_area!;
+    expect(n.x + n.width).toBeLessThanOrEqual(800);
+    expect(n.y + n.height).toBeLessThanOrEqual(600);
+    // A canvas too small for the region's origin falls back to its own corner.
+    const tiny = { ...blankConfig(), canvas: { ...blankConfig().canvas, width: 100, height: 50 } };
+    const t = fitMapAreaToAspect(tiny, 100, 50).canvas.map_area!;
+    expect(t).toEqual({ x: 0, y: 0, width: 100, height: 50 });
   });
 });
 

@@ -312,6 +312,72 @@ TEST_CASE("the plant overlay shows thirst, happy range, the three stats and seen
   CHECK(hidden(w.scrim));
 }
 
+TEST_CASE("re-stamped readings show no seen time; source timestamps keep it") {
+  // On the panel every value is re-stamped while Home Assistant is connected (D-012), so its
+  // last_updated is "now" and "seen just now" would be a claim nobody checked (D-046).
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  OverlayView ov;
+  ov.pin_index = 1;
+  ov.rows.push_back(test::row(
+      test::fresh(Role::Moisture, 0.96, Severity::Danger, default_band(Layer::Soil)), "%", 1000));
+  vm.overlay = ov;
+  SourceStatus restamped;
+  restamped.restamped = true;
+  rig.screen->update(vm, rig.header, 1000, restamped);
+  CHECK(text(rig.w().overlay_subtitle) == "West");
+  // Disconnected: nothing is re-stamped, so the age is the honest "last confirmed".
+  SourceStatus offline;
+  offline.offline = true;
+  rig.screen->update(vm, rig.header, 1000 + 300, offline);
+  CHECK(text(rig.w().overlay_subtitle) == "West   seen 5 min ago");
+  // Positive control: the host's default status shows the seen time too.
+  rig.show(vm, 1000 + 600);
+  CHECK(text(rig.w().overlay_subtitle) == "West   seen 10 min ago");
+}
+
+TEST_CASE("offline replaces the house summary in the warn colour and clears on reconnect") {
+  Rig rig;
+  const ViewModel vm = test::temperature_vm(rig.config);
+  rig.show(vm);
+  CHECK(text(rig.w().summary) == rig.header.summary);
+  CHECK(text_rgb(rig.w().summary) == theme::kTextSecondary);
+  SourceStatus offline;
+  offline.offline = true;
+  rig.screen->update(vm, rig.header, 1000, offline);
+  CHECK(text(rig.w().summary) == "Offline");
+  CHECK(text_rgb(rig.w().summary) == theme::kWarn);
+  // A new summary while still offline does not replace the warning.
+  rig.screen->update(vm, HeaderText{"09:00", "House 30.0\xC2\xB0"}, 1000, offline);
+  CHECK(text(rig.w().summary) == "Offline");
+  rig.show(vm);
+  CHECK(text(rig.w().summary) == rig.header.summary);
+  CHECK(text_rgb(rig.w().summary) == theme::kTextSecondary);
+}
+
+TEST_CASE("a heat image behind the active layer is dimmed until it catches up") {
+  Rig rig;
+  for (auto& p : rig.heat) p = 0xF800;  // pure red
+  const ViewModel vm = test::temperature_vm(rig.config);
+  auto px = [&]() {
+    rig.display.render();
+    return rig.display.framebuffer()[static_cast<std::size_t>(77 + 300) * 1280U + 41U + 300U];
+  };
+  rig.show(vm);
+  CHECK(px() == 0xF800);
+  SourceStatus behind;
+  behind.heat_behind = true;
+  rig.screen->update(vm, rig.header, 1000, behind);
+  const std::uint16_t dimmed = px();
+  CHECK(dimmed != 0xF800);
+  CHECK((dimmed >> 11) < 0x1F / 2);  // well under half the red: clearly not the layer's colour
+  const std::size_t before = rig.screen->writes();
+  rig.screen->update(vm, rig.header, 1000, behind);
+  CHECK(rig.screen->writes() == before);  // unchanged status writes nothing
+  rig.show(vm);
+  CHECK(px() == 0xF800);
+}
+
 TEST_CASE("a non-plant overlay has no thirst row and lists its rows as stats") {
   Rig rig;
   ViewModel vm = test::temperature_vm(rig.config);

@@ -117,25 +117,37 @@ void HeatRasterizer::render(const HeatField& field, const std::vector<Rgb565>& c
   render_rows(field, cell_colours, out, 0, height_);
 }
 
-void HeatRasterizer::render_rows(const HeatField& field, const std::vector<Rgb565>& cell_colours,
-                                 Rgb565* out, std::int32_t row_begin, std::int32_t row_end) const {
+HeatRasterizer::Prepared HeatRasterizer::prepare(const HeatField& field,
+                                                 const std::vector<Rgb565>& cell_colours) const {
   const std::size_t cell_count = static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_);
-  const bool field_ok = field.cols == cols_ && field.rows == rows_ &&
-                        field.cells.size() == cell_count && cell_colours.size() == cell_count;
-  const auto ucols = static_cast<std::size_t>(cols_);
+  Prepared p;
+  p.field_ok = field.cols == cols_ && field.rows == rows_ && field.cells.size() == cell_count &&
+               cell_colours.size() == cell_count;
   // Per room, its first Value cell (row-major): the last resort for pixels too far from any of
   // their room's Value cells for the local search (a narrow extension between cell centres).
-  // On the stack: render() never allocates.
-  std::array<std::int32_t, kNoRoom> first_value;
-  first_value.fill(-1);
-  if (field_ok) {
+  // By value, no heap: render() never allocates.
+  p.first_value.fill(-1);
+  if (p.field_ok) {
     for (std::size_t c = 0; c < cell_count; ++c) {
       const std::uint8_t room = cell_room_[c];
-      if (room != kNoRoom && first_value[room] < 0 && field.cells[c].state == CellState::Value) {
-        first_value[room] = static_cast<std::int32_t>(c);
+      if (room != kNoRoom && p.first_value[room] < 0 && field.cells[c].state == CellState::Value) {
+        p.first_value[room] = static_cast<std::int32_t>(c);
       }
     }
   }
+  return p;
+}
+
+void HeatRasterizer::render_rows(const Prepared& prepared, const HeatField& field,
+                                 const std::vector<Rgb565>& cell_colours, Rgb565* out,
+                                 std::int32_t row_begin, std::int32_t row_end) const {
+  // The size checks again (cheap): a Prepared from another field must not let a bad field be
+  // read out of bounds.
+  const std::size_t cell_count = static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_);
+  const bool field_ok = prepared.field_ok && field.cols == cols_ && field.rows == rows_ &&
+                        field.cells.size() == cell_count && cell_colours.size() == cell_count;
+  const auto& first_value = prepared.first_value;
+  const auto ucols = static_cast<std::size_t>(cols_);
 
   const std::int32_t first = row_begin < 0 ? 0 : row_begin;
   const std::int32_t last = row_end > height_ ? height_ : row_end;

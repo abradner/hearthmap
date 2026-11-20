@@ -101,12 +101,48 @@ export function segmentsIntersect(a: Vec, b: Vec, c: Vec, d: Vec): boolean {
 const v = (p: MapPoint): Vec => ({ x: p[0], y: p[1] });
 
 /**
- * A polygon is simple when no two non-adjacent edges touch, and no vertex repeats. Fewer than
- * three vertices is not a polygon at all, so not simple.
+ * True when every vertex lies on one line (zero area): exactly core's zero_area()
+ * (core/src/config.cpp), whose arithmetic JavaScript's doubles reproduce bit for bit. The line
+ * runs from vertex 0 to the vertex farthest from it; a vertex is off it only when its cross
+ * product exceeds a bound of a few ulps scaled by the coordinates' magnitude, so points meant to
+ * be collinear but rounded (0.0551, 0.0681, ...) count as collinear, while a real sliver (1e-6
+ * thick in map space) does not. schema/semantic-cases.json pins the two together (D-048).
+ */
+export function isZeroArea(poly: readonly MapPoint[]): boolean {
+  const [ox, oy] = poly[0] as MapPoint;
+  let farX = 0;
+  let farY = 0;
+  let farD2 = 0;
+  for (const [x, y] of poly) {
+    const dx = x - ox;
+    const dy = y - oy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > farD2) {
+      farD2 = d2;
+      farX = dx;
+      farY = dy;
+    }
+  }
+  if (!(farD2 > 0)) return true; // every vertex in one place
+  const ulps = 16 * Number.EPSILON;
+  const direction = Math.abs(farX) + Math.abs(farY);
+  const originSize = Math.abs(ox) + Math.abs(oy);
+  for (const [x, y] of poly) {
+    const c = farX * (y - oy) - farY * (x - ox);
+    const bound = ulps * direction * (Math.abs(x) + Math.abs(y) + originSize);
+    if (Math.abs(c) > bound) return false;
+  }
+  return true;
+}
+
+/**
+ * A polygon is simple when it has area, no two non-adjacent edges touch, and no vertex repeats.
+ * Fewer than three vertices is not a polygon at all, so not simple. Mirrors core's is_simple().
  */
 export function isSimplePolygon(poly: readonly MapPoint[]): boolean {
   const n = poly.length;
   if (n < 3) return false;
+  if (isZeroArea(poly)) return false;
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       const pi = poly[i] as MapPoint;
@@ -125,8 +161,11 @@ export function isSimplePolygon(poly: readonly MapPoint[]): boolean {
       if (segmentsIntersect(a1, a2, b1, b2)) return false;
     }
   }
-  // Collinear adjacent edges that fold back on themselves (a spike) overlap without the test
-  // above seeing it: check that consecutive edges do not reverse along one line.
+  // Collinear adjacent edges that fold back on themselves (a spike): check that consecutive
+  // edges do not reverse along one line. Mirrors core's is_simple(). A second guard: every
+  // fold-back is also caught above (with four or more vertices the far end of the spike touches
+  // a non-adjacent edge) or by isZeroArea() (a three-vertex spike is collinear); removing this
+  // loop fails no test, because no input reaches it alone.
   for (let i = 0; i < n; i++) {
     const a = v(poly[(i + n - 1) % n] as MapPoint);
     const b = v(poly[i] as MapPoint);

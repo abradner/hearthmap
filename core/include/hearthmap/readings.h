@@ -32,6 +32,12 @@ struct Reading {
   /// re-stamps every reading in state Value with the current time while the Home Assistant API
   /// connection is up, and stops re-stamping the moment it drops, so readings then age
   /// honestly. Fixtures and the host pass timestamps through exactly as given.
+  ///
+  /// Consequences on the device (D-046): `stale_after_s` (TooOld) applies only while Home
+  /// Assistant is disconnected; a probe that dies without Home Assistant marking it
+  /// `unavailable` keeps its last value and looks fresh; and the embedder tells the UI that
+  /// these times are re-stamped (ui_lvgl's SourceStatus), so no "seen N min ago" is shown for
+  /// them.
   Timestamp last_updated = 0;
 };
 

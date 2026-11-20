@@ -1,0 +1,76 @@
+{
+  "description": "Configs that the schema accepts but that core's validate() must judge, shared by core's tests (core/tests/semantic_cases_test.cpp, through a table CMake generates from this file) and the editor's (editor/test/semanticCases.test.ts), so the editor's polite checks and core's enforcement cannot drift apart (docs/decisions.md D-040, D-048). Each case is one change to the base config: a polygon for its single room, or a map area. 'valid' false means validate() reports an Error at 'path'; true means no Error at all.",
+  "base": {
+    "version": 1,
+    "canvas": { "width": 1280, "height": 800, "orientation": "landscape" },
+    "rooms": [
+      { "id": "room", "name": "Room", "polygon": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] }
+    ],
+    "pins": []
+  },
+  "cases": [
+    {
+      "name": "plain rectangle (positive control)",
+      "polygon": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+      "valid": true
+    },
+    {
+      "name": "three collinear points with inexact coordinates",
+      "polygon": [[0.0551, 0.2332], [0.0681, 0.2855], [0.0941, 0.3901]],
+      "valid": false,
+      "path": "/rooms/0/polygon"
+    },
+    {
+      "name": "three collinear points on an axis",
+      "polygon": [[0.1, 0.5], [0.4, 0.5], [0.8, 0.5]],
+      "valid": false,
+      "path": "/rooms/0/polygon"
+    },
+    {
+      "name": "identical consecutive vertices",
+      "polygon": [[0.1, 0.1], [0.6, 0.1], [0.6, 0.1], [0.6, 0.6], [0.1, 0.6]],
+      "valid": false,
+      "path": "/rooms/0/polygon"
+    },
+    {
+      "name": "first vertex repeated at the end",
+      "polygon": [[0.1, 0.1], [0.6, 0.1], [0.6, 0.6], [0.1, 0.6], [0.1, 0.1]],
+      "valid": false,
+      "path": "/rooms/0/polygon"
+    },
+    {
+      "name": "an edge folding back over the previous one",
+      "polygon": [[0.3, 0.2], [0.6, 0.2], [0.1, 0.2], [0.1, 0.6]],
+      "valid": false,
+      "path": "/rooms/0/polygon"
+    },
+    {
+      "name": "edges crossing (a bow tie)",
+      "polygon": [[0.1, 0.1], [0.6, 0.6], [0.6, 0.1], [0.1, 0.6]],
+      "valid": false,
+      "path": "/rooms/0/polygon"
+    },
+    {
+      "name": "a thin sliver, one millionth of the map thick, is a real room",
+      "polygon": [[0.1, 0.5], [0.9, 0.5], [0.5, 0.500001]],
+      "valid": true
+    },
+    {
+      "name": "map area larger than the canvas",
+      "map_area": { "x": 0, "y": 0, "width": 1300, "height": 800 },
+      "valid": false,
+      "path": "/canvas/map_area"
+    },
+    {
+      "name": "map area running off the canvas's bottom edge",
+      "map_area": { "x": 0, "y": 64, "width": 920, "height": 800 },
+      "valid": false,
+      "path": "/canvas/map_area"
+    },
+    {
+      "name": "map area exactly filling the canvas",
+      "map_area": { "x": 0, "y": 0, "width": 1280, "height": 800 },
+      "valid": true
+    }
+  ]
+}

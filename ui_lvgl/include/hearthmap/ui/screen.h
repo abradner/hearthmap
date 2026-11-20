@@ -7,7 +7,7 @@
 // enabled layers changes.
 //
 // The Screen draws; it does not decide (AGENTS.md principle 2). Its only inputs are the config,
-// the view model, the header text and `now` (for "seen N min ago").
+// the view model, the header text, `now` (for "seen N min ago") and the embedder's SourceStatus.
 #pragma once
 
 #include <array>
@@ -30,6 +30,27 @@ namespace hearthmap::ui {
 struct HeaderText {
   std::string clock;    ///< e.g. "09:00"
   std::string summary;  ///< e.g. "House 21.4°   52% RH   PM2.5 6"
+};
+
+/// What the embedder knows about its sources and its heat image that the view model does not
+/// carry (docs/decisions.md D-046). None of it is a judgement core could make: it describes the
+/// plumbing around core, so it stays out of the ViewModel. The defaults are the host's: a fixture
+/// whose timestamps are the source's own, nothing to be disconnected from, and a heat image that
+/// is always drawn for the layer shown.
+struct SourceStatus {
+  /// The readings' source is disconnected (on the panel: Home Assistant's API connection with
+  /// its state subscription is down). The top bar shows "Offline" in the warn colour instead of
+  /// the house summary, until a later update clears it.
+  bool offline = false;
+  /// The readings' last_updated were set by the embedder, not the source: the device re-stamps
+  /// every value while connected (readings.h, D-012), so its "last seen" would always read "just
+  /// now". The overlay then shows the room only, with no "seen" time.
+  bool restamped = false;
+  /// The heat image does not show the view model's active layer yet (a rebuild for the newly
+  /// selected layer is in progress, or no image has been drawn). The heat image is dimmed until
+  /// an update clears it, so a layer's colours are never shown under another layer's tab at
+  /// full strength.
+  bool heat_behind = false;
 };
 
 struct ScreenDeps {
@@ -84,7 +105,12 @@ class Screen {
   Screen& operator=(const Screen&) = delete;
 
   /// Show `vm`. Only widgets whose shown state differs from the previous call are touched.
-  void update(const ViewModel& vm, const HeaderText& header, Timestamp now);
+  void update(const ViewModel& vm, const HeaderText& header, Timestamp now,
+              const SourceStatus& status);
+  /// update() with the host's SourceStatus (all false).
+  void update(const ViewModel& vm, const HeaderText& header, Timestamp now) {
+    update(vm, header, now, SourceStatus{});
+  }
 
   /// Tell LVGL the caller rewrote the heat image buffer.
   void invalidate_heat();

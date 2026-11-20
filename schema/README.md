@@ -12,8 +12,10 @@ room existing, band ordering, calibration width, polygon simplicity) belong to c
 `validate()`, declared in `config.h`. `validate()` also re-checks every range and pattern this
 schema states, because the device's generated tables never pass through a JSON Schema
 validator: no config source may rely on the schema having run (`docs/decisions.md` D-017).
-`validate.py` checks only ids and cross-references, so the examples in CI cannot drift before
-core's validator exists.
+`validate.py` checks only ids and cross-references; core's `validate()` itself runs on the
+example through the host's tests and `hearthmap-render --check` (D-048), and
+`semantic-cases.json` holds the schema-valid configs `validate()` must refuse or accept, read by
+core's and the editor's tests alike.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r schema/requirements.txt
@@ -43,7 +45,7 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 | `rooms` | array, 1..64 | required | Room polygons (below). Order matters: where polygons overlap, the earlier room owns the overlap. |
 | `pins` | array, 0..256 | required | Sensor pins (below). Order is the tie-breaker wherever a tie can occur (hit-testing, HUD order). |
 | `layers` | object | all defaults | Per-layer bands and thresholds (below). |
-| `stale_after_s` | integer >= 1 | `10800` (3 h) | A reading whose `last_updated` is more than this many seconds before now is stale. Exactly this old is still fresh. |
+| `stale_after_s` | integer >= 1 | `10800` (3 h) | A reading whose `last_updated` is more than this many seconds before now is stale. Exactly this old is still fresh. On the panel, `last_updated` means "last confirmed": every value is re-stamped while Home Assistant is connected (D-012), so this timeout applies only while it is disconnected, and a probe that dies without going `unavailable` looks fresh (issue 11; D-046). The host takes fixture timestamps as given. |
 | `hud` | object | | `max_items` (1..20, default `6`): thirsty plants listed before "+N more". |
 | `heat` | object | | Heat-field tuning: `grid_cols` (2..256, default `48`), `grid_rows` (2..256, default `40`), `idw_power` (>0..8, default `2`). |
 
@@ -103,7 +105,7 @@ object has (D-019).
 
 Soil sensors disagree about what "dry" means, and a raw `0` is often a real reading of a
 bone-dry pot. Thirst is therefore judged against each sensor's own range, typically derived from
-its history (`tools/calibrate/`, PR 8).
+its history (`tools/calibrate/`).
 
 | Field | Type | Meaning |
 |---|---|---|

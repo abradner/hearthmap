@@ -86,7 +86,6 @@ struct HitResult {
 ///   earlier in config order. Pins of every kind are hittable whichever layer is active.
 /// - Else the first room in config order whose polygon contains the point (in map space).
 /// - Else None.
-/// Implemented in core (PR 4).
 HitResult hit_test(const Config& config, CanvasPoint point,
                    double radius_px = kDefaultPinHitRadiusPx);
 
@@ -97,7 +96,6 @@ HitResult hit_test(const Config& config, CanvasPoint point,
 ///   stays as it is.
 /// - TapHudItem: overlay_pin = pin_id when it names a pin in config, else unchanged.
 /// - CloseOverlay: overlay_pin = nullopt.
-/// Implemented in core (PR 4).
 UiState apply(const Config& config, const UiState& state, const UiEvent& event);
 
 // ---------------------------------------------------------------------------------------------
@@ -169,6 +167,23 @@ struct OverlayView {
   std::vector<OverlayRow> rows;
 };
 
+/// The top bar's house summary as numbers (D-030, D-049); ui_lvgl's summary_text() words it
+/// ("House 21.4°   52% RH   PM2.5 6"). Each part is the mean over pins in indoor rooms (a pin
+/// whose room id is unknown counts as outdoor) of Fresh assessments (assess()):
+/// - temperature, humidity: of that role, only where it feeds its layer on that pin kind
+///   (feeds_layer(): a plant's pot probe does not);
+/// - pm25: of every PM2.5 binding (any kind; no layer reads PM2.5 yet, D-003).
+/// A part with no fresh reading is nullopt. Independent of the active layer and of whether a
+/// layer is enabled. Allocates nothing.
+struct HouseSummary {
+  std::optional<double> temperature;
+  std::optional<double> humidity;
+  std::optional<double> pm25;
+};
+
+/// house_summary() for (config, readings, now).
+HouseSummary house_summary(const Config& config, const Readings& readings, Timestamp now);
+
 struct ViewModel {
   /// The layer actually shown: ui_state.active_layer when enabled, else config.default_layer
   /// (D-020). Never the requested layer when that one is disabled.
@@ -179,6 +194,8 @@ struct ViewModel {
   Hud hud;
   /// Present when ui_state.overlay_pin names a pin in config; an unknown id yields nullopt.
   std::optional<OverlayView> overlay;
+  /// house_summary(config, readings, now).
+  HouseSummary summary;
 };
 
 /// Everything the screen shows for (config, readings, now, ui_state), written into `out`,
@@ -190,12 +207,11 @@ struct ViewModel {
 /// unit is still shown in full but may allocate. Opening an overlay may allocate once (each row's
 /// unit is reserved to kOverlayUnitCapacity then); closing it releases its rows. If
 /// ui_state.active_layer is disabled, the view model uses config.default_layer instead
-/// (ViewModel::active_layer says which). Implemented in core (PR 4).
+/// (ViewModel::active_layer says which).
 void build_view_model(const Config& config, const Readings& readings, Timestamp now,
                       const UiState& ui_state, ViewModel& out);
 
 /// Returning form of build_view_model(); allocates.
-/// Implemented in core (PR 4).
 ViewModel build_view_model(const Config& config, const Readings& readings, Timestamp now,
                            const UiState& ui_state);
 
@@ -205,12 +221,10 @@ ViewModel build_view_model(const Config& config, const Readings& readings, Times
 /// disabled. Pins in outdoor rooms are included; compute_heat_field() ignores them, so the
 /// outdoor rule lives in one place. Pins whose room id is unknown are skipped (validate()
 /// makes that impossible in a usable config).
-/// Implemented in core (PR 4).
 void heat_samples(const Config& config, const Readings& readings, Timestamp now, Layer layer,
                   std::vector<HeatSample>& out);
 
 /// Returning form of heat_samples(); allocates.
-/// Implemented in core (PR 4).
 std::vector<HeatSample> heat_samples(const Config& config, const Readings& readings, Timestamp now,
                                      Layer layer);
 

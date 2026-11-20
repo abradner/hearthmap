@@ -104,3 +104,10 @@ TEST_CASE("thirst verdicts") {
   a.value = 0.4;
   CHECK(thirst_verdict(a) == "no data");
 }
+
+TEST_CASE("summary text words core's HouseSummary, leaving out empty parts") {
+  CHECK(summary_text(HouseSummary{21.0, 50.75, 6.0}) == "House 21.0\xC2\xB0   51% RH   PM2.5 6");
+  CHECK(summary_text(HouseSummary{std::nullopt, 52.0, std::nullopt}) == "House 52% RH");
+  CHECK(summary_text(HouseSummary{std::nullopt, std::nullopt, 12.0}) == "House PM2.5 12");
+  CHECK(summary_text(HouseSummary{}) == "House: no data");
+}
