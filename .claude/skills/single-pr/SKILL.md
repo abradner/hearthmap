@@ -97,8 +97,9 @@ Then send one ready line and **stop**: `#<n> ready: head <full sha>, CI <state> 
 
 The gate is `AGENTS.md` §8: a live operator go-ahead, and every new session starts at the manual
 gate. On the go-ahead, **re-run the review doc's §6 check
-first**: anything pushed since Phase 5 moved the head past what was reviewed. Then merge per the
-repo's strategy, delete the branch only if nothing is based on it, and confirm the merge landed
+first**: anything pushed since Phase 5 moved the head past what was reviewed. If the head moved,
+also repeat Phase 5's CI check at the new head: merge only when that head's CI is complete and
+passing. Then merge per the repo's strategy, bound to that head (`--match-head-commit <sha>`), delete the branch only if nothing is based on it, and confirm the merge landed
 rather than trusting the command's return. Restart the working branch from fresh main:
 
 ```bash
