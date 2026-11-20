@@ -99,10 +99,54 @@ bool valid_entity_id(const std::string& s) {
   return true;
 }
 
-// Name length is counted in bytes (config.h, validate()): stricter than the schema's code
-// points for non-ASCII names, never looser.
+// The number of Unicode code points in `s` if it is well-formed UTF-8 (no overlong forms, no
+// surrogates, nothing above U+10FFFF, no truncated sequence), else nullopt. JSON Schema's
+// maxLength counts code points, so this is what a name's length means (config.h, validate()).
+std::optional<std::size_t> utf8_code_points(const std::string& s) {
+  std::size_t count = 0;
+  std::size_t i = 0;
+  const std::size_t n = s.size();
+  while (i < n) {
+    const auto b0 = static_cast<unsigned char>(s[i]);
+    std::size_t len = 0;
+    std::uint32_t cp = 0;
+    std::uint32_t min = 0;
+    if (b0 < 0x80U) {
+      len = 1;
+      cp = b0;
+    } else if ((b0 & 0xE0U) == 0xC0U) {
+      len = 2;
+      cp = b0 & 0x1FU;
+      min = 0x80U;
+    } else if ((b0 & 0xF0U) == 0xE0U) {
+      len = 3;
+      cp = b0 & 0x0FU;
+      min = 0x800U;
+    } else if ((b0 & 0xF8U) == 0xF0U) {
+      len = 4;
+      cp = b0 & 0x07U;
+      min = 0x10000U;
+    } else {
+      return std::nullopt;  // a continuation byte where a sequence should start, or 0xF8..0xFF
+    }
+    if (len > n - i) return std::nullopt;  // truncated
+    for (std::size_t k = 1; k < len; ++k) {
+      const auto b = static_cast<unsigned char>(s[i + k]);
+      if ((b & 0xC0U) != 0x80U) return std::nullopt;
+      cp = (cp << 6U) | (b & 0x3FU);
+    }
+    if (cp < min) return std::nullopt;                        // overlong
+    if (cp >= 0xD800U && cp <= 0xDFFFU) return std::nullopt;  // surrogate
+    if (cp > 0x10FFFFU) return std::nullopt;
+    i += len;
+    ++count;
+  }
+  return count;
+}
+
 bool valid_name(const std::string& s) {
-  return !s.empty() && s.size() <= kMaxNameLength;
+  const std::optional<std::size_t> length = utf8_code_points(s);
+  return length && *length >= 1 && *length <= kMaxNameLength;
 }
 
 bool in_unit_square(MapPoint p) {
@@ -248,7 +292,8 @@ void check_rooms(const Config& config, Issues& out) {
     } else if (!seen.insert(room.id).second) {
       out.error(base + "/id", "duplicate room id '" + room.id + "'");
     }
-    if (!valid_name(room.name)) out.error(base + "/name", "name must be 1..48 characters");
+    if (!valid_name(room.name))
+      out.error(base + "/name", "name must be 1..48 characters of valid UTF-8");
     bool vertices_in_range = true;
     for (std::size_t v = 0; v < room.polygon.size(); ++v) {
       if (!in_unit_square(room.polygon[v])) {
@@ -310,7 +355,8 @@ void check_pins(const Config& config, Issues& out) {
     } else if (!seen.insert(pin.id).second) {
       out.error(base + "/id", "duplicate pin id '" + pin.id + "'");
     }
-    if (!valid_name(pin.name)) out.error(base + "/name", "name must be 1..48 characters");
+    if (!valid_name(pin.name))
+      out.error(base + "/name", "name must be 1..48 characters of valid UTF-8");
     const bool position_ok = in_unit_square(pin.position);
     if (!position_ok) out.error(base + "/position", "position must lie within 0..1");
     const bool soil_kind = pin.kind == PinKind::Soil || pin.kind == PinKind::Plant;
