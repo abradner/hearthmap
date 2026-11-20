@@ -99,6 +99,7 @@ void HearthmapComponent::setup() {
   builder.step = [this](hm::Config& c, std::size_t k) { this->source_.build_step(c, k); };
   this->pipeline_ = std::make_unique<hearthmap_device::PanelPipeline>(std::move(builder),
                                                                       hm::ui::theme::kHeatPalette);
+  this->pipeline_->set_heat_refresh_interval_ms(this->heat_refresh_interval_ms_);
   hook_lvgl_log();  // after the lvgl component's setup, whose callback this takes over
   this->subscribe_();
   this->show_status_("Starting");
@@ -278,60 +279,84 @@ void HearthmapComponent::invalidate_band_() {
   this->last_band_ms_ = now;
 }
 
+void HearthmapComponent::refresh_view_(uint32_t start_ms, bool connected) {
+  const hm::Timestamp now = this->clock_->timestamp_now();
+  // R8: confirmed while the HA connection that subscribed to states is up; aging otherwise.
+  hearthmap_device::restamp(this->readings_, connected, now);
+  this->pipeline_->update(this->readings_, now, this->ui_state_, start_ms);
+  // The top bar's summary from the same readings and time as the view model.
+  this->summary_ = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
+  this->connected_ = connected;
+  this->dirty_ = false;
+  this->last_view_ms_ = start_ms;
+  if (!this->viewed_) ESP_LOGI(TAG, "first view model built");
+  this->viewed_ = true;
+}
+
+void HearthmapComponent::show_view_() {
+  hm::ui::HeaderText header;
+  header.clock = this->clock_->now().strftime("%H:%M");
+  header.summary = this->summary_;
+  hm::ui::SourceStatus status;
+  status.offline = !this->connected_;
+  status.restamped = this->connected_;  // restamp() runs exactly while connected (D-046)
+  status.heat_behind = this->pipeline_->heat_behind();
+  this->dimmed_ = status.heat_behind;
+  this->screen_->update(this->pipeline_->view(), header, this->clock_->timestamp_now(), status);
+}
+
 void HearthmapComponent::frame_slice_() {
   this->invalidate_band_();
   const uint32_t start = millis();
-  if (!this->frame_active_) {
-    const bool touched = !this->pending_.empty();
-    for (const hm::UiEvent& e : this->pending_) {
-      this->ui_state_ = hm::apply(this->pipeline_->config(), this->ui_state_, e);
-    }
-    this->pending_.clear();
-    const uint32_t since = start - this->last_frame_ms_;
-    const bool due = !this->first_frame_logged_ || touched || since >= this->refresh_interval_ms_ ||
-                     (this->dirty_ && since >= this->min_redraw_interval_ms_);
-    if (!due) return;
-    const hm::Timestamp now = this->clock_->timestamp_now();
-    // R8: confirmed while the HA connection that subscribed to states is up; aging otherwise.
-    hearthmap_device::restamp(this->readings_,
-                              api::global_api_server->is_connected_with_state_subscription(), now);
-    this->pipeline_->begin_frame(this->readings_, now, this->ui_state_);
-    // The top bar's summary from the same readings and time as the frame's view model, so a
-    // state that arrives between slices cannot pair a new summary with the older map; it marks
-    // the readings dirty and shows in the next frame.
-    this->frame_summary_ = hm::host::house_summary(this->pipeline_->config(), this->readings_, now);
-    this->dirty_ = false;
-    this->frame_active_ = true;
-    this->frame_started_ms_ = start;
-    this->last_frame_ms_ = start;
-    if (!this->first_frame_logged_) ESP_LOGI(TAG, "first frame started");
+  // The view model: taps, a change of connection state, new readings and the clock reach the
+  // screen within this slice, whatever the heat image is doing (D-047).
+  const bool touched = !this->pending_.empty();
+  for (const hm::UiEvent& e : this->pending_) {
+    this->ui_state_ = hm::apply(this->pipeline_->config(), this->ui_state_, e);
   }
-  bool done = false;
-  do {
-    done = this->pipeline_->frame_step(kFieldRowsPerStep);
-  } while (!done && millis() - start < kSliceBudgetMs);
-  if (!done) return;
+  this->pending_.clear();
+  const bool connected = api::global_api_server->is_connected_with_state_subscription();
+  const uint32_t since = start - this->last_view_ms_;
+  const bool due = !this->viewed_ || touched || connected != this->connected_ ||
+                   since >= this->refresh_interval_ms_ ||
+                   (this->dirty_ && since >= this->min_redraw_interval_ms_);
+  if (due) {
+    this->refresh_view_(start, connected);
+    this->show_view_();
+  }
 
-  const hm::Timestamp now = this->clock_->timestamp_now();
-  if (this->pipeline_->published()) {
-    // The finished back buffer is now the front: point the screen's image at it, then repaint
-    // in bands (invalidate_band_), together with the view model applied below.
-    this->heat_dsc_.data = reinterpret_cast<const uint8_t*>(this->pipeline_->front());
+  // The heat image, in the rest of the slice: rebuilt only when the pipeline says so.
+  bool idle = false;
+  do {
+    idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
+    if (!idle && !this->heat_active_) {
+      this->heat_active_ = true;
+      this->heat_started_ms_ = millis();
+    }
+  } while (!idle && millis() - start < kSliceBudgetMs);
+  if (!idle) return;
+  this->heat_active_ = false;
+  if (!this->pipeline_->take_published()) return;
+
+  // The finished back buffer is now the front: point the screen's image at it. If the map was
+  // dimmed (a layer change, or the first image), undimming repaints it whole; otherwise it is
+  // repainted in bands (invalidate_band_).
+  const bool was_dimmed = this->dimmed_;
+  this->heat_dsc_.data = reinterpret_cast<const uint8_t*>(this->pipeline_->front());
+  if (was_dimmed) {
+    this->band_row_ = 1 << 30;
+  } else {
     this->band_row_ = 0;
     this->last_band_ms_ = 0;
   }
-  hm::ui::HeaderText header;
-  header.clock = this->clock_->now().strftime("%H:%M");
-  header.summary = this->frame_summary_;
-  this->screen_->update(this->pipeline_->view(), header, now);
-  this->frame_active_ = false;
-  const uint32_t took = millis() - this->frame_started_ms_;
-  if (!this->first_frame_logged_) {
-    ESP_LOGI(TAG, "first frame done in %u ms", static_cast<unsigned>(took));
-    this->first_frame_logged_ = true;
+  this->show_view_();
+  const uint32_t took = millis() - this->heat_started_ms_;
+  if (!this->first_heat_logged_) {
+    ESP_LOGI(TAG, "first heat image done in %u ms", static_cast<unsigned>(took));
+    this->first_heat_logged_ = true;
   } else {
-    ESP_LOGD(TAG, "frame done in %u ms (heat image %s); LVGL warnings %u, errors %u so far",
-             static_cast<unsigned>(took), this->pipeline_->published() ? "new" : "unchanged",
+    ESP_LOGD(TAG, "heat image done in %u ms (%u rebuilds); LVGL warnings %u, errors %u so far",
+             static_cast<unsigned>(took), static_cast<unsigned>(this->pipeline_->heat_rebuilds()),
              static_cast<unsigned>(lvgl_warnings()), static_cast<unsigned>(lvgl_errors()));
   }
 }
@@ -365,11 +390,13 @@ void HearthmapComponent::dump_config() {
                 "  Entities subscribed: %u\n"
                 "  Photo images (all sizes): %u\n"
                 "  Refresh interval: %u ms\n"
-                "  Min redraw interval: %u ms",
+                "  Min redraw interval: %u ms\n"
+                "  Heat refresh interval: %u ms",
                 hearthmap_gen::kConfigSourceName,
                 static_cast<unsigned>(hearthmap_gen::kSubscribedEntityCount),
                 hearthmap_gen::kPhotoCount, static_cast<unsigned>(this->refresh_interval_ms_),
-                static_cast<unsigned>(this->min_redraw_interval_ms_));
+                static_cast<unsigned>(this->min_redraw_interval_ms_),
+                static_cast<unsigned>(this->heat_refresh_interval_ms_));
   if (this->phase_ == Phase::Failed)
     ESP_LOGCONFIG(TAG, "  FAILED: config refused or out of memory, see errors above");
 }

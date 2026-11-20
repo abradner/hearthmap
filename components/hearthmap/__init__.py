@@ -6,7 +6,8 @@ YAML:
       config: hearthmap.json   # a schema-valid config (schema/hearthmap.schema.json)
       photos: photos           # directory holding <photo id>.png for plant pins
       time_id: ha_time         # an ESPHome time source; nothing is judged before it is valid
-      # optional: lvgl_id, refresh_interval (30s), min_redraw_interval (500ms)
+      # optional: lvgl_id, refresh_interval (30s), min_redraw_interval (500ms),
+      #           heat_refresh_interval (15s)
 
 Build-time work lives in hearthmap_codegen.py (pure Python, unit-tested); this file is only the
 ESPHome surface. See README.md for how core and ui_lvgl reach the build.
@@ -35,6 +36,7 @@ CONF_CONFIG = "config"
 CONF_PHOTOS = "photos"
 CONF_REFRESH_INTERVAL = "refresh_interval"
 CONF_MIN_REDRAW_INTERVAL = "min_redraw_interval"
+CONF_HEAT_REFRESH_INTERVAL = "heat_refresh_interval"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -102,6 +104,12 @@ CONFIG_SCHEMA = cv.All(
                 cv.positive_time_period_milliseconds,
                 cv.Range(min=cv.TimePeriod(milliseconds=50), max=cv.TimePeriod(seconds=10)),
             ),
+            # How often changed readings may rebuild the heat image (about a second of work on the
+            # panel). The first image and a layer change are never held back (README.md, "Cost").
+            cv.Optional(CONF_HEAT_REFRESH_INTERVAL, default="15s"): cv.All(
+                cv.positive_time_period_milliseconds,
+                cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(minutes=10)),
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_document,
@@ -164,6 +172,7 @@ async def to_code(config: dict) -> None:
     cg.add(var.set_time(await cg.get_variable(config[CONF_TIME_ID])))
     cg.add(var.set_refresh_interval_ms(config[CONF_REFRESH_INTERVAL].total_milliseconds))
     cg.add(var.set_min_redraw_interval_ms(config[CONF_MIN_REDRAW_INTERVAL].total_milliseconds))
+    cg.add(var.set_heat_refresh_interval_ms(config[CONF_HEAT_REFRESH_INTERVAL].total_milliseconds))
     # Subscribing to HA states from C++ needs the API's state-subscription code compiled in.
     cg.add_define("USE_API_HOMEASSISTANT_STATES")
 

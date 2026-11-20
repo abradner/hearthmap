@@ -551,3 +551,31 @@ device `stale_after_s` applies only while Home Assistant is disconnected, and a 
 without going `unavailable` looks fresh (issue 11). **Would change if:** Home Assistant's
 `last_reported` reaches the device (the overlay could then show a real "seen" time), or the
 summary is wanted alongside the warning.
+
+### D-047 Heat images are rebuilt on a layer change at once, on new readings at most every 15 s; taps never wait (provisional)
+
+**What happened:** on the panel one heat rebuild (field, cell colours, 920 x 736 image) takes about
+1.1 s. Frames were allowed every 500 ms and compared fields exactly, so chatty sensors kept the
+pipeline permanently mid-frame; UI events were applied only between frames and the screen updated
+only at frame end, so a tap could wait a second or more. **Default:** `PanelPipeline` splits the
+two. `update()` rebuilds the view model at once (a few ms) and the component calls it in the same
+`loop()` call as a tap, a connection change, or (coalesced by `min_redraw_interval`) new readings,
+then updates the screen. `heat_step()` does the heat work in the rest of each slice. A rebuild
+starts at once for the first image and for a layer change (one in flight for another layer is
+restarted, or dropped when the shown image is current again); for changed samples on the shown
+layer at most once per `heat_refresh_interval` (new YAML option, default 15 s, 1 s to 10 min),
+counted between rebuild starts; for unchanged samples never (samples are the image's whole
+input, compared exactly, so the field is not computed to find out). Samples that change while a
+rebuild runs are picked up when it lands, under the same interval. **What the user sees:** pins,
+values, the HUD, tabs and the overlay follow every reading and tap at once; the heat image may lag
+the pins by up to the interval. After a layer change the tab and the pins switch at once and the
+map is dimmed to 40 % until the new layer's image lands (about a second on the panel), so one
+layer's colours never show at full strength under another's tab. Dimming and undimming each
+repaint the map whole (a style change invalidates the image); other new images still repaint in
+48-row bands (D-038). The first image is dimmed the same way until it lands. **Guard:**
+`components/hearthmap/tests/test_cpp.py::test_heat_rebuild_policy_and_immediate_taps` (unchanged
+readings, layer-only change, readings changing within the interval, a tap and a layer change
+during a rebuild, tabbing away and back); each of "always rebuild", "never record the shown
+samples", "ignore a layer change", "no interval" and "update() waits for the rebuild" was seen to
+fail it. **Would change if:** the panel shows the lag is confusing (shorter interval), or rebuilds
+get cheap enough to drop the interval.

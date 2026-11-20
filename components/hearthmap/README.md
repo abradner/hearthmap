@@ -23,6 +23,7 @@ hearthmap:
   # lvgl_id: ...            only needed with more than one lvgl instance
   # refresh_interval: 30s   re-judge freshness and redraw even when nothing changed (1s..10min)
   # min_redraw_interval: 500ms  coalesce bursts of state updates (50ms..10s)
+  # heat_refresh_interval: 15s  how often changed readings may rebuild the heat image (1s..10min)
 ```
 
 A full example device is `examples/flat/esphome/flat-panel.yaml`.
@@ -65,8 +66,16 @@ config is proven to be refused, and the example proven to load.
 - States go through `readings_ingest.h`: `unavailable` and `unknown` map to their reading states,
   a finite decimal number to a value, anything else to Unknown.
 - **Ruling R8** (D-012): while the API connection with a state subscription is up, every reading
-  holding a value is re-stamped to now on each rebuild; when it drops, re-stamping stops and
-  readings age into TooOld honestly.
+  holding a value is re-stamped to now on each view rebuild; when it drops, re-stamping stops and
+  readings age into TooOld honestly. Two consequences (D-046):
+  - **`stale_after_s` applies only while Home Assistant is disconnected.** While connected every
+    value is "confirmed" each rebuild, so it never ages. A probe that dies without Home Assistant
+    marking it `unavailable` keeps its last value and looks fresh (issue 11).
+  - The detail overlay shows **no "seen N min ago"** while connected (it would always read "just
+    now"), only the room. While disconnected it shows the honest time since the last confirmation.
+- **Offline**: while that connection is down, the top bar shows "Offline" in the warn colour in
+  place of the house summary; it clears on reconnect. A change of connection state redraws at
+  once.
 - **Time**: until the `time_id` source is valid the screen says "Waiting for time" and nothing is
   judged, rather than marking every sensor stale.
 - **Nothing blocks** (D-038). `setup()` only subscribes, takes over LVGL's log output (to count
@@ -78,13 +87,21 @@ config is proven to be refused, and the example proven to load.
     room scanner), mask rows and rasterizer rows (4 per step), then the `Screen`. Each stage logs
     `boot: <stage> started (N units)` and `boot: <stage> done in N ms over K loop slices (longest
     step X ms)` at INFO, then `boot: complete in N ms`;
-  - frames: on a state change (at most every `min_redraw_interval`), at least every
-    `refresh_interval`, and right after a touch: view model and heat samples, one heat-field row
-    per step, then, only if the field or layer changed, eight heat-image rows per step into a
-    back buffer, swapped in whole when complete; the screen then repaints the map in 48-row bands,
-    one per `loop()` call at most every 25 ms, instead of one long LVGL refresh. The first frame
-    logs its time at INFO; later ones log at DEBUG with the running count of LVGL warnings and
-    errors.
+  - view (D-047): on a state change (at most every `min_redraw_interval`), at least every
+    `refresh_interval`, on a change of connection state, and in the same `loop()` call as a
+    touch: core's view model and the screen update, a few milliseconds. Pins, values, the HUD,
+    the tabs and the overlay always show the latest readings and the latest tap, even while a
+    heat image is being rebuilt;
+  - heat image (D-047): rebuilt in the rest of each slice, one heat-field row per step, then
+    eight image rows per step into a back buffer, swapped in whole when complete. A rebuild
+    starts at once for the first image and for a layer change (restarting one in flight for
+    another layer); for changed readings on the same layer at most once per
+    `heat_refresh_interval`, so chatty sensors cannot keep the pipeline busy; for unchanged
+    readings never. Until a layer change's image lands (about a second on the panel) the map is
+    **dimmed** to 40 %, so one layer's colours never show at full strength under another's tab;
+    undimming repaints the map whole. Otherwise a new image is repainted in 48-row bands, one per
+    `loop()` call at most every 25 ms, instead of one long LVGL refresh. The first image logs its
+    time at INFO; later ones log at DEBUG with the running count of LVGL warnings and errors.
 - LVGL's image cache is off in ESPHome's build (`LV_CACHE_DEF_SIZE` 0), so pointing the heat
   image descriptor at the other buffer is enough for LVGL to draw the new pixels.
 
@@ -132,7 +149,9 @@ declares), a `HeatRasterizer` writing into a heat image buffer the glue allocate
 `colour_cells()` through core's `ColourLut` with the spec palette, the component as the
 `EventSink` (events are queued and applied with core's `apply()` in `loop()`, as `ports.h`
 asks) and the generated photos as the `ImageProvider`. The heat image is redrawn only when the
-active layer or the heat field changed. The top bar's house summary uses the host's
+active layer or the heat samples changed (D-047). The glue tells the `Screen` what the view model
+does not carry through `hm::ui::SourceStatus`: offline, re-stamped timestamps, and a heat image
+behind the active layer (D-046). The top bar's house summary uses the host's
 `house_summary()` (`host/src/summary.cpp`, copied into the build like the libraries): a stopgap
 until core has a view-model field for it (docs/decisions.md D-030).
 

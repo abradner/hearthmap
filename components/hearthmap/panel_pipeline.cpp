@@ -8,11 +8,14 @@ namespace hm = ::hearthmap;
 
 namespace {
 
-bool same_field(const hm::HeatField& a, const hm::HeatField& b) {
-  if (a.cols != b.cols || a.rows != b.rows || a.cells.size() != b.cells.size()) return false;
-  for (std::size_t i = 0; i < a.cells.size(); ++i) {
-    if (a.cells[i].state != b.cells[i].state) return false;
-    if (a.cells[i].state == hm::CellState::Value && a.cells[i].value != b.cells[i].value) {
+// Samples are the heat image's whole input besides the config, so equal samples (exactly:
+// same order, positions, rooms and float values) draw the same image, and the rebuild can be
+// skipped without computing the field at all.
+bool same_samples(const std::vector<hm::HeatSample>& a, const std::vector<hm::HeatSample>& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].room_index != b[i].room_index || a[i].value != b[i].value ||
+        a[i].position.x != b[i].position.x || a[i].position.y != b[i].position.y) {
       return false;
     }
   }
@@ -122,39 +125,67 @@ PanelPipeline::Stage PanelPipeline::boot_step(std::int32_t rows) {
   return stage_;
 }
 
-void PanelPipeline::begin_frame(const hm::Readings& readings, hm::Timestamp now,
-                                const hm::UiState& state) {
-  if (stage_ != Stage::Ready) return;
-  hm::build_view_model(config_, readings, now, state, view_);
-  hm::heat_samples(config_, readings, now, view_.active_layer, samples_);
+void PanelPipeline::start_rebuild(std::uint32_t mono_ms) {
+  job_samples_.assign(latest_.begin(), latest_.end());  // reuses storage once warm
+  job_layer_ = view_.active_layer;
   field_ok_ = hm::begin_heat_field(mask_, field_);
   field_row_ = 0;
   image_row_ = -1;
-  frame_done_ = false;
-  published_ = false;
+  job_active_ = true;
+  held_ = false;
+  last_start_ms_ = mono_ms;
+  started_once_ = true;
+  ++rebuilds_;
 }
 
-bool PanelPipeline::frame_step(std::int32_t rows) {
-  if (frame_done_) return true;
+void PanelPipeline::update(const hm::Readings& readings, hm::Timestamp now,
+                           const hm::UiState& state, std::uint32_t mono_ms) {
+  if (stage_ != Stage::Ready) return;
+  hm::build_view_model(config_, readings, now, state, view_);
+  const hm::Layer layer = view_.active_layer;
+  hm::heat_samples(config_, readings, now, layer, latest_);
+  const bool layer_shown = heat_valid_ && shown_layer_ == layer;
+  const bool image_current = layer_shown && same_samples(latest_, shown_samples_);
+  if (job_active_) {
+    // A rebuild for another layer is abandoned: for the shown image if that is current again
+    // (a tab tapped away and back), else restarted for the new layer. One for this layer runs
+    // on with the samples it started from; changes since are picked up after it lands.
+    if (job_layer_ != layer) {
+      if (image_current) {
+        job_active_ = false;
+      } else {
+        start_rebuild(mono_ms);
+      }
+    }
+    held_ = false;
+    return;
+  }
+  if (!layer_shown) {
+    start_rebuild(mono_ms);  // the first image, or a layer change: never held back
+    return;
+  }
+  held_ = !image_current;  // heat_step() starts it once the interval allows
+}
+
+bool PanelPipeline::heat_step(std::int32_t rows, std::uint32_t mono_ms) {
+  if (!job_active_) {
+    if (!held_ || stage_ != Stage::Ready) return true;
+    if (started_once_ && mono_ms - last_start_ms_ < heat_interval_ms_) return true;
+    start_rebuild(mono_ms);
+  }
   if (rows < 1) rows = 1;
   if (field_ok_ && field_row_ < mask_.rows) {
     const std::int32_t end = field_row_ + rows;
-    hm::compute_heat_field_rows(config_, mask_, samples_, field_row_, end, field_);
+    hm::compute_heat_field_rows(config_, mask_, job_samples_, field_row_, end, field_);
     field_row_ = end < mask_.rows ? end : mask_.rows;
     if (field_row_ < mask_.rows) return false;
   }
-  // The heat image is one pass over every map pixel: redraw it only when the layer or the field
-  // actually changed. It is drawn into the back buffer, a slice per step, and swapped in whole
-  // at the end, so a repaint between slices (a pulse animation over the map) never shows a
-  // half-written image under the previous view model.
-  const hm::Layer layer = view_.active_layer;
   if (image_row_ < 0) {
-    if (back_ == nullptr ||
-        (heat_valid_ && layer == shown_layer_ && same_field(field_, shown_field_))) {
-      frame_done_ = true;
+    if (back_ == nullptr) {
+      job_active_ = false;  // nowhere to draw (the embedder never gave buffers)
       return true;
     }
-    hm::ui::colour_cells(field_, luts_[hm::index_of(layer)], cell_colours_);
+    hm::ui::colour_cells(field_, luts_[hm::index_of(job_layer_)], cell_colours_);
     image_row_ = 0;
     return false;
   }
@@ -166,11 +197,13 @@ bool PanelPipeline::frame_step(std::int32_t rows) {
     if (image_row_ < height) return false;
   }
   std::swap(front_, back_);
-  std::swap(shown_field_, field_);
-  shown_layer_ = layer;
+  std::swap(shown_samples_, job_samples_);
+  shown_layer_ = job_layer_;
   heat_valid_ = true;
   published_ = true;
-  frame_done_ = true;
+  job_active_ = false;
+  // Samples that moved on while this rebuild ran wait for the interval, like any other change.
+  held_ = shown_layer_ == view_.active_layer && !same_samples(latest_, shown_samples_);
   return true;
 }
 
