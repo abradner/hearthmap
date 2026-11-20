@@ -240,3 +240,55 @@ export function issueTarget(path: string): IssueTarget {
   }
   return { kind: "project" };
 }
+
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isPoint = (v: unknown): boolean => Array.isArray(v) && v.length === 2 && isNum(v[0]) && isNum(v[1]);
+
+/**
+ * The shape the editor needs to render and edit a config at all, or a message saying what is
+ * missing. Weaker than the schema on purpose: a blank project (no rooms yet) is fine here, so
+ * autosave can restore work in progress. Anything this accepts can be drawn without throwing.
+ */
+export function structuralIssue(data: unknown): string | undefined {
+  if (!isObj(data)) return "not a JSON object";
+  if (data.version !== 1) return "version must be 1";
+  const c = data.canvas;
+  if (!isObj(c) || !isNum(c.width) || !isNum(c.height) || c.width <= 0 || c.height <= 0) return "canvas needs a width and height";
+  if (c.map_area !== undefined) {
+    const m = c.map_area;
+    if (!isObj(m) || !isNum(m.x) || !isNum(m.y) || !isNum(m.width) || !isNum(m.height) || m.width <= 0 || m.height <= 0) return "canvas.map_area is malformed";
+  }
+  if (!Array.isArray(data.rooms)) return "rooms must be a list";
+  for (const [i, r] of data.rooms.entries()) {
+    if (!isObj(r) || typeof r.id !== "string" || typeof r.name !== "string" || !Array.isArray(r.polygon) || !r.polygon.every(isPoint)) {
+      return `room ${i} is malformed`;
+    }
+  }
+  if (!Array.isArray(data.pins)) return "pins must be a list";
+  for (const [i, p] of data.pins.entries()) {
+    if (!isObj(p) || typeof p.id !== "string" || typeof p.name !== "string" || typeof p.kind !== "string" || !isPoint(p.position) || !isObj(p.entities)) {
+      return `pin ${i} is malformed`;
+    }
+  }
+  return undefined;
+}
+
+export type ImportCheck = { ok: true; config: Config } | { ok: false; message: string };
+
+/**
+ * Whether an opened config may replace the current project. It must be renderable and valid
+ * against the schema; semantic errors the schema cannot see (duplicate ids, a self-crossing
+ * room) are allowed through, because they are fixable in the editor and are listed there.
+ * Call this before touching application state or autosave.
+ */
+export function checkImportedConfig(data: unknown): ImportCheck {
+  const structural = structuralIssue(data);
+  if (structural) return { ok: false, message: structural };
+  const issues = schemaIssues(data);
+  if (issues.length) {
+    const first = issues.slice(0, 3).map((i) => `${i.path} ${i.message}`).join("; ");
+    return { ok: false, message: `does not match the schema: ${first}${issues.length > 3 ? ` (+${issues.length - 3} more)` : ""}` };
+  }
+  return { ok: true, config: data as Config };
+}

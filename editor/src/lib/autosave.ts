@@ -4,6 +4,7 @@
 // backdrop (not part of the export at all).
 
 import { serialiseConfig } from "./serialise";
+import { structuralIssue } from "./validate";
 import type { Config } from "./types";
 
 export const AUTOSAVE_KEY = "hearthmap-editor:config:v1";
@@ -20,7 +21,7 @@ export function saveConfig(store: KeyValueStore, config: Config): boolean {
   }
 }
 
-/** The saved config, or undefined when there is none or it is not a version-1 config object. */
+/** The saved config, or undefined when there is none or the editor could not render it. */
 export function loadConfig(store: KeyValueStore): Config | undefined {
   let text: string | null;
   try {
@@ -31,10 +32,7 @@ export function loadConfig(store: KeyValueStore): Config | undefined {
   if (text === null) return undefined;
   try {
     const data = JSON.parse(text) as unknown;
-    if (typeof data !== "object" || data === null) return undefined;
-    const c = data as Partial<Config>;
-    if (c.version !== 1 || !Array.isArray(c.rooms) || !Array.isArray(c.pins) || typeof c.canvas !== "object") return undefined;
-    return data as Config;
+    return structuralIssue(data) === undefined ? (data as Config) : undefined;
   } catch {
     return undefined;
   }

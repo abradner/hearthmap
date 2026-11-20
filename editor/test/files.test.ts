@@ -31,7 +31,7 @@ describe("zipFiles", () => {
 });
 
 describe("openFiles", () => {
-  it("opens a config with loose photos, using file names as photo ids", () => {
+  it("opens a config with loose images (raw, keyed by file name as photo id)", () => {
     const o = openFiles([
       { name: "config.json", bytes: strToU8(JSON.stringify(example())) },
       { name: "basil.png", bytes: png(1) },
@@ -39,7 +39,7 @@ describe("openFiles", () => {
       { name: "notes.txt", bytes: strToU8("x") },
     ]);
     expect(o.config).toEqual(example());
-    expect([...o.photos.keys()]).toEqual(["basil"]);
+    expect([...o.images.keys()]).toEqual(["basil"]);
     expect(o.ignored).toEqual(["Bad Name.png"]);
   });
   it("opens a zip, preferring config.json over other JSON and skipping folders and __MACOSX", () => {
@@ -53,7 +53,7 @@ describe("openFiles", () => {
     const o = openFiles([{ name: "flat.zip", bytes: zip }]);
     expect(o.config).toEqual(example());
     expect(o.configName).toBe("flat/config.json");
-    expect([...o.photos.keys()]).toEqual(["tomato"]);
+    expect([...o.images.keys()]).toEqual(["tomato"]);
   });
   it("throws on a config that is not JSON, and returns no config when there is none", () => {
     expect(() => openFiles([{ name: "config.json", bytes: strToU8("{") }])).toThrow(/not valid JSON/);

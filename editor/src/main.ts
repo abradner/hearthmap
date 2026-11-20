@@ -2,16 +2,16 @@
 
 import exampleConfig from "../../examples/flat/config.json";
 import { loadConfig } from "./lib/autosave";
-import { exportFiles, openFiles, zipFiles } from "./lib/files";
+import { exportFiles, openFiles, staleExportedPhotos, zipFiles } from "./lib/files";
 import * as ops from "./lib/ops";
 import { canRedo, canUndo } from "./lib/history";
-import { hasErrors, validateConfig } from "./lib/validate";
+import { checkImportedConfig, hasErrors, validateConfig } from "./lib/validate";
 import { KINDS, LAYERS, type Config, type Kind } from "./lib/types";
 import { buildScene, parseReadings, sampleReadings } from "./preview/scene";
 import { download, h, readFileBytes, renderInto } from "./ui/dom";
 import { MapView, isTyping } from "./ui/mapView";
 import { Sidebar } from "./ui/panels";
-import { decodePhoto } from "./ui/photoResize";
+import { decodePhoto, toDevicePhoto, type DevicePhoto } from "./ui/photoResize";
 import { drawPreview } from "./ui/previewDraw";
 import { Store, type Tool } from "./ui/store";
 import "./styles.css";
@@ -45,9 +45,26 @@ function hasContent(): boolean {
   return store.config.rooms.length > 0 || store.config.pins.length > 0;
 }
 
-function replaceProject(config: Config, photos = new Map<string, Uint8Array>()): void {
+function replaceProject(config: Config, photos = new Map<string, DevicePhoto>()): void {
   store.load(config, photos);
   map.fit();
+}
+
+/**
+ * Re-encode every opened image to the export shape. Original bytes never reach the store, so
+ * they can never reach an export; a file that does not decode is reported and dropped.
+ */
+async function normaliseImages(images: Map<string, Uint8Array>): Promise<{ photos: Map<string, DevicePhoto>; rejected: string[] }> {
+  const photos = new Map<string, DevicePhoto>();
+  const rejected: string[] = [];
+  for (const [id, bytes] of images) {
+    try {
+      photos.set(id, await toDevicePhoto(new Blob([bytes as BlobPart])));
+    } catch {
+      rejected.push(id);
+    }
+  }
+  return { photos, rejected };
 }
 
 async function openProject(files: FileList | null): Promise<void> {
@@ -55,20 +72,26 @@ async function openProject(files: FileList | null): Promise<void> {
   try {
     const named = await Promise.all([...files].map(async (f) => ({ name: f.webkitRelativePath || f.name, bytes: await readFileBytes(f) })));
     const opened = openFiles(named);
-    if (opened.config === undefined) {
-      // Photos only: add them to the current project.
-      for (const [id, png] of opened.photos) store.setPhoto(id, png);
-      store.set({ message: { text: `${opened.photos.size} photo(s) added`, kind: "info" } });
+    // Check the config before anything changes: a rejected file leaves the project and its
+    // autosave exactly as they were.
+    const check = opened.config === undefined ? undefined : checkImportedConfig(opened.config);
+    if (check && !check.ok) throw new Error(`${opened.configName ?? "config"} ${check.message}`);
+    const { photos, rejected } = await normaliseImages(opened.images);
+    const notes = [
+      rejected.length ? `not images, ignored: ${rejected.join(", ")}` : "",
+      opened.ignored.length ? `ignored ${opened.ignored.join(", ")} (file names must be photo ids)` : "",
+    ].filter((x) => x);
+    const tail = notes.length ? `; ${notes.join("; ")}` : "";
+    if (!check) {
+      for (const [id, png] of photos) store.setPhoto(id, png);
+      store.set({ message: { text: `${photos.size} photo(s) added${tail}`, kind: rejected.length ? "error" : "info" } });
       return;
     }
-    const c = opened.config as Config;
-    if (typeof c !== "object" || c === null || !Array.isArray(c.rooms) || !Array.isArray(c.pins) || typeof c.canvas !== "object") {
-      throw new Error("that JSON is not a hearthmap config");
-    }
-    replaceProject(c, opened.photos);
+    replaceProject(check.config, photos);
     const n = store.state.issues.filter((i) => i.severity === "error").length;
-    const ignored = opened.ignored.length ? `; ignored ${opened.ignored.join(", ")} (file names must be photo ids)` : "";
-    store.set({ message: { text: `Opened ${opened.configName} with ${opened.photos.size} photo(s)${n ? `, ${n} error(s) to fix` : ""}${ignored}`, kind: n ? "error" : "info" } });
+    store.set({
+      message: { text: `Opened ${opened.configName} with ${photos.size} photo(s)${n ? `, ${n} error(s) to fix` : ""}${tail}`, kind: n || rejected.length ? "error" : "info" },
+    });
   } catch (e) {
     store.set({ message: { text: `Could not open: ${(e as Error).message}`, kind: "error" } });
   }
@@ -97,6 +120,8 @@ function exportZip(): void {
 
 interface DirHandle {
   getDirectoryHandle(name: string, o: { create: boolean }): Promise<DirHandle>;
+  keys(): AsyncIterable<string>;
+  removeEntry(name: string): Promise<void>;
   getFileHandle(name: string, o: { create: boolean }): Promise<{ createWritable(): Promise<{ write(d: BlobPart): Promise<void>; close(): Promise<void> }> }>;
 }
 const picker = (window as unknown as { showDirectoryPicker?: (o?: object) => Promise<DirHandle> }).showDirectoryPicker;
@@ -119,7 +144,22 @@ async function exportToFolder(): Promise<void> {
       await w.write(f.bytes as BlobPart);
       await w.close();
     }
-    exportedMessage("to the chosen folder", out.missing);
+    // Photos an earlier export left behind that this config no longer uses: only names the
+    // editor itself writes (photos/<photo-id>.png), only inside photos/, and only on a yes.
+    const photosDir = await dir.getDirectoryHandle("photos", { create: true });
+    const existing: string[] = [];
+    for await (const name of photosDir.keys()) existing.push(name);
+    const stale = staleExportedPhotos(existing, out.files);
+    let removed: string[] = [];
+    if (stale.length && confirm(`Remove photos from an earlier export that this config no longer uses?\n\n${stale.map((n) => `photos/${n}`).join("\n")}`)) {
+      for (const n of stale) await photosDir.removeEntry(n);
+      removed = stale;
+    }
+    const kept = stale.filter((n) => !removed.includes(n));
+    exportedMessage(
+      `to the chosen folder${removed.length ? `; removed ${removed.map((n) => `photos/${n}`).join(", ")}` : ""}${kept.length ? `; left unused ${kept.map((n) => `photos/${n}`).join(", ")}` : ""}`,
+      out.missing,
+    );
   } catch (e) {
     store.set({ message: { text: `Could not write to that folder: ${(e as Error).message}. Use Download zip instead.`, kind: "error" } });
   }

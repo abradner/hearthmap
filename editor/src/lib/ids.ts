@@ -40,3 +40,13 @@ export function uniqueId(base: string, taken: Iterable<string>, sep = "_"): stri
     if (!used.has(candidate)) return candidate;
   }
 }
+
+/** Longest room or pin name: 48 Unicode code points (schema maxLength; core counts the same). */
+export const NAME_MAX = 48;
+
+/** Length in Unicode code points. JavaScript's .length counts UTF-16 units instead. */
+export function codePointLength(s: string): number {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+}

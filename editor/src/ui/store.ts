@@ -10,6 +10,7 @@ import * as H from "../lib/history";
 import { validateConfig, type Issue } from "../lib/validate";
 import type { Config, Kind, LayerName } from "../lib/types";
 import { sampleReadings, type ReadingSet } from "../preview/scene";
+import type { DevicePhoto } from "./photoResize";
 
 export type Tool = "select" | "room" | "pin" | "pan";
 
@@ -39,7 +40,8 @@ export interface State {
   pinKind: Kind;
   /** Vertices of the room being drawn, in map space. */
   draft: [number, number][];
-  photos: Map<string, Uint8Array>;
+  /** Only re-encoded photos (DevicePhoto) can enter: see ui/photoResize.ts. */
+  photos: Map<string, DevicePhoto>;
   entities: EntityInfo[];
   entityFilter: { deviceClass: string; search: string; role?: string };
   backdrop?: Backdrop;
@@ -143,7 +145,7 @@ export class Store {
   }
 
   /** Replace the whole project (new, open, load example). Clears history. */
-  load(config: Config, photos: Map<string, Uint8Array> = new Map()): void {
+  load(config: Config, photos: Map<string, DevicePhoto> = new Map()): void {
     this.s = {
       ...this.s,
       history: H.createHistory(config),
@@ -156,7 +158,7 @@ export class Store {
     this.configChanged();
   }
 
-  setPhoto(id: string, png: Uint8Array): void {
+  setPhoto(id: string, png: DevicePhoto): void {
     const photos = new Map(this.s.photos);
     photos.set(id, png);
     this.s = { ...this.s, photos };

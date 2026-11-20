@@ -17,7 +17,7 @@ import {
 } from "../lib/defaults";
 import { ROLE_DEVICE_CLASSES, deviceClassesIn, filterEntities, findDuplicateBindings, parseStatesExport } from "../lib/entities";
 import { fetchStates } from "../lib/haClient";
-import { ENTITY_ID_PATTERN, ID_PATTERN } from "../lib/ids";
+import { ENTITY_ID_PATTERN, ID_PATTERN, NAME_MAX, codePointLength } from "../lib/ids";
 import * as ops from "../lib/ops";
 import { issueTarget, type Issue } from "../lib/validate";
 import { BAND_FIELDS, KINDS, LAYERS, ROLES, THRESHOLD_FIELDS, type Config, type Kind, type LayerName, type Pin, type Role } from "../lib/types";
@@ -180,12 +180,12 @@ export class Sidebar {
         h("input", {
           type: "text",
           value: room.name,
-          maxlength: 48,
           "data-key": `room-name-${i}`,
           "data-testid": "room-name",
           onchange: (e: Event) => {
             const v = (e.target as HTMLInputElement).value.trim();
-            if (v) s.edit((x) => ops.renameRoom(x, i, v));
+            if (!nameOk(s, v)) return;
+            s.edit((x) => ops.renameRoom(x, i, v));
           },
         }),
       ),
@@ -256,12 +256,12 @@ export class Sidebar {
         h("input", {
           type: "text",
           value: pin.name,
-          maxlength: 48,
           "data-key": `pin-name-${i}`,
           "data-testid": "pin-name",
           onchange: (e: Event) => {
             const v = (e.target as HTMLInputElement).value.trim();
-            if (v) s.edit((x) => ops.updatePin(x, i, { name: v }));
+            if (!nameOk(s, v)) return;
+            s.edit((x) => ops.updatePin(x, i, { name: v }));
           },
         }),
         pin.kind === "plant" ? "The plant's name, as the HUD shows it." : undefined,
@@ -867,6 +867,19 @@ export class Sidebar {
       ),
     ];
   }
+}
+
+/**
+ * Names are 1..48 Unicode code points (schema maxLength, and core counts the same way). An HTML
+ * maxlength would count UTF-16 units and cut an emoji name at 24, so the check is done here.
+ */
+function nameOk(s: Store, v: string): boolean {
+  if (v === "") return false;
+  if (codePointLength(v) > NAME_MAX) {
+    s.set({ message: { text: `Names are at most ${NAME_MAX} characters (this one has ${codePointLength(v)})`, kind: "error" } });
+    return false;
+  }
+  return true;
 }
 
 function intOrUndefined(text: string): number | undefined {

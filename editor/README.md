@@ -18,7 +18,10 @@ SCREENSHOTS=1 npm run e2e -- -g screenshots      # regenerate docs/img/editor-*.
 ## What it does
 
 - **Projects.** Start blank, open a `config.json` (with its photos, or an exported zip), or load
-  the fictional example flat. The config autosaves to `localStorage`; photos, the floor plan and
+  the fictional example flat. An opened config must be valid against the schema before it
+  replaces anything; a rejected file leaves the current project and its autosave untouched.
+  Every opened photo is decoded and re-encoded like an attached one (no original bytes or
+  metadata survive); files that are not images are reported and dropped. The config autosaves to `localStorage`; photos, the floor plan and
   any token never do. Undo/redo covers every config edit (a drag is one step).
 - **Floor plan.** Load an image as a tracing backdrop (opacity slider; never exported). "Match
   plan shape" sizes `canvas.map_area` to the image's proportions within the panel's 960 x 800
@@ -33,7 +36,8 @@ SCREENSHOTS=1 npm run e2e -- -g screenshots      # regenerate docs/img/editor-*.
 - **Entities.** Load or paste a Home Assistant states export (`GET /api/states` output), or fetch
   live with a long-lived token typed into the page. Filter by device class and text; entities
   bound twice are flagged in the list and as warnings.
-- **Plant photos.** Attach an image; the export holds `photos/<photo-id>.png`, a **128 x 128 PNG**
+- **Plant photos.** Names count Unicode code points (at most 48), as the schema and core do.
+  Attach an image; the export holds `photos/<photo-id>.png`, a **128 x 128 PNG**
   cut from the centre of the image (128 px is the largest the panel draws a plant photo: the
   detail overlay's disc). The ESPHome component converts it to RGB565 at build time.
 - **Calibration.** Set `dry`/`wet`/`happy_min`/`happy_max` per pin, or import the
@@ -46,7 +50,9 @@ SCREENSHOTS=1 npm run e2e -- -g screenshots      # regenerate docs/img/editor-*.
   UI spec; the panel's real logic is core's (C++) and its pixels are LVGL's.
 - **Export.** Validates with the real schema (Ajv, draft 2020-12, pinned) plus the editor checks
   below; errors block export and are listed next to the offending room, pin or layer. Download a
-  zip, or write into a folder through the File System Access API where the browser has it.
+  zip, or write into a folder through the File System Access API where the browser has it. A
+  folder export offers to remove `photos/<photo-id>.png` files an earlier export left there that
+  the config no longer uses; nothing else in the folder is touched.
 
 ## Home Assistant token
 

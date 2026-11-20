@@ -45,7 +45,12 @@ export function zipFiles(files: readonly NamedBytes[]): Uint8Array {
 export interface OpenedProject {
   config?: unknown;
   configName?: string;
-  photos: Map<string, Uint8Array>;
+  /**
+   * Image files by the photo id their name stands for, exactly as opened. UNTRUSTED and NOT
+   * exportable: they may carry metadata (EXIF, GPS), extra pixels, or not be images at all.
+   * The UI must decode and re-encode each one (ui/photoResize.ts) before storing it.
+   */
+  images: Map<string, Uint8Array>;
   /** Images whose name is not a valid photo id, or that are not PNG/JPEG. */
   ignored: string[];
 }
@@ -64,8 +69,8 @@ export function photoIdFromName(name: string): string | undefined {
 
 /**
  * Sort a mixed bag of opened files: a zip is unpacked and treated as its contents; the first
- * `*.json` is the config (parsed, not validated: the caller validates); images become photos
- * by file name. Throws a user-facing Error when a JSON file does not parse.
+ * `*.json` is the config (parsed, not validated: the caller validates); images are returned raw,
+ * keyed by the photo id their file name stands for. Throws a user-facing Error when a JSON file does not parse.
  */
 export function openFiles(files: readonly NamedBytes[]): OpenedProject {
   const flat: NamedBytes[] = [];
@@ -79,7 +84,7 @@ export function openFiles(files: readonly NamedBytes[]): OpenedProject {
       flat.push(f);
     }
   }
-  const out: OpenedProject = { photos: new Map(), ignored: [] };
+  const out: OpenedProject = { images: new Map(), ignored: [] };
   const jsons = flat.filter((f) => /\.json$/i.test(f.name));
   const configFile = jsons.find((f) => baseName(f.name) === "config.json") ?? jsons[0];
   if (configFile) {
@@ -93,8 +98,21 @@ export function openFiles(files: readonly NamedBytes[]): OpenedProject {
   for (const f of flat) {
     if (!IMAGE.test(f.name)) continue;
     const id = photoIdFromName(f.name);
-    if (id) out.photos.set(id, f.bytes);
+    if (id) out.images.set(id, f.bytes);
     else out.ignored.push(f.name);
   }
   return out;
+}
+
+/** The names the editor writes into photos/: `<photo-id>.png`. */
+const EXPORTED_PHOTO = /^[a-z0-9][a-z0-9_-]{0,47}\.png$/;
+
+/**
+ * Files in an export folder's photos/ directory that a new export should remove: names the
+ * editor itself would have written (EXPORTED_PHOTO) that the new export does not contain.
+ * Anything else in the folder (other names, other extensions, subfolders) is never listed.
+ */
+export function staleExportedPhotos(existing: readonly string[], files: readonly NamedBytes[]): string[] {
+  const keep = new Set(files.filter((f) => f.name.startsWith("photos/")).map((f) => f.name.slice("photos/".length)));
+  return existing.filter((n) => EXPORTED_PHOTO.test(n) && !keep.has(n)).sort();
 }
