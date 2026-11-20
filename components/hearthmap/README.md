@@ -52,6 +52,20 @@ A full example device is `examples/flat/esphome/flat-panel.yaml`.
    emitted in `Role` order whatever the JSON key order (D-019).
 4. **Library copy** (below).
 
+**Before every flash, run the check** (D-048). The build checks the schema only, so a config
+that the editor and the build accept can still be refused at boot by core's `validate()`, which
+first runs on the panel. Build the host tools once and check the exact file the firmware will
+compile:
+
+```sh
+cmake -S . -B build -DHEARTHMAP_BUILD_UI=ON && cmake --build build --target hearthmap-render
+build/host/hearthmap-render --check --config <path to hearthmap.json>
+```
+
+It loads the config through the host's JSON source and core's `validate()`, prints every issue
+with its JSON path, and exits non-zero on any error ("refused: the panel would not draw this
+config"); "ok: no errors, N warnings" means the panel will accept it.
+
 **Semantic rules are not re-implemented in Python** (D-017). The firmware runs core's
 `validate()` at boot; on any Error it draws the first issues on screen, logs every issue with its
 JSON-pointer path, sets the component's error status and renders nothing else. `tests/test_cpp.py`

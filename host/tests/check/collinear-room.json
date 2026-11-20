@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "canvas": { "width": 1280, "height": 800, "orientation": "landscape" },
+  "rooms": [
+    { "id": "hall", "name": "Hall", "polygon": [[0.0551, 0.2332], [0.0681, 0.2855], [0.0941, 0.3901]] }
+  ],
+  "pins": []
+}

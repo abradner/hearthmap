@@ -3,6 +3,12 @@
 //   hearthmap-render --config <json> --readings <json> --out frame.png
 //                    [--layer temperature|humidity|soil|air] [--tap x,y ...] [--time-ms N]
 //                    [--photos <dir>] [--utc-offset-min N] [--timing]
+//   hearthmap-render --check --config <json>
+//
+// --check loads the config exactly as the panel will judge it (the JSON source, then core's
+// validate()), prints every issue with its JSON-pointer path and exits 1 on any error, 0
+// otherwise. It is the required step before a flash: the build checks the schema, but
+// validate()'s semantic rules otherwise first run on the panel, at boot (D-048).
 //
 // Order of events: build at LVGL time 0, select --layer, deliver each --tap through LVGL's input
 // pipeline (each one's resulting event is applied before the next tap), then advance the LVGL
@@ -33,7 +39,8 @@ int usage(const char* msg) {
   std::cerr << "hearthmap-render: " << msg << "\n"
             << "usage: hearthmap-render --config <json> --readings <json> --out <png>\n"
             << "         [--layer temperature|humidity|soil|air] [--tap x,y ...]\n"
-            << "         [--time-ms N] [--photos <dir>] [--utc-offset-min N] [--timing]\n";
+            << "         [--time-ms N] [--photos <dir>] [--utc-offset-min N] [--timing]\n"
+            << "       hearthmap-render --check --config <json>\n";
   return 2;
 }
 
@@ -71,6 +78,7 @@ int main(int argc, char** argv) {
   long time_ms = 0;
   long utc_offset = 0;
   bool timing = false;
+  bool check = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -80,6 +88,10 @@ int main(int argc, char** argv) {
     };
     if (a == "--timing") {
       timing = true;
+      continue;
+    }
+    if (a == "--check") {
+      check = true;
       continue;
     }
     const auto v = next();
@@ -112,7 +124,8 @@ int main(int argc, char** argv) {
       return usage(("unknown option " + a).c_str());
     }
   }
-  if (config_path.empty() || readings_path.empty() || out_path.empty()) {
+  if (check && config_path.empty()) return usage("--check needs --config");
+  if (!check && (config_path.empty() || readings_path.empty() || out_path.empty())) {
     return usage("--config, --readings and --out are required");
   }
 
@@ -123,6 +136,19 @@ int main(int argc, char** argv) {
     std::cerr << config_path << ": "
               << (issue.severity == IssueSeverity::Error ? "error" : "warning") << " at "
               << issue.path << ": " << issue.message << "\n";
+  }
+  if (check) {
+    std::size_t warnings = 0;
+    for (const auto& issue : loaded.issues) {
+      if (issue.severity == IssueSeverity::Warning) ++warnings;
+    }
+    if (!loaded.config) {
+      std::cout << config_path << ": refused: the panel would not draw this config\n";
+      return 1;
+    }
+    std::cout << config_path << ": ok: no errors, " << warnings << " warning"
+              << (warnings == 1 ? "" : "s") << "\n";
+    return 0;
   }
   if (!loaded.config) return 1;
 
