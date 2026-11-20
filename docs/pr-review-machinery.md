@@ -78,7 +78,7 @@ head is a no-show, not a review.
 
 ### Targeting: which review, when
 
-Evidence: an evaluation of every review on one sibling repo across about 170 PRs (October 2026). The
+Evidence: an evaluation of every review on an earlier project across about 170 PRs. The
 different-family bot had 96–98% precision and found P1s after Claude reads at least ten times, but
 its window is scarce; the per-PR bot found about two valid things a round and approved heads that
 held P1s; independent fresh-context reads made about 35 material catches, including most of the
@@ -176,8 +176,8 @@ gh api repos/{owner}/{repo}/pulls/<n>/reviews \
   --jq '.[] | "\(.user.login) reviewed \(.commit_id[0:10])"'
 ```
 
-(Observed on this template's own PR #5: four findings appeared to be current at the new head, all
-four were round-one threads re-anchored, and the reviewer had not re-reviewed at all.)
+(This has been observed: findings that appeared to be current at a new head were all round-one
+threads re-anchored, and the reviewer had not re-reviewed at all.)
 
 Two more harvest traps:
 
@@ -245,9 +245,8 @@ rule above) with findings still open, say so in the PR and name that round the c
 only P1/red blocks; everything else is ticketed with the review link, and nothing new is started.
 This is an exit procedure, not another lap — an agent that reads the cap as "abandon the open
 findings" leaves accepted work untracked on trunk, which is the failure the followup pre-flight
-in `batch-review` Phase 7 exists to catch. (A sibling repo's six-round series landed this way. Its
-own retrospective is the cheaper lesson: a schema-driven feature that draws that many rounds
-needed a design pass up front, per the revert-and-ticket rule above.)
+in `batch-review` Phase 7 exists to catch. A feature that draws that many rounds usually needed a
+design pass up front, per the revert-and-ticket rule above.
 
 ## 5. Never trust a green signal
 
@@ -305,8 +304,8 @@ notice sailed through an earlier version of the filter as a delivered review.
 **Your own thread replies land in this list.** Every `gh api .../comments/<id>/replies` call creates
 an empty-bodied `COMMENTED` **review** record under the operator's account, stamped at the current
 head. An agent that has just replied to and resolved a round of feedback will therefore find its own
-footprints sitting exactly where a review should be, and read them as one. (Measured on this
-template's own PR: seven replies produced seven such records, timestamps matching to the second.)
+footprints sitting exactly where a review should be, and read them as one (one review record per
+reply, timestamps matching to the second).
 The filter above drops them by their exact signature — `COMMENTED` *and* empty — rather than by
 emptiness alone. That distinction matters: GitHub permits an `APPROVED` review with no body, so
 filtering on emptiness alone would discard a genuine current-head approval and report an approved
@@ -318,9 +317,8 @@ Two limits worth knowing before you rely on the result:
   **inline comments cannot rescue the check.** §2 establishes that an unresolved comment's
   `commit_id` is rewritten to the current head while `original_commit_id` keeps the truth, so
   "inline comments exist at the head" is not evidence the head was reviewed. It is the *same* false
-  clear this gate exists to prevent, re-entered through the back door. (Measured on this template's
-  PR #5: seven comments report a `commit_id` they were never written against — one written against
-  `d0e8ade` now reports `db8c586`.) Either bind each comment back through `pull_request_review_id`
+  clear this gate exists to prevent, re-entered through the back door: comments routinely report a
+  `commit_id` they were never written against. Either bind each comment back through `pull_request_review_id`
   and validate *that review record's* commit, or — simpler, and the better default — treat the empty
   result as **"review of this head could not be established"** and disclose it. Never upgrade an
   absence into a pass.
@@ -346,17 +344,12 @@ inline comments) or an agent bookkeeping reply. If nothing valid matches, either
 the current head or **tell the operator plainly that the delta is unreviewed** — the authorization
 may well still stand, but it should be given in view of that, not around it.
 
-Evidence, from the steering template's own history (a private repository, so no link): the operator's go-ahead was followed by three further
-commits of fixes, and the commit that actually merged had been reviewed by neither bot. The merge
-was authorized and the delta was deletions-only, so the outcome was fine — but the report implied a
-review that had not happened, and the only reason anyone noticed was a background job that had
-already been written off as superseded.
+Why: commits pushed after a go-ahead can reach the merge without any reviewer having read them,
+and a report that implies otherwise claims a review that did not happen.
 
 The merge gate itself lives in `AGENTS.md` §8 — **read it there before merging anything.** That file
-is canonical for the gate, exactly as this one is canonical for the mechanics above. The one-line
-orientation is that the baseline is a live operator go-ahead and that agents must not propose loosening it; every
-qualification on that — what a conditional grant is, what a session carve-out covers, what does not
-count — is in §8 and is deliberately not duplicated here.
+is canonical for the gate, exactly as this one is canonical for the mechanics above. In one line:
+merges need the owner's go-ahead.
 
 ## 7. Mechanical gotchas
 
@@ -378,8 +371,6 @@ Small, recurring, and each one wastes a round when it bites:
 
 ---
 
-**Maintenance note.** This file is the canonical copy of the generic review mechanics. A copy of it
-ships as `references/pr-review-machinery.md` in the operator's user-level `sop` skill (kept in their
-own skills repository), so that skills running in a repo with no `docs/` still have the harvest,
-triage, cap and merge-check rules; refresh that copy when this file changes. A repo built from this
-template edits its own copy freely: its roster, its rulings, its evidence.
+**Maintenance note.** This file is this repo's canonical copy of the generic review mechanics; the
+skills under `.claude/skills/` read it rather than restating it. Edit it freely: its roster, its
+rulings, its evidence.
