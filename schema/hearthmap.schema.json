@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/abradner/hearthmap/main/schema/hearthmap.schema.json",
+  "title": "hearthmap config",
+  "description": "The one config contract for a hearthmap panel: canvas, rooms, sensor pins, layer bands, staleness, HUD and heat-field tuning. Field meanings: schema/README.md. Semantic rules the schema cannot express (unique ids, room references, band ordering, calibration width) are enforced by core's validate() and by schema/validate.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "canvas", "rooms", "pins"],
+  "properties": {
+    "$schema": {
+      "description": "Optional pointer to this schema, for editors.",
+      "type": "string"
+    },
+    "version": {
+      "description": "Schema version. Core refuses any other value.",
+      "const": 1
+    },
+    "canvas": { "$ref": "#/$defs/canvas" },
+    "temperature_unit": {
+      "description": "Unit of every temperature reading and temperature band value. Core does not convert.",
+      "enum": ["C", "F"],
+      "default": "C"
+    },
+    "rooms": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/room" }
+    },
+    "pins": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pin" }
+    },
+    "layers": { "$ref": "#/$defs/layers" },
+    "stale_after_s": {
+      "description": "Seconds after a reading's last_updated at which it counts as stale. Pins may override.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 10800
+    },
+    "hud": { "$ref": "#/$defs/hud" },
+    "heat": { "$ref": "#/$defs/heat" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,47}$"
+    },
+    "entity_id": {
+      "description": "A Home Assistant entity id: <domain>.<object_id>.",
+      "type": "string",
+      "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"
+    },
+    "unit_interval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "map_point": {
+      "description": "[x, y] in normalised map space: 0..1, origin top-left of the map area, y down.",
+      "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/unit_interval" },
+        { "$ref": "#/$defs/unit_interval" }
+      ],
+      "minItems": 2,
+      "maxItems": 2,
+      "items": false
+    },
+    "canvas_rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "canvas": {
+      "description": "The panel after rotation, in pixels, and where the map sits on it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "orientation"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "orientation": {
+          "description": "landscape requires width > height; portrait requires height > width (checked by validate()).",
+          "enum": ["landscape", "portrait"]
+        },
+        "map_area": {
+          "description": "The canvas rectangle map space is drawn into. Default: x 0, y 0, width 960, height 800 (the left of a 1280x800 landscape canvas). Must lie inside the canvas.",
+          "$ref": "#/$defs/canvas_rect"
+        }
+      }
+    },
+    "room": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "polygon"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "polygon": {
+          "description": "Vertices in map space, implicitly closed (do not repeat the first vertex). Simple (not self-intersecting).",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/map_point" }
+        },
+        "outdoor": {
+          "description": "An outdoor room (balcony, garden) is never judged against indoor comfort bands and never shares heat-field influence with indoor rooms.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "entities": {
+      "description": "Home Assistant entities bound to a pin, by role. Which role is required depends on the pin's kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "temperature": { "$ref": "#/$defs/entity_id" },
+        "humidity": { "$ref": "#/$defs/entity_id" },
+        "moisture": { "$ref": "#/$defs/entity_id" },
+        "co2": { "$ref": "#/$defs/entity_id" },
+        "pm25": { "$ref": "#/$defs/entity_id" },
+        "voc": { "$ref": "#/$defs/entity_id" },
+        "battery": { "$ref": "#/$defs/entity_id" },
+        "predicted_dry_at": {
+          "description": "Reserved for a future watering-time prediction. Accepted and ignored in schema version 1.",
+          "$ref": "#/$defs/entity_id"
+        }
+      }
+    },
+    "calibration": {
+      "description": "Per-sensor soil calibration in the sensor's raw units. wet may be numerically below dry (capacitive probes): an inverted range is valid. dry and wet must differ.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dry", "wet"],
+      "properties": {
+        "dry": { "type": "number" },
+        "wet": { "type": "number" },
+        "happy_min": {
+          "description": "Driest raw reading the plant is happy at (same units as dry/wet). Must lie between dry and wet.",
+          "type": "number"
+        },
+        "happy_max": {
+          "description": "Wettest raw reading the plant is happy at. Must lie between dry and wet, and not be drier than happy_min.",
+          "type": "number"
+        }
+      }
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name", "position", "room", "entities"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": {
+          "enum": ["temperature", "humidity", "soil", "air_quality", "plant"]
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "position": { "$ref": "#/$defs/map_point" },
+        "room": {
+          "description": "The id of the room this pin is in.",
+          "$ref": "#/$defs/id"
+        },
+        "entities": { "$ref": "#/$defs/entities" },
+        "photo": {
+          "description": "Photo id, resolved by the editor and the ESPHome component to photos/<id>.png. Plant pins only.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,47}$"
+        },
+        "calibration": { "$ref": "#/$defs/calibration" },
+        "stale_after_s": {
+          "description": "Overrides the top-level stale_after_s for this pin.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "temperature" } } },
+          "then": {
+            "properties": { "entities": { "required": ["temperature"] } },
+            "not": { "anyOf": [{ "required": ["calibration"] }, { "required": ["photo"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "humidity" } } },
+          "then": {
+            "properties": { "entities": { "required": ["humidity"] } },
+            "not": { "anyOf": [{ "required": ["calibration"] }, { "required": ["photo"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "air_quality" } } },
+          "then": {
+            "properties": { "entities": { "required": ["co2"] } },
+            "not": { "anyOf": [{ "required": ["calibration"] }, { "required": ["photo"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "soil" } } },
+          "then": {
+            "required": ["calibration"],
+            "properties": { "entities": { "required": ["moisture"] } },
+            "not": { "required": ["photo"] }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "plant" } } },
+          "then": {
+            "required": ["calibration"],
+            "properties": { "entities": { "required": ["moisture"] } }
+          }
+        }
+      ]
+    },
+    "threshold": {
+      "description": "A threshold value, or null to remove the default threshold on that side.",
+      "type": ["number", "null"]
+    },
+    "layer": {
+      "description": "Band and thresholds for one layer, in the layer's value domain. Every field is optional; an omitted field takes the layer's default (schema/README.md). Ordering (checked by validate()): scale_min <= danger_below <= warn_below <= comfort_min <= comfort_max <= warn_above <= danger_above <= scale_max.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "comfort_min": { "type": "number" },
+        "comfort_max": { "type": "number" },
+        "warn_below": { "$ref": "#/$defs/threshold" },
+        "warn_above": { "$ref": "#/$defs/threshold" },
+        "danger_below": { "$ref": "#/$defs/threshold" },
+        "danger_above": { "$ref": "#/$defs/threshold" },
+        "scale_min": { "type": "number" },
+        "scale_max": { "type": "number" }
+      }
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "description": "The layer shown at start-up. Must be enabled.",
+          "enum": ["temperature", "humidity", "soil", "air"],
+          "default": "temperature"
+        },
+        "temperature": { "$ref": "#/$defs/layer" },
+        "humidity": { "$ref": "#/$defs/layer" },
+        "soil": {
+          "description": "The soil layer's value domain is thirst, 0 (just watered) to 1 (bone dry), computed per pin from its calibration.",
+          "$ref": "#/$defs/layer"
+        },
+        "air": {
+          "description": "The air layer's value is CO2 in ppm.",
+          "$ref": "#/$defs/layer"
+        }
+      }
+    },
+    "hud": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_items": {
+          "description": "Thirsty plants listed before '+N more'.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 6
+        }
+      }
+    },
+    "heat": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "grid_cols": { "type": "integer", "minimum": 2, "maximum": 256, "default": 48 },
+        "grid_rows": { "type": "integer", "minimum": 2, "maximum": 256, "default": 40 },
+        "idw_power": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 8,
+          "default": 2
+        }
+      }
+    }
+  }
+}

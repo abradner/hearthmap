@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/abradner/hearthmap/main/schema/readings.schema.json",
+  "title": "hearthmap readings fixture",
+  "description": "A snapshot of Home Assistant sensor states at one moment, for the host renderer and tests. Not used on the device. Format: examples/README.md, 'Readings fixtures'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["now", "readings"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "description": {
+      "description": "What this fixture is for and what it should show. Free text.",
+      "type": "string"
+    },
+    "now": {
+      "description": "The moment the snapshot represents; passed to core as 'now'.",
+      "$ref": "#/$defs/timestamp"
+    },
+    "readings": {
+      "description": "Entity id -> reading. An entity absent here is 'missing' (never received).",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$" },
+      "additionalProperties": { "$ref": "#/$defs/reading" }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "description": "RFC 3339 date-time with an explicit offset, e.g. 2026-01-15T09:00:00Z.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "reading": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "last_updated"],
+      "properties": {
+        "value": {
+          "description": "The numeric state, or the literal HA states 'unavailable' / 'unknown'.",
+          "oneOf": [
+            { "type": "number" },
+            { "enum": ["unavailable", "unknown"] }
+          ]
+        },
+        "unit": {
+          "description": "unit_of_measurement as HA reports it. Informational; core does not convert.",
+          "type": "string"
+        },
+        "last_updated": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

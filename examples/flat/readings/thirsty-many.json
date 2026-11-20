@@ -1,0 +1,170 @@
+{
+  "$schema": "../../../schema/readings.schema.json",
+  "description": "Six plants thirsty against a HUD cap of 4: four listed, '+2 more'. Basil reads a real 0%. The planter box is dry too but is a soil pin, not a plant, so it is not in the HUD.",
+  "now": "2026-01-15T09:00:00Z",
+  "readings": {
+    "sensor.example_balcony_humidity": {
+      "value": 80,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_balcony_temperature": {
+      "value": 9.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_basil_moisture": {
+      "value": 0,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bathroom_humidity": {
+      "value": 58,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bathroom_temperature": {
+      "value": 22.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_climate_battery": {
+      "value": 88,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_co2": {
+      "value": 750,
+      "unit": "ppm",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_humidity": {
+      "value": 52,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_temperature": {
+      "value": 19.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_bedroom_voc": {
+      "value": 110,
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fern_battery": {
+      "value": 95,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fern_moisture": {
+      "value": 38,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_battery": {
+      "value": 84,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_humidity": {
+      "value": 50,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_moisture": {
+      "value": 45,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_fiddle_temperature": {
+      "value": 21.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_hall_temperature": {
+      "value": 20.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_kitchen_temperature": {
+      "value": 22.0,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_lavender_moisture": {
+      "value": 2,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_co2": {
+      "value": 620,
+      "unit": "ppm",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_humidity": {
+      "value": 48,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_pm25": {
+      "value": 6,
+      "unit": "µg/m³",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_living_temperature": {
+      "value": 21.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_monstera_battery": {
+      "value": 91,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_monstera_moisture": {
+      "value": 6,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_planter_moisture": {
+      "value": 4,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_pothos_moisture_raw": {
+      "value": 2750,
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_snake_battery": {
+      "value": 77,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_snake_moisture": {
+      "value": 9,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_study_humidity": {
+      "value": 45,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_study_temperature": {
+      "value": 20.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_tomato_moisture": {
+      "value": 40,
+      "unit": "%",
+      "last_updated": "2026-01-15T08:55:00Z"
+    },
+    "sensor.example_tomato_temperature": {
+      "value": 8.5,
+      "unit": "°C",
+      "last_updated": "2026-01-15T08:55:00Z"
+    }
+  }
+}
