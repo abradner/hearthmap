@@ -266,6 +266,18 @@ Each is the reversible reading; each has a test that would change with it.
   When a vertex is out of range, only the per-vertex error is reported (`/rooms/i/polygon/j`),
   not also "not simple"; when a pin's position is out of range, the outside-its-room warning is
   skipped. `validate()` reports every problem in one pass.
+- **HUD ordering** uses a stable insertion sort (no allocation, n <= 256). Under the current
+  `effective_soil_band()`, "Danger before Warn" never contradicts "thirst descending" (a Warn
+  plant's thirst is at most its `danger_above`, which is at least the layer's), so that rule has
+  no observable test today; it is implemented as written in case the band algorithm changes.
+- **Overlay storage reuse**: a reused `ViewModel` keeps its overlay rows' storage while an
+  overlay stays open; closing it releases them, and reopening allocates once. Each row's unit
+  is reserved to `kOverlayUnitCapacity` (16 bytes) when the row is created, so a reading that
+  arrives later with a real unit does not allocate; a longer unit is shown in full and may
+  allocate (`Reading::unit` has no length bound, so no fixed buffer can promise more).
+- **HUD storage** is reserved for every Plant pin (all candidates are collected before the cut
+  to `max_items`), so warming up on healthy readings does not leave a later thirsty frame to
+  allocate.
 
 ### D-027 Calibration proposals: method defaults (provisional, PR 8)
 
