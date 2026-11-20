@@ -530,3 +530,24 @@ the Playwright smoke test only. Config edits are pure functions over an immutabl
 is a list of snapshots. **Why:** minimal dependencies (two at runtime: Ajv and fflate) and the
 same "logic where tests reach it" rule as core (principle 2). **Would change if:** the UI grows
 enough that a component framework pays for itself; `lib/` would not change.
+
+### D-046 The UI is told when timestamps are re-stamped and when the source is offline (provisional)
+
+**Question:** on the panel every value is re-stamped while Home Assistant is connected (D-012),
+so the overlay's "seen N min ago" always read "seen just now", a claim nothing checked; and
+nothing on screen said when Home Assistant was disconnected. Where does the UI learn either?
+**Default:** from the embedder, in a `hm::ui::SourceStatus` passed to `Screen::update()` (a new
+overload; the old three-argument form passes the host's defaults, all false). `restamped`: the
+overlay shows the room only, no "seen" text. `offline`: the top bar's summary label shows
+"Offline" in the warn colour in place of the house summary, until an update without it.
+`heat_behind` (D-047): the heat image is dimmed. The device sets `offline` = not
+`is_connected_with_state_subscription()` and `restamped` = connected (re-stamping runs exactly
+then); while offline the overlay shows the honest time since the last confirmation. A change of
+connection state redraws at once. **Why not the view model:** these describe the plumbing around
+core (a connection, a re-stamping policy, an image in flight), not anything core judges from
+config and readings; putting them in `ViewModel` would make core carry UI state it never uses.
+**Consequences, documented in `readings.h`, `schema/README.md` and the component README:** on the
+device `stale_after_s` applies only while Home Assistant is disconnected, and a probe that dies
+without going `unavailable` looks fresh (issue 11). **Would change if:** Home Assistant's
+`last_reported` reaches the device (the overlay could then show a real "seen" time), or the
+summary is wanted alongside the warning.

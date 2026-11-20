@@ -43,7 +43,7 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 | `rooms` | array, 1..64 | required | Room polygons (below). Order matters: where polygons overlap, the earlier room owns the overlap. |
 | `pins` | array, 0..256 | required | Sensor pins (below). Order is the tie-breaker wherever a tie can occur (hit-testing, HUD order). |
 | `layers` | object | all defaults | Per-layer bands and thresholds (below). |
-| `stale_after_s` | integer >= 1 | `10800` (3 h) | A reading whose `last_updated` is more than this many seconds before now is stale. Exactly this old is still fresh. |
+| `stale_after_s` | integer >= 1 | `10800` (3 h) | A reading whose `last_updated` is more than this many seconds before now is stale. Exactly this old is still fresh. On the panel, `last_updated` means "last confirmed": every value is re-stamped while Home Assistant is connected (D-012), so this timeout applies only while it is disconnected, and a probe that dies without going `unavailable` looks fresh (issue 11; D-046). The host takes fixture timestamps as given. |
 | `hud` | object | | `max_items` (1..20, default `6`): thirsty plants listed before "+N more". |
 | `heat` | object | | Heat-field tuning: `grid_cols` (2..256, default `48`), `grid_rows` (2..256, default `40`), `idw_power` (>0..8, default `2`). |
 
