@@ -362,7 +362,7 @@ TEST_CASE("compute_heat_field: weights use canvas pixels, not map units") {
   // weight them equally and give 50.
   REQUIRE(field.cells.size() == 1U);
   CHECK(field.cells[0].state == CellState::Value);
-  CHECK(field.cells[0].value == doctest::Approx(80.0F).epsilon(1e-6));
+  CHECK(static_cast<double>(field.cells[0].value) == doctest::Approx(80.0F).epsilon(1e-6));
 }
 
 TEST_CASE("compute_heat_field: a 1 x 1 grid") {
@@ -394,7 +394,7 @@ TEST_CASE("compute_heat_field: a sample within half a pixel of a cell centre set
   SUBCASE("d = 0.5 px exactly: not coincident (strictly less than), so it blends") {
     const HeatField field = compute_heat_field(config, mask, {far, {{0.75F, 0.5F}, 0, 3.0}});
     // d^2 = 0.25 and 2 against the far sample: (3/0.25 + 100/2) / (1/0.25 + 1/2) = 62/4.5.
-    CHECK(field.cells[0].value == doctest::Approx(62.0 / 4.5).epsilon(1e-6));
+    CHECK(static_cast<double>(field.cells[0].value) == doctest::Approx(62.0 / 4.5).epsilon(1e-6));
   }
 }
 
@@ -407,8 +407,8 @@ TEST_CASE("compute_heat_field: coincident sensors") {
   // On the spot: the first in input order wins outright, no average.
   CHECK(cell_at(field, 2, 2).value == 10.0F);
   // Everywhere else in the room they weigh the same: the mean, with no division by zero.
-  CHECK(cell_at(field, 0, 9).value == doctest::Approx(15.0F));
-  CHECK(cell_at(field, 4, 0).value == doctest::Approx(15.0F));
+  CHECK(static_cast<double>(cell_at(field, 0, 9).value) == doctest::Approx(15.0F));
+  CHECK(static_cast<double>(cell_at(field, 4, 0).value) == doctest::Approx(15.0F));
   // Swapping the order swaps the winner on the spot.
   const HeatField swapped = compute_heat_field(config, mask, {samples[1], samples[0]});
   CHECK(cell_at(swapped, 2, 2).value == 20.0F);
