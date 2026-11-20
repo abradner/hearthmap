@@ -305,5 +305,6 @@ export function fitMapAreaToAspect(config: Config, imageWidth: number, imageHeig
     height = maxH;
     width = Math.round(maxH * aspect);
   }
-  return { ...config, canvas: { ...config.canvas, map_area: { x: 0, y: 0, width: Math.max(1, width), height: Math.max(1, height) } } };
+  const { x, y } = PANEL_MAP_AREA;
+  return { ...config, canvas: { ...config.canvas, map_area: { x, y, width: Math.max(1, width), height: Math.max(1, height) } } };
 }

@@ -60,8 +60,11 @@ export function defaultMapArea(canvas: { width: number; height: number }): Canva
   return { x: 0, y: 0, width: canvas.width, height: canvas.height };
 }
 
-/** The map area of the panel layout in the UI spec: left of the HUD column on 1280x800. */
-export const PANEL_MAP_AREA: Readonly<CanvasRect> = { x: 0, y: 0, width: 960, height: 800 };
+/**
+ * The map region of the panel layout in the UI spec on 1280x800: below the 64 px top bar and
+ * left of the HUD column (ui_lvgl's theme.h kMapRegion*, pinned by test/defaults.test.ts).
+ */
+export const PANEL_MAP_AREA: Readonly<CanvasRect> = { x: 0, y: 64, width: 920, height: 736 };
 
 /** Schema maxItems (ruling R3). */
 export const MAX_ROOMS = 64;

@@ -361,8 +361,8 @@ spec's map region (x 0..920, y 64..800, about 40 px left margin), clear of the 6
 the HUD column, and at the flat's 12:10 aspect (72 px per grid unit). **Why:** core hit-tests and
 interpolates in `map_area`, so the screen must draw the map exactly there, and the previous
 0,0,960,800 overlapped both the top bar and the HUD. **Would change if:** the layout changes; the
-map area is one config field. Open: the editor's default for new projects (D-044, `{0, 0, 960, 800}`) still
-overlaps the top bar and the HUD's left edge at x 936; it should follow this area.
+map area is one config field. The editor's default for new projects now follows the UI's free
+region too (D-044, amended).
 
 ### D-034 core and ui_lvgl reach the firmware by a build-time copy (provisional)
 
@@ -515,10 +515,14 @@ format changes (its schema is the contract).
 
 ### D-044 New editor projects set `map_area` to the panel layout explicitly (provisional)
 
-**Default:** a blank project writes `canvas.map_area` = `{0, 0, 960, 800}`, the map region of the
-UI spec's 1280 x 800 layout, rather than relying on the whole-canvas default (D-023), which would
-put the map under the HUD. "Match plan shape" keeps the area inside 960 x 800. **Would change
-if:** the panel layout changes.
+**Default:** a blank project writes `canvas.map_area` = `{0, 64, 920, 736}`, the map region of
+the UI spec's 1280 x 800 layout (below the 64 px top bar, left of the HUD column at x 936), rather
+than relying on the whole-canvas default (D-023), which would put the map under the HUD. "Match
+plan shape" keeps the area inside that region, anchored at its corner. The numbers are
+`kMapRegion*` in ui_lvgl's `theme.h`, and `editor/test/defaults.test.ts` reads them from there,
+so the two cannot drift. **Amended (follow-up review, issue 15):** the first default,
+`{0, 0, 960, 800}`, overlapped the top bar and the HUD's left edge. **Would change if:** the
+panel layout changes.
 
 ### D-045 Editor UI structure: pure `lib/`, tested; thin vanilla-TS `ui/` (provisional)
 

@@ -207,8 +207,8 @@ describe("layers and settings", () => {
   });
 
   it("fits the map area to a floor plan's proportions inside the panel's map space", () => {
-    expect(fitMapAreaToAspect(blankConfig(), 2000, 1000).canvas.map_area).toEqual({ x: 0, y: 0, width: 960, height: 480 });
-    expect(fitMapAreaToAspect(blankConfig(), 1000, 2000).canvas.map_area).toEqual({ x: 0, y: 0, width: 400, height: 800 });
+    expect(fitMapAreaToAspect(blankConfig(), 2000, 1000).canvas.map_area).toEqual({ x: 0, y: 64, width: 920, height: 460 });
+    expect(fitMapAreaToAspect(blankConfig(), 1000, 2000).canvas.map_area).toEqual({ x: 0, y: 64, width: 368, height: 736 });
     const c = blankConfig();
     expect(fitMapAreaToAspect(c, 0, 10)).toBe(c);
   });
