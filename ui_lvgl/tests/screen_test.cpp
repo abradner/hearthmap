@@ -305,7 +305,7 @@ TEST_CASE("the plant overlay shows thirst, happy range, the three stats and seen
   const std::size_t before = rig.screen->writes();
   rig.show(vm, 1000 + 600);
   CHECK(text(w.overlay_subtitle) == "West   seen 15 min ago");
-  CHECK(rig.screen->writes() > before);
+  CHECK(rig.screen->writes() == before + 1);  // the subtitle and nothing else
 
   vm.overlay.reset();
   rig.show(vm);
@@ -747,4 +747,22 @@ TEST_CASE("with the soil layer disabled the overlay shows moisture without judgi
   rig.show(vm);
   CHECK(text(rig.w().overlay_verdict) == "5%");
   CHECK(text_rgb(rig.w().overlay_verdict) == theme::kTextSecondary);
+}
+
+TEST_CASE("deleting the Screen's parent first leaves a Screen that is safe to update and destroy") {
+  host::HeadlessDisplay display(1280, 800);
+  lv_obj_t* holder = lv_obj_create(display.screen());
+  Config config = test::small_config();
+  RecordingSink sink;
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  auto screen = std::make_unique<Screen>(holder, config, nullptr, deps);
+  screen->update(test::temperature_vm(config), HeaderText{"09:00", "House"}, 1000);
+  lv_obj_delete(holder);  // LVGL frees the Screen's tree with its parent
+  CHECK(screen->widgets().root == nullptr);
+  const std::size_t before = screen->writes();
+  screen->update(test::temperature_vm(config), HeaderText{"09:01", "House"}, 1060);
+  CHECK(screen->writes() == before);  // nothing touched
+  screen.reset();                     // must not delete the freed root again
 }

@@ -363,8 +363,13 @@ struct Screen::Impl {
 
   // ---- construction ---------------------------------------------------------------------------
 
+  // LVGL frees the tree with its parent: if the embedder deletes the parent first, forget every
+  // widget so update() and ~Screen() never touch freed objects.
+  static void on_root_deleted(lv_event_t* e) { self(e)->w = ScreenWidgets{}; }
+
   void build_root(lv_obj_t* parent) {
     w.root = make_box(parent);
+    lv_obj_add_event_cb(w.root, on_root_deleted, LV_EVENT_DELETE, this);
     lv_obj_set_pos(w.root, 0, 0);
     lv_obj_set_size(w.root, config.canvas.width, config.canvas.height);
     lv_obj_set_style_bg_color(w.root, hex(theme::kBackground), 0);
@@ -1194,54 +1199,77 @@ struct Screen::Impl {
   void update_overlay(const ViewModel& vm, Timestamp now) {
     OverlayLook o = overlay_of(vm, now);
     if (overlay_look.has_value() && *overlay_look == o) return;
-    set_hidden(w.scrim, !o.open);
+    const OverlayLook* prev = overlay_look.has_value() ? &*overlay_look : nullptr;
+    if (prev == nullptr || prev->open != o.open) set_hidden(w.scrim, !o.open);
     if (o.open) {
+      // Opening, or switching to another pin, rewrites every group; otherwise only the groups
+      // whose shown state changed (a minute passing touches the subtitle and nothing else).
+      const bool all = prev == nullptr || !prev->open || prev->pin != o.pin || prev->pot != o.pot;
       const Pin& pin = config.pins[o.pin];
-      set_text(w.overlay_title, o.title);
-      set_text(w.overlay_subtitle, o.subtitle);
-      set_hidden(overlay_disc.holder, !o.pot);
-      set_hidden(overlay_dot_face, o.pot);
-      set_hidden(w.overlay_thirst, !o.pot);
+      if (all || prev->title != o.title) set_text(w.overlay_title, o.title);
+      if (all || prev->subtitle != o.subtitle) set_text(w.overlay_subtitle, o.subtitle);
+      if (all) {
+        set_hidden(overlay_disc.holder, !o.pot);
+        set_hidden(overlay_dot_face, o.pot);
+        set_hidden(w.overlay_thirst, !o.pot);
+        lv_obj_set_pos(overlay_stats, kOverlayPad,
+                       kOverlayPad + 2 * kOverlayDiscRadius + 28 + (o.pot ? 118 : 0));
+      }
       if (o.pot) {
-        set_ring(overlay_disc, o.ring_permille, o.status_colour);
-        if (pin.kind == PinKind::Plant) {
-          set_disc_image(overlay_disc, photo_for(pin),
-                         o.stale ? &overlay_leaf_stale : &overlay_leaf);
-        } else {
-          set_disc_image(overlay_disc, nullptr, nullptr);
+        if (all || prev->ring_permille != o.ring_permille ||
+            prev->status_colour != o.status_colour) {
+          set_ring(overlay_disc, o.ring_permille, o.status_colour);
         }
-        set_text(w.overlay_verdict, o.verdict);
-        lv_obj_set_style_text_color(w.overlay_verdict, hex(o.status_colour), 0);
-        if (o.bar_permille >= 0) {
-          lv_obj_set_width(overlay_bar_fill,
-                           std::max(kBarH, kOverlayInnerW * o.bar_permille / 1000));
-          lv_obj_set_style_bg_color(overlay_bar_fill, hex(o.status_colour), 0);
+        if (all || prev->stale != o.stale) {
+          if (pin.kind == PinKind::Plant) {
+            set_disc_image(overlay_disc, photo_for(pin),
+                           o.stale ? &overlay_leaf_stale : &overlay_leaf);
+          } else {
+            set_disc_image(overlay_disc, nullptr, nullptr);
+          }
+          count();
         }
-        set_hidden(overlay_bar_fill, o.bar_permille < 0);
-        if (o.happy_lo >= 0) {
-          lv_obj_set_x(overlay_bar_happy, kOverlayInnerW * o.happy_lo / 100);
-          lv_obj_set_width(overlay_bar_happy, kOverlayInnerW * (o.happy_hi - o.happy_lo) / 100);
-          set_text(w.overlay_happy, "happy " + std::to_string(o.happy_lo) + " to " +
-                                        std::to_string(o.happy_hi) + "%");
-        } else {
-          set_text(w.overlay_happy, "");
+        if (all || prev->verdict != o.verdict || prev->status_colour != o.status_colour) {
+          set_text(w.overlay_verdict, o.verdict);
+          lv_obj_set_style_text_color(w.overlay_verdict, hex(o.status_colour), 0);
         }
-        set_hidden(overlay_bar_happy, o.happy_lo < 0);
-        lv_obj_set_pos(overlay_stats, kOverlayPad, kOverlayPad + 2 * kOverlayDiscRadius + 28 + 118);
-      } else {
+        if (all || prev->bar_permille != o.bar_permille || prev->status_colour != o.status_colour) {
+          if (o.bar_permille >= 0) {
+            lv_obj_set_width(overlay_bar_fill,
+                             std::max(kBarH, kOverlayInnerW * o.bar_permille / 1000));
+            lv_obj_set_style_bg_color(overlay_bar_fill, hex(o.status_colour), 0);
+          }
+          set_hidden(overlay_bar_fill, o.bar_permille < 0);
+        }
+        if (all || prev->happy_lo != o.happy_lo || prev->happy_hi != o.happy_hi) {
+          if (o.happy_lo >= 0) {
+            lv_obj_set_x(overlay_bar_happy, kOverlayInnerW * o.happy_lo / 100);
+            lv_obj_set_width(overlay_bar_happy, kOverlayInnerW * (o.happy_hi - o.happy_lo) / 100);
+            set_text(w.overlay_happy, "happy " + std::to_string(o.happy_lo) + " to " +
+                                          std::to_string(o.happy_hi) + "%");
+          } else {
+            set_text(w.overlay_happy, "");
+          }
+          set_hidden(overlay_bar_happy, o.happy_lo < 0);
+        }
+      } else if (all || prev->stale != o.stale) {
         lv_obj_set_style_bg_color(overlay_dot, hex(o.stale ? theme::kStale : theme::kTextPrimary),
                                   0);
-        lv_obj_set_pos(overlay_stats, kOverlayPad, kOverlayPad + 2 * kOverlayDiscRadius + 28);
+        count();
       }
       for (std::size_t i = 0; i < kMaxStats; ++i) {
         const bool used = i < o.stats.size();
+        const bool was_used = prev != nullptr && i < prev->stats.size();
+        if (!all && used == was_used && (!used || prev->stats[i] == o.stats[i])) continue;
         set_text(w.overlay_stat_label[i], used ? o.stats[i].label : std::string());
         set_text(w.overlay_stat_value[i], used ? o.stats[i].value : std::string());
         if (used) {
           lv_obj_set_style_text_color(w.overlay_stat_value[i], hex(o.stats[i].colour), 0);
         }
       }
-      set_text(w.overlay_history_title, o.history_title);
+      if (all || prev->history_title != o.history_title) {
+        set_text(w.overlay_history_title, o.history_title);
+      }
     }
     overlay_look = std::move(o);
   }
@@ -1258,6 +1286,7 @@ Screen::~Screen() {
 }
 
 void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now) {
+  if (impl_->w.root == nullptr) return;  // the tree went with its parent
   impl_->update_header(header);
   impl_->update_tabs(vm);
   impl_->update_rooms(vm);
