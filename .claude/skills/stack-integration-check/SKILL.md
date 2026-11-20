@@ -153,8 +153,12 @@ start point is explicit and remote (`AGENTS.md` §8, Git hygiene in shared check
 git fetch origin main
 git worktree add ../integration-<date> -b scratch/integration-<date> origin/main
 cd ../integration-<date>
-git merge --no-ff <branch-1> <branch-2> ...   # resolve conflicts by union, reading both sides
+git merge --no-ff <branch-1>   # then <branch-2>, and so on: one branch per merge
 ```
+
+Merge the candidates **one at a time**, resolving each merge's conflicts by union (reading both
+sides) before adding the next. A single multi-branch `git merge` uses the octopus strategy, which
+refuses any merge that needs conflict resolution.
 
 Then the repo's real validation — the exact commands in `AGENTS.md` §6, including
 any version-manager prefix a fresh shell needs, plus any drift check the repo
