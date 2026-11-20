@@ -197,7 +197,12 @@ the device's measured slowdown stays under 50 ms, and caps any single step:
 | Schema maximum, all 256 pins in one room | 20 ms | 60 us (mask) | about 60 ms |
 
 Measured on the panel (ESP32-P4 rev v1.3 at 360 MHz, 2d81b5a, a private config of the
-panel-sized shape: 18 rooms, 22 pins, 75 entities, a 920 x 736 map):
+panel-sized shape: 18 rooms, 22 pins, 75 entities, a 920 x 736 map). These numbers cover that
+commit and the next one measured, c9282ff (the last component commit before the follow-up
+review), which booted in 1.02 s, drew its first frame in 1.4 s and then steady frames of 16 to
+23 ms, with no LVGL warnings and Home Assistant connected. The separate view and heat paths
+(D-047) and the SourceStatus wiring (D-046) came after and have been compiled for the panel but
+not measured on it:
 
 | Boot stage | Wall time | Longest single step |
 |---|---|---|

@@ -17,6 +17,10 @@ delivered through LVGL's input pipeline and applied with core's `apply()` before
 render times and buffer sizes). `now` is the readings fixture's `now`; timestamps are used as
 given.
 
+`hearthmap-render --check --config <json>` only loads the config (the JSON source, then core's
+`validate()`), prints each issue with its JSON path and exits 1 on any error: the step before
+flashing a panel (D-048, `components/hearthmap/README.md`).
+
 ## Dependencies
 
 All fetched by CMake at a pinned content hash on first configure (`cmake/`):

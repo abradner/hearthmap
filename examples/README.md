@@ -67,8 +67,8 @@ checks), so a typo cannot silently test nothing.
 
 ### What each fixture should show
 
-Thirst values below are 1 − (raw − dry) / (wet − dry). The view-model tests (PR 4) and golden
-images (PR 5) assert these outcomes; if a rule in `docs/decisions.md` changes, update this table
+Thirst values below are 1 − (raw − dry) / (wet − dry). The view-model tests and golden
+images assert these outcomes; if a rule in `docs/decisions.md` changes, update this table
 in the same PR.
 
 **`all-ok`**: every sensor fresh, inside its comfort band. The balcony is 9 °C and 80% RH but

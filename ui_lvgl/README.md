@@ -12,11 +12,11 @@ Its visual contract is the approved UI spec (mockup A); the sample render in
 
 | Header | What |
 |---|---|
-| `hearthmap/ui/screen.h` | `Screen`: builds the tree once per config, `update(vm, header, now)` diffs |
+| `hearthmap/ui/screen.h` | `Screen`: builds the tree once per config, `update(vm, header, now[, status])` diffs; `SourceStatus` carries what the view model does not (offline, re-stamped times, a heat image behind the layer, D-046) |
 | `hearthmap/ui/ports.h` | `EventSink` (taps become core `UiEvent`s) and `ImageProvider` (plant photos) |
 | `hearthmap/ui/heat_image.h` | `HeatRasterizer` (cells to pixels, room-clipped) and `colour_cells` (core's `ColourLut`) |
 | `hearthmap/ui/fonts.h` | `Fonts`: the only place font choice lives |
-| `hearthmap/ui/format.h` | Value text, moisture percent, ring length, verdicts, status colours |
+| `hearthmap/ui/format.h` | Value text, moisture percent, ring length, verdicts, status colours, the house summary's words |
 | `hearthmap/ui/theme.h` | The spec's colours and fixed geometry |
 
 The embedder owns the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 pixels) and its
@@ -26,10 +26,12 @@ The embedder owns the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 
 build_view_model(config, readings, now, ui_state, vm)            // core, reuse form
 heat_samples(...); compute_heat_field(...); colour_cells(...);   // only when the layer or data changed
 rasterizer.render(field, cell_colours, heat_pixels); screen.invalidate_heat();
-screen.update(vm, header_text, now);
+screen.update(vm, header_text, now);            // header_text.summary = summary_text(vm.summary)
 ```
 
-`host/src/app.cpp` is the reference composition.
+`host/src/app.cpp` is the reference composition on the host. The device
+(`components/hearthmap/`) splits the heat work from the view update so taps never wait for it,
+and passes a `SourceStatus` (D-046, D-047).
 
 ## Behaviour worth knowing
 

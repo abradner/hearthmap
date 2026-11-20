@@ -86,7 +86,6 @@ struct HitResult {
 ///   earlier in config order. Pins of every kind are hittable whichever layer is active.
 /// - Else the first room in config order whose polygon contains the point (in map space).
 /// - Else None.
-/// Implemented in core (PR 4).
 HitResult hit_test(const Config& config, CanvasPoint point,
                    double radius_px = kDefaultPinHitRadiusPx);
 
@@ -97,7 +96,6 @@ HitResult hit_test(const Config& config, CanvasPoint point,
 ///   stays as it is.
 /// - TapHudItem: overlay_pin = pin_id when it names a pin in config, else unchanged.
 /// - CloseOverlay: overlay_pin = nullopt.
-/// Implemented in core (PR 4).
 UiState apply(const Config& config, const UiState& state, const UiEvent& event);
 
 // ---------------------------------------------------------------------------------------------
@@ -209,12 +207,11 @@ struct ViewModel {
 /// unit is still shown in full but may allocate. Opening an overlay may allocate once (each row's
 /// unit is reserved to kOverlayUnitCapacity then); closing it releases its rows. If
 /// ui_state.active_layer is disabled, the view model uses config.default_layer instead
-/// (ViewModel::active_layer says which). Implemented in core (PR 4).
+/// (ViewModel::active_layer says which).
 void build_view_model(const Config& config, const Readings& readings, Timestamp now,
                       const UiState& ui_state, ViewModel& out);
 
 /// Returning form of build_view_model(); allocates.
-/// Implemented in core (PR 4).
 ViewModel build_view_model(const Config& config, const Readings& readings, Timestamp now,
                            const UiState& ui_state);
 
@@ -224,12 +221,10 @@ ViewModel build_view_model(const Config& config, const Readings& readings, Times
 /// disabled. Pins in outdoor rooms are included; compute_heat_field() ignores them, so the
 /// outdoor rule lives in one place. Pins whose room id is unknown are skipped (validate()
 /// makes that impossible in a usable config).
-/// Implemented in core (PR 4).
 void heat_samples(const Config& config, const Readings& readings, Timestamp now, Layer layer,
                   std::vector<HeatSample>& out);
 
 /// Returning form of heat_samples(); allocates.
-/// Implemented in core (PR 4).
 std::vector<HeatSample> heat_samples(const Config& config, const Readings& readings, Timestamp now,
                                      Layer layer);
 

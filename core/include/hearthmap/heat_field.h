@@ -92,11 +92,9 @@ class RoomScanner {
 /// A non-positive grid size gives an empty mask (cols = rows = 0). Rooms past index 32766
 /// (beyond int16) are never assigned. Cost: O(cells * rooms) bounding-box checks plus a
 /// point_in_polygon() per candidate room.
-/// Implemented in core (PR 3).
 void build_room_mask(const Config& config, RoomMask& out);
 
 /// Returning form of build_room_mask(); allocates.
-/// Implemented in core (PR 3).
 RoomMask build_room_mask(const Config& config);
 
 /// One point measurement feeding a field. Single precision throughout (D-022).
@@ -155,7 +153,6 @@ struct HeatField {
 /// naming a room `config` does not have is Outside.
 /// Cost: O(cells * samples) room-index comparisons plus O(cells * samples in the cell's room)
 /// weight evaluations. Same inputs give bit-identical cells (docs/decisions.md D-024).
-/// Implemented in core (PR 3).
 void compute_heat_field(const Config& config, const RoomMask& mask,
                         const std::vector<HeatSample>& samples, HeatField& out);
 
@@ -171,7 +168,6 @@ void compute_heat_field_rows(const Config& config, const RoomMask& mask,
 
 /// Returning form of compute_heat_field(); allocates. Tests and the host use it; the device
 /// keeps one HeatField per layer and calls the reuse form.
-/// Implemented in core (PR 3).
 HeatField compute_heat_field(const Config& config, const RoomMask& mask,
                              const std::vector<HeatSample>& samples);
 

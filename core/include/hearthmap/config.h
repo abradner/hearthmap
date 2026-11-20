@@ -320,7 +320,6 @@ struct ConfigIssue {
 ///   temperature_unit Fahrenheit while layers[Temperature].present != kAllBandFields, reported
 ///   once at "/layers/temperature" (the defaults are Celsius, D-011).
 /// Warnings: a pin whose position is outside its room's polygon; an enabled layer no pin feeds.
-/// Implemented in core (PR 2).
 std::vector<ConfigIssue> validate(const Config& config);
 
 /// validate(), one unit at a time, for callers that must not block (the device's boot,

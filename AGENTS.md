@@ -16,9 +16,10 @@ public/private rule is the one most likely to be broken by accident.
 A wall panel that shows a house as a heatmap built from Home Assistant sensors: a pin per sensor,
 pulsing rooms where something is wrong, and a HUD column listing the plants that need water. The
 target hardware is an ESP32-P4 board with a 10.1" capacitive touch screen used in landscape at
-1280 x 800, running ESPHome with LVGL 9.6. Status: PR 1 (scaffold and contracts). Core logic,
-the LVGL UI, the host renderer, the pin editor, the ESPHome component and a calibration tool
-follow in that order (each directory's README says which PR fills it).
+1280 x 800, running ESPHome with LVGL 9.6. Status: every part exists and is tested (core, the
+LVGL UI, the host renderer, the pin editor, the ESPHome component, the calibration tool); the
+component runs on the real panel (`README.md`, "Status", says which commit was measured). Each
+directory's README describes what is there.
 
 Domain nouns, several narrower than they read:
 
@@ -46,7 +47,7 @@ without the operator; they are **provisional** until confirmed or replaced in re
 
 1. **Claims must hold.** A doc, comment, or commit message claiming a property the mechanism
    doesn't deliver is a bug, not documentation. Interim states say so in-place ("stated, not
-   enforced — landing in PR 4"); stopgaps record the bar they miss. On this project the screen
+   enforced — landing in a later PR"); stopgaps record the bar they miss. On this project the screen
    is a claim too: a stale sensor shows stale, an unmeasured room shows "no data", never an
    interpolated guess (`docs/decisions.md` D-005, D-012).
 2. **If a test could check it, it lives in core.** Severity, thirst, interpolation, HUD order,
@@ -81,10 +82,10 @@ A conflict with a principle is a stop-and-check, never something to quietly work
 | Layer | Technology | Notes |
 |---|---|---|
 | Core library | C++17, CMake >= 3.21 | No dependencies. Warnings are errors (`cmake/HearthmapWarnings.cmake`). No exceptions, no RTTI (D-002) |
-| UI | LVGL 9.6.0 (PR 5) | The version ESPHome pins; `ui_lvgl/` depends on core + LVGL only |
-| Host renderer | C++17 + LVGL headless (PR 5) | `host/`: renders view models to PNG for golden-image tests |
-| Firmware | ESPHome external component (PR 7) | Python codegen (`components/hearthmap/__init__.py`) + thin C++ glue |
-| Editor | Vite + TypeScript, static (PR 6) | `editor/`: no backend, GitHub Pages |
+| UI | LVGL 9.6.0 | The version ESPHome 2026.11.0 pins; `ui_lvgl/` depends on core + LVGL only |
+| Host renderer | C++17 + LVGL headless | `host/`: renders view models to PNG for golden-image tests; `--check` runs `validate()` on a config |
+| Firmware | ESPHome 2026.11.0 external component | Python codegen (`components/hearthmap/__init__.py`) + thin C++ glue; tests: pytest, pinned in `components/hearthmap/tests/requirements.txt` |
+| Editor | Vite + TypeScript, static | `editor/`: no backend, GitHub Pages; Vitest unit tests and a Playwright smoke test, exact versions in `package-lock.json` |
 | Calibration tool | Python 3.11+, standard library only | `tools/calibrate/`; tests: pytest 9.2.0, pinned in `tools/calibrate/requirements-dev.txt` |
 | Config contract | JSON Schema 2020-12 | `schema/hearthmap.schema.json`; validator `jsonschema==4.23.0` pinned in `schema/requirements.txt` |
 | Testing | doctest v2.4.12 (commit-pinned, `cmake/HearthmapDoctest.cmake`) via `ctest`; Python `unittest` for the schema | |
@@ -244,6 +245,9 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
 - **ui-host**: the same with `-DHEARTHMAP_BUILD_UI=ON`, on GCC and Clang: ui_lvgl's and the
   host's tests and the golden images, compared exactly. On failure the actual and diff images
   are uploaded as an artifact.
+- **editor**: in `editor/` with Node 24, `npm ci` from the lockfile, then lint, typecheck, Vitest
+  unit tests (including `schema/semantic-cases.json`, shared with core), the production build
+  and the Playwright smoke test in Chromium (report uploaded on failure).
 - **schema**: installs the pinned validator, runs `schema/validate.py` (every example config and
   fixture, plus cross-references) and `schema/test_schema.py` (mutations that must be rejected).
 - **calibrate**: `pytest` for `tools/calibrate/` on Python 3.11 and 3.13, with the pinned
@@ -251,12 +255,15 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
 - **format**: `clang-format --dry-run --Werror` with clang-format 19.1.7 from PyPI.
 - **component-codegen**: pytest over `components/hearthmap/tests` (the ESPHome component's
   generator: schema checker against `jsonschema`, defaults and present bits, photos, the library
-  copy, and C++ checks linking core's real `validate()` against generated tables;
+  copy, and C++ checks linking core's real `validate()` against generated tables, plus the device
+  pipeline's per-step bounds and its heat-rebuild policy (D-038, D-047);
   `HEARTHMAP_REQUIRE_CORE=1` makes those fail rather than skip).
 - **esphome-config**: `esphome config` on `examples/flat/esphome/flat-panel.yaml` with the
   digest-pinned `ghcr.io/esphome/esphome:2026.11.0` image, plus a negative control (a broken config
   must fail it). A full firmware compile is the manual `esphome-compile` workflow
-  (`workflow_dispatch`), too slow for every PR.
+  (`workflow_dispatch`), too slow for every PR; it has not been run on `main` yet (an open
+  issue), so the firmware compile is checked by hand, with the same pinned image, before a PR
+  that changes device code is opened.
 
 Every action is pinned by commit SHA. There are no path filters: every job runs on every PR.
 
@@ -524,7 +531,24 @@ be cited from code comments and PR descriptions.
 Entry shape: **what happened → the actual root cause → the general rule → where the regression
 test lives** (if one exists).
 
-No entries yet.
+1. **"Seen just now" on every sensor, and an inert staleness timeout.** The device re-stamps
+   every value while Home Assistant is connected (ruling R8, so steady sensors do not age into
+   stale), and the overlay printed "seen N min ago" from that same timestamp, so it always read
+   "just now". Root cause: a value the glue synthesises was passed on looking like one the
+   source reported, and the UI could not tell. General rule: when an embedder fabricates or
+   rewrites a field to satisfy one consumer, every other consumer of that field must be told, or
+   must not read it; say in the field's doc what it means on each platform. Regression test:
+   `ui_lvgl/tests/screen_test.cpp`, "re-stamped readings show no seen time" (D-046).
+2. **Chatty sensors starved the screen.** On the panel a heat rebuild takes about a second, and
+   one was started for every changed reading every 500 ms, with taps applied only between
+   rebuilds, so the pipeline never caught up and taps waited. It was invisible on the host,
+   where a rebuild takes milliseconds. Root cause: one pipeline served two jobs with different
+   costs and deadlines (a cheap view that must follow taps at once, an expensive image that can
+   lag). General rule: on the device, split work by deadline, not by data flow; give the
+   expensive path its own budget, and test the policy (what triggers it, how often) on the host
+   with a fake clock, since the host's speed hides the failure. Regression test:
+   `components/hearthmap/tests/test_cpp.py::test_heat_rebuild_policy_and_immediate_taps`
+   (D-047).
 
 ## 10. Maintaining This Document
 

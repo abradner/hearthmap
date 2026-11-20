@@ -30,6 +30,8 @@ The test executable keeps exceptions because doctest uses them.
 `voc` are optional and shown in the overlay. **Why:** one layer needs one unit; mixing ppm with
 µg/m³ in one interpolated field is meaningless. CO2 is the common "open a window" signal.
 **Would change if:** someone wants a PM2.5 heatmap: add a fifth layer rather than overloading air.
+**Note (follow-up review):** this is about the heat layer only. The top bar's house summary also
+shows a mean of fresh indoor PM2.5 (D-030, D-049), as a number, not judged and not a layer.
 
 ### D-004 Soil and plant pins' temperature/humidity are display-only (provisional)
 
@@ -213,10 +215,14 @@ the hot side when `scale_max <= comfort_max`. **Why:** outdoor air is about 420 
 `float` (`MapPointF` for sample positions). Colour is resolved per heat cell, never per screen
 pixel, through a `ColourLut` (band + palette -> N `Rgb565`) built once per band. Reuse forms write
 into caller-owned storage (`build_room_mask`, `compute_heat_field`, `heat_samples`,
-`build_view_model`, `build_colour_lut`); the returning forms wrap them. `idw_power == 2` takes a
-multiply-only path; other powers may use `powf`. Per-frame paths do not allocate once warmed up.
-**Why:** double arithmetic is software-emulated on that chip, and a 48 x 40 field per frame is
-cheap only if it stays in float and off the heap. **Would change if:** profiling on the panel says
+`build_view_model`, `build_colour_lut`); the returning forms wrap them. Integer powers 1..8 use
+multiplication and at most one `sqrtf` (D-024; the ruling's "`idw_power == 2` multiply-only" is
+the special case); only non-integer powers call `powf`. Per-frame paths do not allocate once
+warmed up. **Why:** double arithmetic is software-emulated on that chip, and a field per frame
+(the schema default and the example are 48 x 40; the panel's config is 131 x 105) is cheap only if
+it stays in float and off the heap. **Corrected (follow-up review):** this entry used to say
+"other powers may use `powf`" and quoted only the 48 x 40 grid; D-024 already took integer powers
+off `powf`, and real configs use finer grids. **Would change if:** profiling on the panel says
 otherwise.
 
 ### D-023 `map_area` defaults to the whole canvas (contract round 1, R14)
@@ -364,6 +370,11 @@ interpolates in `map_area`, so the screen must draw the map exactly there, and t
 map area is one config field. The editor's default for new projects now follows the UI's free
 region too (D-044, amended).
 
+### D-033 (unused)
+
+Intentionally unused: numbers were handed out to parallel builders on one night, and this one was
+never claimed. Kept empty so later references do not shift.
+
 ### D-034 core and ui_lvgl reach the firmware by a build-time copy (provisional)
 
 **Question:** ESPHome copies only a component directory's top-level files into the build, and
@@ -437,7 +448,9 @@ heat-image rows (`HeatRasterizer::render_rows()`) per step; `setup()` only subsc
 one failure the screen cannot report, and the cost scaled with pixels x rooms x vertices, so a
 bigger house would only have made it worse. **Guard:** `components/hearthmap/tests/test_cpp.py`
 drives the device's pipeline on fictional configs at the schema's maximums and fails if any one
-step exceeds 5 ms on the host; the pre-fix construction took 7.2 s there, 37 ms per step.
+step exceeds a host cap (see the amendment below: now 2 ms per step plus a bound on each stage's
+mean step scaled by the device's measured slowdown; the first version used 5 ms per step); the
+pre-fix construction took 7.2 s there, 37 ms per step.
 **Would change if:** a step proves too slow on the panel, in which case the step size shrinks.
 **Amended (second hardware run, b68f721):** the panel booted, but the single load step (build,
 whole `validate()`, colour tables) held `loop()` for 216 ms and a full heat-image repaint held
@@ -622,3 +635,17 @@ formatting stays in `host/src/clock_text.cpp`. Additive to core's API: no signat
 **Why numbers in core and words in ui_lvgl:** averaging is logic a test can check (principle 2);
 wording is presentation, like every other string on screen. **Would change if:** the summary
 gains judgement (a colour for a hot house), which would be core's too.
+
+### D-050 On the soil layer a room takes one plant's colour, against the layer's band (provisional)
+
+**What exists:** the heat field is room-local (D-005) and the soil layer's value is thirst
+(D-010), so a room with one plant is filled with that plant's thirst, coloured through the soil
+layer's band (one colour table per layer). The plant's pin ring, badge and HUD entry judge the
+same thirst against the plant's own band (`effective_soil_band()`: the layer band with the pin's
+happy range). So the room and the pin can disagree: a plant whose happy range ends at 40 % thirst
+can be badged "water soon" in a room drawn neutral, or the reverse. Two plants in one room are
+blended by distance like any other samples. **Accepted for the first version:** the pin, the
+badge and the HUD are the judgement; the room colour is a picture of how dry the soil is overall.
+**Would change if:** the room colour should agree with the pins, by giving each soil sample a
+value already normalised against its own band (an open issue), which would make the field's
+domain "fraction of the way out of the happy range" rather than raw thirst.

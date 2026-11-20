@@ -86,7 +86,7 @@ inline bool contains(const CanvasRect& r, CanvasPoint p) {
 /// detected explicitly before crossings are counted (collinear edges can round to an odd
 /// count): all vertices on one line, within a tolerance of a few ulps of the coordinates'
 /// magnitude, so collinear input rounded to doubles still counts as collinear while a real
-/// sliver (1e-6 thick in map space) does not. Implemented in core (PR 3).
+/// sliver (1e-6 thick in map space) does not.
 bool point_in_polygon(const Polygon& polygon, MapPoint p);
 
 }  // namespace hearthmap

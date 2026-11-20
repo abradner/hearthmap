@@ -12,8 +12,10 @@ room existing, band ordering, calibration width, polygon simplicity) belong to c
 `validate()`, declared in `config.h`. `validate()` also re-checks every range and pattern this
 schema states, because the device's generated tables never pass through a JSON Schema
 validator: no config source may rely on the schema having run (`docs/decisions.md` D-017).
-`validate.py` checks only ids and cross-references, so the examples in CI cannot drift before
-core's validator exists.
+`validate.py` checks only ids and cross-references; core's `validate()` itself runs on the
+example through the host's tests and `hearthmap-render --check` (D-048), and
+`semantic-cases.json` holds the schema-valid configs `validate()` must refuse or accept, read by
+core's and the editor's tests alike.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r schema/requirements.txt
@@ -103,7 +105,7 @@ object has (D-019).
 
 Soil sensors disagree about what "dry" means, and a raw `0` is often a real reading of a
 bone-dry pot. Thirst is therefore judged against each sensor's own range, typically derived from
-its history (`tools/calibrate/`, PR 8).
+its history (`tools/calibrate/`).
 
 | Field | Type | Meaning |
 |---|---|---|

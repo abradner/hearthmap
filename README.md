@@ -12,19 +12,19 @@ a floor plan.
 
 ## Status
 
-Early. This is the scaffold: build, tests, CI, the config schema with a fictional example, and the
-core library's public headers. Behaviour lands in this order:
+Every part exists and is tested: the core library, the LVGL screen and the host renderer with its
+golden images, the pin editor, the ESPHome component and the calibration tool. Each directory's
+README describes what is there.
 
-| PR | What |
-|---|---|
-| 1 | Scaffold, schema, example, core headers (this) |
-| 2 | core: config validation, calibration, severity |
-| 3 | core: geometry, heat field, colour scale |
-| 4 | core: view model, HUD selection, hit-testing |
-| 5 | LVGL UI and host renderer, golden images |
-| 6 | Pin editor (static web app) |
-| 7 | ESPHome external component |
-| 8 | Calibration tool |
+The component as of commit c9282ff has been compiled for the panel and runs on real hardware
+with a private config of 18 rooms, 22 pins, 75 entities and a 920 x 736 map: boot in about 1.0 s,
+first frame in 1.4 s, steady frames 16 to 23 ms, no LVGL warnings, connected to Home Assistant.
+Later device changes (for example the separate heat-image budget in D-047) have been compiled
+but not yet measured on the panel; `components/hearthmap/README.md` keeps the measurements and
+says which commit each covers.
+
+Nothing here is released: the firmware is built from the owner's private configuration, which
+pins this repository by tag (`AGENTS.md` §7).
 
 ## How it fits together
 
@@ -58,28 +58,40 @@ into their firmware elsewhere. This repository only ever holds the fictional fla
 ## Build and test
 
 Requires CMake >= 3.21, a C++17 compiler and Python >= 3.10. The first configure fetches doctest
-at a pinned commit.
+at a pinned commit (and, with the UI on, LVGL, nlohmann/json and lodepng at pinned hashes).
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON
 cmake --build build
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure      # core, ui_lvgl, host, golden images
+
+# Check a config the way the panel will before flashing it (core's validate()):
+build/host/hearthmap-render --check --config examples/flat/config.json
 
 python3 -m venv .venv && .venv/bin/pip install -r schema/requirements.txt
 .venv/bin/python schema/validate.py
 .venv/bin/python schema/test_schema.py
 ```
 
+The editor (`editor/`), the component's tests (`components/hearthmap/tests/`) and the calibration
+tool (`tools/calibrate/`) each document their own commands; `AGENTS.md` §7 lists what CI runs.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `core/` | The library: headers in `core/include/hearthmap/`, tests in `core/tests/` |
-| `ui_lvgl/`, `host/`, `components/hearthmap/`, `editor/`, `tools/calibrate/` | Later PRs; each has a README saying what lands there |
+| `ui_lvgl/` | The LVGL object tree for one screen, driven by core's view model |
+| `host/` | Headless renderer to PNG, golden images, and the pre-flash `--check` |
+| `components/hearthmap/` | The ESPHome external component and its tests |
+| `editor/` | The browser pin editor (static, no backend) |
+| `tools/calibrate/` | Proposes per-sensor soil ranges from Home Assistant history |
 | `schema/` | The config contract, its field guide, and the validator |
 | `examples/` | A fictional flat and readings fixtures |
 | `docs/` | Design decisions, the boundary map, review machinery |
 
 ## Licence
 
-Apache-2.0. See [LICENSE](LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE). Unless required by
+applicable law or agreed to in writing, software distributed under the licence is distributed on
+an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
