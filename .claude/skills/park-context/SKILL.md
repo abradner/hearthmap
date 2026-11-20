@@ -53,8 +53,14 @@ Every token spent here is one the handoff can't use. Hard constraints, no except
    mkdir -p .claude/handoffs   # gitignored, so absent in a fresh clone or new worktree
    base=".claude/handoffs/$(date -u +%Y%m%d-%H%M%S)-<branch-slug>"
    f="$base.md"; n=2
-   until (set -C; : > "$f") 2>/dev/null; do f="$base-$n.md"; n=$((n+1)); done
+   until (set -C; : > "$f") 2>/dev/null; do
+     [ -e "$f" ] || { echo "cannot create $f" >&2; f=; break; }   # not a collision: stop
+     f="$base-$n.md"; n=$((n+1))
+   done
    ```
+
+   Retry only on a collision. If `$f` ends up empty, creation failed for another reason (an
+   unwritable directory, a full disk): report the error to the operator and stop.
 
 3. **Ratchet what's durable.** A lesson learned this session dies with the handoff file unless it
    reaches its permanent home. If it is a one-line append and the tree is otherwise clean, write

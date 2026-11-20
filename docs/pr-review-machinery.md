@@ -150,8 +150,8 @@ They are separate API routes, and the substance is rarely in the one reached for
 
 ```bash
 gh pr view <n> --json comments                     # issue comments
-gh api repos/{owner}/{repo}/pulls/<n>/reviews      # review bodies
-gh api repos/{owner}/{repo}/pulls/<n>/comments     # INLINE — usually where the findings are
+gh api --paginate repos/{owner}/{repo}/pulls/<n>/reviews    # review bodies
+gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments   # INLINE — usually where the findings are
 ```
 
 Codex posts its findings as **inline comments** while its review *body* is a boilerplate template
@@ -338,6 +338,10 @@ account, which otherwise errors the whole filter and takes the check down with i
 Empty output means **review of this head could not be established** — not that it was definitely
 never reviewed; §1's issue-comment-only reviewers and inline-only reviews both produce an empty
 result while a review exists. Report the limit, not a stronger claim than the evidence carries.
+
+**Bind the merge itself to the checked head.** The check above and the merge are separate steps, so
+a push between them would merge a head nobody checked. Pass the SHA you checked to the merge:
+`gh pr merge <n> --squash --match-head-commit "$HEAD_SHA"`, which refuses if the head has moved.
 Output alone is not sufficient either: check each row is a real
 review rather than an error notice (§2 — a failed run says it could not review and carries zero
 inline comments) or an agent bookkeeping reply. If nothing valid matches, either solicit a review of

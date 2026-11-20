@@ -298,7 +298,9 @@ projects; adjust only with reason, and record the reason (see §10).
   history) and outward-facing actions (publishing, sending, deploying) need explicit approval,
   every time. Approval for one instance is not approval for the next.
 - **Merging needs the owner's go-ahead.** A completed review, green CI or a finished followup is
-  not authorization: report readiness and stop.
+  not authorization: report readiness and stop. On the go-ahead, bind the merge to the head that
+  was reviewed (`gh pr merge <n> --squash --match-head-commit <sha>`; `docs/pr-review-machinery.md`
+  §6), so a push after the check cannot be merged unread.
 - Never force-push or rewrite published history without an explicit, current go-ahead.
 - **Visibility and content are separate axes.** Before making anything public, do not let a narrow
   confirmation (repo name, a visibility toggle) stand in for consent to the *content* — git
@@ -411,8 +413,10 @@ projects; adjust only with reason, and record the reason (see §10).
 
 ### Git hygiene in shared checkouts
 
-- **Create branches only from an explicit start point** (`git checkout -B <name> origin/main`) when
-  anything else might be operating in the same checkout, and check `git branch --show-current`
+- **Create branches only from an explicit start point** (`git checkout -b <name> origin/main`) when
+  anything else might be operating in the same checkout. Use `-b`, which fails if the name is
+  taken, not `-B`, which silently resets someone else's branch of that name; reset a branch only
+  as a separate step, once its work is known to be disposable. Check `git branch --show-current`
   before any operation that depends on HEAD. (A "one-line docs PR" silently inherited five feature
   commits from an in-repo builder agent's branch and was reviewed in that state. "Only one builder
   running" is not "only one git user"; prefer worktree isolation for delegated builders.)
