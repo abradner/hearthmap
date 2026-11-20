@@ -48,7 +48,7 @@ Reading value_reading(double value, Timestamp last_updated, std::string unit) {
 
 Config flat_config() {
   Config c;
-  c.canvas = Canvas{1280, 800, Orientation::Landscape, CanvasRect{0, 0, 960, 800}};
+  c.canvas = Canvas{1280, 800, Orientation::Landscape, CanvasRect{40, 76, 864, 720}};
   c.temperature_unit = TemperatureUnit::Celsius;
   c.rooms = {
       room("living", "Living room", {{0.0, 0.0}, {0.4167, 0.0}, {0.4167, 0.6}, {0.0, 0.6}}),

@@ -459,3 +459,113 @@ TEST_CASE("pin labels and badges are drawn even though they sit outside their pi
   CHECK(count(rig.w().pin_badge[0], warn) > 100);  // the triangle
   CHECK(count(rig.w().pin_badge[1], danger) > 100);
 }
+
+// ---- layout on dense configs -----------------------------------------------------------------
+
+namespace {
+
+struct DenseRig {
+  host::HeadlessDisplay display{1280, 800};
+  Config config = test::dense_config();
+  RecordingSink sink;
+  std::unique_ptr<Screen> screen;
+  DenseRig() {
+    ScreenDeps deps;
+    deps.fonts = builtin_fonts();
+    deps.sink = &sink;
+    screen = std::make_unique<Screen>(display.screen(), config, nullptr, deps);
+    screen->update(test::dense_vm(config), HeaderText{"09:00", "House"}, 1000);
+    display.render();
+  }
+  const ScreenWidgets& w() const { return screen->widgets(); }
+};
+
+lv_area_t area_of(lv_obj_t* o) {
+  lv_area_t a;
+  lv_obj_get_coords(o, &a);
+  return a;
+}
+
+bool overlap(const lv_area_t& a, const lv_area_t& b) {
+  return a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2;
+}
+
+}  // namespace
+
+TEST_CASE("long plant names stay on one line, truncated before the percentage") {
+  DenseRig rig;
+  const auto& w = rig.w();
+  const int line = lv_font_get_line_height(builtin_fonts().px22);
+  for (std::size_t c = 0; c < w.hud_card.size(); ++c) {
+    const lv_area_t name = area_of(w.hud_name[c]);
+    const lv_area_t room = area_of(w.hud_room[c]);
+    const lv_area_t pct = area_of(w.hud_percent[c]);
+    CHECK_MESSAGE(name.y2 - name.y1 + 1 <= line, "card " << c);
+    CHECK(name.y2 < room.y1);  // never drawn over the room line
+    CHECK(name.x2 < pct.x1);   // stops before the percentage column
+    CHECK(room.x2 < pct.x1);
+  }
+  // LVGL's DOTS mode rewrites the shown text: the long name ends in an ellipsis.
+  const std::string shown = text(w.hud_name[2]);
+  CHECK(shown.rfind("Variegated", 0) == 0);
+  CHECK(shown.size() >= 3);
+  CHECK(shown.substr(shown.size() - 3) == "...");
+}
+
+TEST_CASE("a long name in the overlay header stays on one line") {
+  DenseRig rig;
+  ViewModel vm = test::dense_vm(rig.config);
+  OverlayView ov;
+  ov.pin_index = 2;
+  vm.overlay = ov;
+  rig.screen->update(vm, HeaderText{"09:00", "House"}, 1000);
+  rig.display.render();
+  const int line = lv_font_get_line_height(builtin_fonts().px34);
+  const lv_area_t title = area_of(rig.w().overlay_title);
+  CHECK(title.y2 - title.y1 + 1 <= line);
+  CHECK(title.y2 < area_of(rig.w().overlay_subtitle).y1);
+}
+
+TEST_CASE("room labels fit their room, or are dropped when too narrow") {
+  DenseRig rig;
+  const auto& w = rig.w();
+  const CanvasRect& m = rig.config.canvas.map_area;
+  auto room_right = [&](std::size_t r) {
+    double x = 0;
+    for (const auto& v : rig.config.rooms[r].polygon) x = std::max(x, v.x);
+    return m.x + x * m.width;
+  };
+  // Toilet (60 px) and Laundry: both shown, neither past its room, not touching each other.
+  CHECK_FALSE(hidden(w.room_label[0]));
+  CHECK(area_of(w.room_label[0]).x2 < room_right(0));
+  CHECK_FALSE(overlap(area_of(w.room_label[0]), area_of(w.room_label[1])));
+  CHECK(area_of(w.room_label[1]).x2 < room_right(1));
+  // Duct (30 px): fewer than three characters fit, so no label at all.
+  CHECK(hidden(w.room_label[2]));
+}
+
+TEST_CASE("a room label moves off a pin or value pill that covers its corner") {
+  DenseRig rig;
+  const auto& w = rig.w();
+  // Lounge: plant 0 sits on its top-left corner.
+  CHECK_FALSE(overlap(area_of(w.room_label[3]), area_of(w.pin[0])));
+  CHECK_FALSE(overlap(area_of(w.room_label[3]), area_of(w.pin_badge[0])));
+  // Laundry: the temperature pin's value pill sits where the label would go.
+  CHECK_FALSE(overlap(area_of(w.room_label[1]), area_of(w.pin_value[7])));
+  CHECK_FALSE(overlap(area_of(w.room_label[1]), area_of(w.pin[7])));
+  // A label with nothing in the way stays at the top-left (Toilet).
+  const lv_area_t toilet = area_of(w.room_label[0]);
+  CHECK(toilet.y1 < 76 + 40);
+}
+
+TEST_CASE("seven HUD cards and the overflow line fit on the screen") {
+  DenseRig rig;
+  const auto& w = rig.w();
+  REQUIRE(w.hud_card.size() == 7);
+  const lv_area_t last = area_of(w.hud_card[6]);
+  const lv_area_t more = area_of(w.hud_more);
+  CHECK(text(w.hud_more) == "+3 more");
+  CHECK(last.y2 < more.y1);
+  CHECK(more.y2 <= 800 - 12);
+  CHECK(last.y2 - last.y1 + 1 == theme::kHudCardHeight);  // the cards keep their size
+}
