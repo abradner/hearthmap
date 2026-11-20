@@ -347,6 +347,10 @@ Each is reversible and visible in the golden images.
 - **Thirst verdicts**: danger dry "water now", warn dry "water soon", warn or danger wet (thirst
   below comfort) "too wet", ok "happy", stale "no data".
 - **Fonts**: built-in Montserrat at even sizes, so the spec's 21 px is 20 px.
+- **Room labels move rather than hide under pins**: limited to the room's width with an
+  ellipsis, dropped below three characters, and placed in the first free corner of the room
+  (ui_lvgl/README.md, "Layout rules"). The HUD gap shrinks (not the cards) so seven cards and
+  "+N more" fit.
 
 **Would change if:** the operator marks any of these against mockup A.
 

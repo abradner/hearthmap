@@ -44,6 +44,14 @@ screen.update(vm, header_text, now);
   The rasterizer blends neighbouring cells of the pixel's own room in integer arithmetic (so the
   image is bit-identical across compilers), draws outdoor rooms in the outdoor fill, and draws
   rooms with no data as stripes. It allocates only in its constructor.
+- **Layout rules for real configs.** HUD names, HUD room names and the overlay title stay on
+  one line and end in an ellipsis (a DOTS label with content height wraps, so the height is
+  pinned to one line). Room labels are limited to their room's width, dropped when fewer than
+  three characters fit, and placed in the first corner of the room's bounding box (top-left,
+  top-right, bottom-left, bottom-right) that is inside the room and clear of every pin, badge and
+  the widest value pill a plain pin may show; else top-left. This depends on the config only, so
+  updates never move a label. The HUD gap shrinks from 10 px (never below 4) so `max_items`
+  cards and the "+N more" line end 12 px above the bottom edge; the spec's cap of 7 fits.
 - **Animations.** Room and danger pulses are LVGL animations started and stopped by `update()`;
   they need nothing from the embedder but LVGL's timer handler.
 - **LVGL 9.6 clipping.** `overflow_visible` alone no longer lets children draw outside their

@@ -119,4 +119,72 @@ inline OverlayRow row(Assessment a, std::string unit, std::optional<Timestamp> t
   return r;
 }
 
+// A denser invented layout for layout edge cases. Map area 864 x 720 at (40, 76). Top half:
+// "Toilet" 60 px wide next to "Laundry", a 30 px "Duct", then a wide "Lounge" with a plant at
+// its top-left corner (where the room label would go). Bottom half: an outdoor "Yard".
+// Pins: 0..6 plants with long names (HUD cap 7), 7 a temperature pin.
+inline Config dense_config() {
+  Config c;
+  c.canvas.map_area = CanvasRect{40, 76, 864, 720};
+  const double toilet = 60.0 / 864.0;
+  const double laundry = 260.0 / 864.0;
+  const double duct = 290.0 / 864.0;
+  c.rooms = {
+      Room{"toilet", "Toilet", {{0.0, 0.0}, {toilet, 0.0}, {toilet, 0.5}, {0.0, 0.5}}, false},
+      Room{"laundry",
+           "Laundry",
+           {{toilet, 0.0}, {laundry, 0.0}, {laundry, 0.5}, {toilet, 0.5}},
+           false},
+      Room{"duct", "Duct", {{laundry, 0.0}, {duct, 0.0}, {duct, 0.5}, {laundry, 0.5}}, false},
+      Room{"lounge", "Lounge", {{duct, 0.0}, {1.0, 0.0}, {1.0, 0.5}, {duct, 0.5}}, false},
+      Room{"yard", "Yard", {{0.0, 0.5}, {1.0, 0.5}, {1.0, 1.0}, {0.0, 1.0}}, true},
+  };
+  const char* names[] = {"Maidenhair fern",
+                         "Large rubber plant",
+                         "Variegated string of pearls",
+                         "Bird of paradise",
+                         "Chinese money plant",
+                         "Peace lily",
+                         "Aloe"};
+  for (int i = 0; i < 7; ++i) {
+    Pin p;
+    p.id = "plant_" + std::to_string(i);
+    p.kind = PinKind::Plant;
+    p.name = names[i];
+    p.room_id = "lounge";
+    p.position = i == 0 ? MapPoint{duct + 0.025, 0.035} : MapPoint{0.4 + 0.08 * i, 0.3};
+    p.entities = {{Role::Moisture, "sensor.example_dense_m" + std::to_string(i)}};
+    p.calibration = Calibration{0.0, 100.0, std::nullopt, std::nullopt};
+    c.pins.push_back(p);
+  }
+  Pin t;
+  t.id = "t_laundry";
+  t.kind = PinKind::Temperature;
+  t.name = "Laundry";
+  t.room_id = "laundry";
+  t.position = {toilet + 0.02, 0.035};  // its value pill would cover the label's top-left spot
+  t.entities = {{Role::Temperature, "sensor.example_dense_t"}};
+  c.pins.push_back(t);
+  c.hud.max_items = 7;
+  return c;
+}
+
+/// Seven thirsty plants in the HUD and three more, temperature layer.
+inline ViewModel dense_vm(const Config& c) {
+  ViewModel vm;
+  vm.active_layer = Layer::Temperature;
+  vm.tabs = {Layer::Temperature, Layer::Humidity, Layer::Soil, Layer::Air};
+  const Band soil = default_band(Layer::Soil);
+  for (std::size_t i = 0; i < 7; ++i) {
+    vm.pins.push_back(pin_view(c, i, fresh(Role::Moisture, 0.95, Severity::Danger, soil), false,
+                               std::nullopt, Severity::Danger));
+    vm.hud.items.push_back(HudItem{i, 0.95, Severity::Danger});
+  }
+  vm.pins.push_back(
+      pin_view(c, 7, fresh(Role::Temperature, 22.6, Severity::Ok), true, 22.6, Severity::Ok));
+  for (std::size_t r = 0; r < c.rooms.size(); ++r) vm.rooms.push_back(RoomView{r, Severity::Ok});
+  vm.hud.overflow = 3;
+  return vm;
+}
+
 }  // namespace hearthmap::test

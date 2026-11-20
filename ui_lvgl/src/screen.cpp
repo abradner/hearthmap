@@ -33,6 +33,12 @@ constexpr std::uint32_t kPulsePeriodMs = 1600;
 constexpr std::uint32_t kRoomPulseHalfPeriodMs = 1400;  // ~2.8 s full cycle
 constexpr int kRoomPulseWidth = 5;
 constexpr int kBadgeW = 28;
+constexpr int kHudTextWidth = 146;  // card 328 - text x 84 - "100%" at 28 px - margins
+constexpr int kPillMaxWidth = 120;  // room labels keep clear of a value pill this wide
+constexpr int kLabelInsetLeft = 12;
+constexpr int kLabelInsetRight = 8;
+constexpr int kLabelInsetTop = 8;
+constexpr int kHudBottomMargin = 12;
 constexpr int kBadgeH = 25;
 constexpr int kHudDiscRadius = 26;
 constexpr int kHudTitleHeight = 40;
@@ -99,6 +105,13 @@ lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, std::uint32_t colo
   lv_obj_set_style_text_color(l, hex(colour), 0);
   lv_label_set_text(l, "");
   return l;
+}
+
+// One line, `width` wide, ellipsis at the end. A DOTS label with content height wraps instead,
+// so the height is pinned to one line of `font`.
+void single_line(lv_obj_t* label, std::int32_t width, const lv_font_t* font) {
+  lv_obj_set_size(label, width, lv_font_get_line_height(font));
+  lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
 }
 
 lv_obj_t* make_circle(lv_obj_t* parent, int radius, std::uint32_t fill) {
@@ -371,6 +384,105 @@ struct Screen::Impl {
     return out;
   }
 
+  // ---- room label layout (config only, so it never changes on update) ----------------------
+
+  struct Box {
+    std::int32_t x1, y1, x2, y2;
+    bool hits(const Box& o) const { return x1 <= o.x2 && o.x1 <= x2 && y1 <= o.y2 && o.y1 <= y2; }
+  };
+
+  static std::int32_t text_width(const std::string& t, const lv_font_t* font) {
+    lv_point_t sz;
+    lv_text_get_size(&sz, t.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x;
+  }
+
+  // Map-pixel boxes a room label must not sit under: every pin's disc or dot, its badge, and for
+  // plain pins the widest value pill they may show (kPillMaxWidth). Boxes are inclusive and
+  // follow build_pin()'s geometry exactly.
+  std::vector<Box> pin_obstacles() const {
+    std::vector<Box> out;
+    const std::int32_t pill_half = (lv_font_get_line_height(deps.fonts.px22) + 2) / 2;
+    for (const Pin& pin : config.pins) {
+      const lv_point_precise_t c = map_px(pin.position);
+      if (in_pot(pin.kind)) {
+        out.push_back(Box{c.x - kPlantRadius, c.y - kPlantRadius - kBadgeH / 2,
+                          c.x + kPlantRadius + kBadgeW / 2, c.y + kPlantRadius});
+      } else {
+        constexpr std::int32_t r = kPlainDotRadius + kPlainDotBorder;
+        out.push_back(Box{c.x - r, c.y - r, c.x + r, c.y + r});                       // dot
+        out.push_back(Box{c.x - r + 2, c.y - r - kBadgeH - 8, c.x - r + 2 + kBadgeW,  // badge
+                          c.y - r - 8});
+        out.push_back(Box{c.x + r, c.y - pill_half, c.x + r + kPillMaxWidth,  // pill
+                          c.y + pill_half});
+      }
+    }
+    return out;
+  }
+
+  // Width-limited to the room (ellipsis), hidden when fewer than three characters would fit,
+  // and placed in the first corner of the room's bounding box (top-left, top-right,
+  // bottom-left, bottom-right) that lies inside the room and is clear of every pin. When no
+  // corner is clear it stays top-left.
+  void place_room_label(lv_obj_t* label, std::size_t r) {
+    const Room& room = config.rooms[r];
+    const lv_font_t* font = deps.fonts.px20;
+    std::int32_t x1 = LV_COORD_MAX, y1 = LV_COORD_MAX, x2 = -LV_COORD_MAX, y2 = -LV_COORD_MAX;
+    for (const auto& v : room.polygon) {
+      const lv_point_precise_t p = map_px(v);
+      x1 = std::min<std::int32_t>(x1, p.x);
+      y1 = std::min<std::int32_t>(y1, p.y);
+      x2 = std::max<std::int32_t>(x2, p.x);
+      y2 = std::max<std::int32_t>(y2, p.y);
+    }
+    const std::int32_t full = text_width(room.name, font);
+    // Narrow rooms get tighter insets before the name is shortened.
+    std::int32_t inset_l = kLabelInsetLeft;
+    std::int32_t inset_r = kLabelInsetRight;
+    if ((x2 - x1) - inset_l - inset_r < full) {
+      inset_l = 6;
+      inset_r = 4;
+    }
+    const std::int32_t avail = (x2 - x1) - inset_l - inset_r;
+    const std::int32_t least =
+        room.name.size() <= 3 ? full : text_width(room.name.substr(0, 3) + "...", font);
+    if (avail < least) {
+      lv_obj_set_hidden(label, true);
+      return;
+    }
+    const std::int32_t lw = std::min(full, avail);
+    const std::int32_t lh = lv_font_get_line_height(font);
+    lv_obj_set_size(label, lw, lh);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+
+    const std::int32_t left = x1 + inset_l;
+    const std::int32_t right = x2 - inset_r - lw;
+    const std::int32_t top = y1 + kLabelInsetTop;
+    const std::int32_t bottom = y2 - kLabelInsetTop - lh;
+    const Box candidates[] = {{left, top, left + lw - 1, top + lh - 1},
+                              {right, top, right + lw - 1, top + lh - 1},
+                              {left, bottom, left + lw - 1, bottom + lh - 1},
+                              {right, bottom, right + lw - 1, bottom + lh - 1}};
+    const std::vector<Box> obstacles = pin_obstacles();
+    const CanvasRect& a = config.canvas.map_area;
+    auto inside = [&](std::int32_t x, std::int32_t y) {
+      return point_in_polygon(room.polygon, MapPoint{(x + 0.5) / a.width, (y + 0.5) / a.height});
+    };
+    Box chosen = candidates[0];
+    for (const Box& b : candidates) {
+      bool clear =
+          inside(b.x1, b.y1) && inside(b.x2, b.y1) && inside(b.x1, b.y2) && inside(b.x2, b.y2);
+      // The glyphs leave a couple of pixels of the line box empty: a touch there is not a hit.
+      const Box ink{b.x1 + 2, b.y1 + 2, b.x2 - 2, b.y2 - 2};
+      for (const Box& o : obstacles) clear = clear && !ink.hits(o);
+      if (clear) {
+        chosen = b;
+        break;
+      }
+    }
+    lv_obj_set_pos(label, chosen.x1, chosen.y1);
+  }
+
   void build_map(const lv_image_dsc_t* heat) {
     const CanvasRect& a = config.canvas.map_area;
     w.map = make_box(w.root);
@@ -420,15 +532,7 @@ struct Screen::Impl {
     for (std::size_t r = 0; r < config.rooms.size(); ++r) {
       lv_obj_t* label = make_label(w.map, deps.fonts.px20, theme::kTextSecondary);
       lv_label_set_text(label, config.rooms[r].name.c_str());
-      // Top-left inside the room: the vertex nearest the map's top-left corner.
-      lv_point_precise_t best{0, 0};
-      bool first = true;
-      for (const auto& v : config.rooms[r].polygon) {
-        const lv_point_precise_t p = map_px(v);
-        if (first || p.x + p.y < best.x + best.y) best = p;
-        first = false;
-      }
-      lv_obj_set_pos(label, best.x + 12, best.y + 8);
+      place_room_label(label, r);
       w.room_label.push_back(label);
     }
     room_pulse.assign(config.rooms.size(), std::nullopt);
@@ -548,12 +652,23 @@ struct Screen::Impl {
 
     const auto cap = static_cast<std::size_t>(std::max(0, config.hud.max_items));
     hud_pin_ids.assign(cap, std::string());
+    // Gap between cards: the spec's 10 px, reduced (never the cards) so `cap` cards plus the
+    // "+N more" line end kHudBottomMargin above the screen's bottom edge. Below 4 px it stops
+    // shrinking; the schema allows caps up to 20, which cannot fit (the spec's cap is 7).
+    const int start = theme::kHudY + kHudTitleHeight;
+    const int n = static_cast<int>(cap);
+    const int more_h = lv_font_get_line_height(f.px20);
+    int gap = theme::kHudCardGap;
+    if (n > 0) {
+      const int room =
+          config.canvas.height - kHudBottomMargin - more_h - 2 - start - n * theme::kHudCardHeight;
+      gap = std::max(4, std::min(theme::kHudCardGap, room / n));
+    }
     for (std::size_t i = 0; i < cap; ++i) {
       lv_obj_t* card = make_box(w.root);
       lv_obj_set_size(card, theme::kHudWidth, theme::kHudCardHeight);
       lv_obj_set_pos(card, theme::kHudX,
-                     theme::kHudY + kHudTitleHeight +
-                         static_cast<int>(i) * (theme::kHudCardHeight + theme::kHudCardGap));
+                     start + static_cast<int>(i) * (theme::kHudCardHeight + gap));
       lv_obj_set_style_radius(card, 12, 0);
       lv_obj_set_style_bg_color(card, hex(theme::kCard), 0);
       lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -564,12 +679,10 @@ struct Screen::Impl {
       lv_obj_set_pos(d.holder, 16, (theme::kHudCardHeight - 2 * kHudDiscRadius) / 2);
       lv_obj_t* name = make_label(card, f.px22, theme::kTextPrimary);
       lv_obj_set_pos(name, 84, 13);
-      lv_obj_set_width(name, 160);
-      lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+      single_line(name, kHudTextWidth, f.px22);
       lv_obj_t* room = make_label(card, f.px20, theme::kTextSecondary);
       lv_obj_set_pos(room, 84, 45);
-      lv_obj_set_width(room, 160);
-      lv_label_set_long_mode(room, LV_LABEL_LONG_MODE_DOTS);
+      single_line(room, kHudTextWidth, f.px20);
       lv_obj_t* pct = make_label(card, f.px28, theme::kTextPrimary);
       lv_obj_align(pct, LV_ALIGN_RIGHT_MID, -18, 0);
       lv_obj_set_hidden(card, true);
@@ -581,9 +694,7 @@ struct Screen::Impl {
     }
     w.hud_more = make_label(w.root, f.px20, theme::kTextSecondary);
     lv_obj_set_hidden(w.hud_more, true);
-    lv_obj_set_pos(w.hud_more, theme::kHudX + 4,
-                   theme::kHudY + kHudTitleHeight +
-                       static_cast<int>(cap) * (theme::kHudCardHeight + theme::kHudCardGap) + 2);
+    lv_obj_set_pos(w.hud_more, theme::kHudX + 4, start + n * (theme::kHudCardHeight + gap) + 2);
   }
 
   void build_overlay() {
@@ -625,8 +736,7 @@ struct Screen::Impl {
     const int text_x = kOverlayPad + 2 * kOverlayDiscRadius + 28;
     w.overlay_title = make_label(card, f.px34, theme::kTextPrimary);
     lv_obj_set_pos(w.overlay_title, text_x, kOverlayPad + 22);
-    lv_obj_set_width(w.overlay_title, kOverlayW - text_x - kOverlayPad);
-    lv_label_set_long_mode(w.overlay_title, LV_LABEL_LONG_MODE_DOTS);
+    single_line(w.overlay_title, kOverlayW - text_x - kOverlayPad, f.px34);
     w.overlay_subtitle = make_label(card, f.px22, theme::kTextSecondary);
     lv_obj_set_pos(w.overlay_subtitle, text_x, kOverlayPad + 70);
 
