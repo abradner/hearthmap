@@ -62,10 +62,9 @@ class HeatRasterizer {
   std::vector<std::int32_t> wx_, wy_;
 };
 
-/// One colour per cell of `field` under `band`, written into `out` (resized to the cell count;
-/// no allocation once it has that size). Non-Value cells get palette.neutral; the rasterizer
-/// never reads them. Uses core's colour scale.
-void colour_cells(const HeatField& field, const Band& band, const Palette& palette,
-                  std::vector<Rgb565>& out);
+/// One colour per cell of `field` through core's ColourLut (built once per band), written into
+/// `out` (resized to the cell count; no allocation once it has that size). Non-Value cells get
+/// 0; the rasterizer never reads them.
+void colour_cells(const HeatField& field, const ColourLut& lut, std::vector<Rgb565>& out);
 
 }  // namespace hearthmap::ui

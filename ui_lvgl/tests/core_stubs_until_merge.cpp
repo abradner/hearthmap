@@ -1,4 +1,4 @@
-// TEMPORARY: stand-ins for the three core functions ui_lvgl calls, so its tests can link before
+// TEMPORARY: stand-ins for the core functions ui_lvgl calls, so its tests can link before
 // core's implementations land. Each follows its header's contract exactly. Delete this file
 // (and its line in CMakeLists.txt) when core provides them.
 #include <cmath>
@@ -57,5 +57,33 @@ Rgb888 colour_for(const Band& band, double value, const Palette& palette) {
   }
   return palette.neutral;
 }
+
+Rgb565 ColourLut::lookup(float value) const {
+  if (entries.empty() || !std::isfinite(value)) return 0;
+  const float n = static_cast<float>(entries.size() - 1);
+  float t = (value - lo) / (hi - lo) * n;
+  t = t < 0.0F ? 0.0F : (t > n ? n : t);
+  return entries[static_cast<std::size_t>(std::lround(t))];
+}
+
+void build_colour_lut(const Band& band, const Palette& palette, std::size_t size, ColourLut& out) {
+  if (size < 2) size = 2;
+  out.lo = static_cast<float>(band.scale_min);
+  out.hi = static_cast<float>(band.scale_max);
+  out.entries.resize(size);
+  for (std::size_t i = 0; i < size; ++i) {
+    const double v = band.scale_min + (band.scale_max - band.scale_min) * static_cast<double>(i) /
+                                          static_cast<double>(size - 1);
+    out.entries[i] = colour565_for(band, v, palette);
+  }
+}
+
+ColourLut build_colour_lut(const Band& band, const Palette& palette, std::size_t size) {
+  ColourLut lut;
+  build_colour_lut(band, palette, size, lut);
+  return lut;
+}
+
+void build_room_mask(const Config& config, RoomMask& out) { out = build_room_mask(config); }
 
 }  // namespace hearthmap

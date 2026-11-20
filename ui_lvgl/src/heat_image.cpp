@@ -196,15 +196,11 @@ void HeatRasterizer::render(const HeatField& field, const std::vector<Rgb565>& c
   }
 }
 
-void colour_cells(const HeatField& field, const Band& band, const Palette& palette,
-                  std::vector<Rgb565>& out) {
+void colour_cells(const HeatField& field, const ColourLut& lut, std::vector<Rgb565>& out) {
   out.resize(field.cells.size());
-  const Rgb565 neutral = to_rgb565(palette.neutral);
   for (std::size_t i = 0; i < field.cells.size(); ++i) {
     const HeatCell& cell = field.cells[i];
-    out[i] = cell.state == CellState::Value
-                 ? colour565_for(band, static_cast<double>(cell.value), palette)
-                 : neutral;
+    out[i] = cell.state == CellState::Value ? lut.lookup(cell.value) : Rgb565{0};
   }
 }
 

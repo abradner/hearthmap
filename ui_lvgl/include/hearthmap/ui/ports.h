@@ -15,7 +15,7 @@ namespace hearthmap::ui {
 /// Called from inside an LVGL event callback. Implementations should queue the event and act on
 /// it after LVGL returns (and must never destroy the Screen from inside the call).
 ///
-/// What is sent (docs/decisions.md R12):
+/// What is sent (docs/decisions.md D-013, amended):
 /// - overlay closed: a tap in the map area -> TapMap with the tap point in canvas pixels; a
 ///   layer tab -> SelectLayer; a HUD card -> TapHudItem with the plant's pin id;
 /// - overlay open: a tap on the scrim -> CloseOverlay; a tap on the card -> nothing. The scrim

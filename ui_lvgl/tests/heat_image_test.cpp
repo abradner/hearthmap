@@ -162,18 +162,23 @@ TEST_CASE("a field of the wrong size draws no data rather than reading out of bo
   CHECK((px == c565(theme::kNoDataA) || px == c565(theme::kNoDataB)));
 }
 
-TEST_CASE("colour_cells colours Value cells through the band and leaves others neutral") {
+TEST_CASE("colour_cells colours Value cells through the lookup table and nothing else") {
   HeatField f;
   f.cols = 3;
   f.rows = 1;
   f.cells = {HeatCell{CellState::Value, 30.0F}, HeatCell{CellState::NoData, 0.0F},
              HeatCell{CellState::Value, 21.0F}};
   const Band band = default_band(Layer::Temperature);
+  const ColourLut lut = build_colour_lut(band, theme::kHeatPalette);
   std::vector<Rgb565> out;
-  colour_cells(f, band, theme::kHeatPalette, out);
+  colour_cells(f, lut, out);
   REQUIRE(out.size() == 3);
-  CHECK(out[0] == colour565_for(band, 30.0, theme::kHeatPalette));
-  CHECK(out[1] == to_rgb565(theme::kHeatPalette.neutral));
-  CHECK(out[2] == to_rgb565(theme::kHeatPalette.neutral));  // inside comfort
+  CHECK(out[0] == lut.lookup(30.0F));
+  CHECK(out[1] == 0);
+  CHECK(out[2] == lut.lookup(21.0F));
   CHECK(out[0] != out[2]);
+  // Warm: no allocation once sized (same storage).
+  const Rgb565* before = out.data();
+  colour_cells(f, lut, out);
+  CHECK(out.data() == before);
 }
