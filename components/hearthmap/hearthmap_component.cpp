@@ -268,6 +268,13 @@ bool HearthmapComponent::start_screen_() {
   ESP_LOGI(TAG, "boot: screen started");
   const hm::ui::HeatRasterizer& raster = this->pipeline_->rasterizer();
   RAMAllocator<hm::Rgb565> allocator;  // PSRAM when present
+  // Every buffer starts black, cleared by the blitter (a PPA fill on the panel, not 1.3 MiB of
+  // CPU stores per buffer).
+  auto clear = [this, &raster](hm::Rgb565* px) {
+    const hm::ui::Surface565 s{px, static_cast<int>(raster.width()),
+                               static_cast<int>(raster.height()), static_cast<int>(raster.width())};
+    this->blitter_->fill(s, 0, 0, s.w, s.h, 0);
+  };
   this->heat_pixels_ = allocator.allocate(raster.pixel_count());
   if (this->heat_pixels_ == nullptr) {
     ESP_LOGE(TAG, "no memory for the %dx%d heat image", static_cast<int>(raster.width()),
@@ -277,7 +284,7 @@ bool HearthmapComponent::start_screen_() {
     this->status_set_error(LOG_STR("no memory for the heat image"));
     return false;
   }
-  std::fill_n(this->heat_pixels_, raster.pixel_count(), hm::Rgb565{0});
+  clear(this->heat_pixels_);
   // A second buffer: frames render into the back one and swap it in whole (PanelPipeline).
   this->heat_back_ = allocator.allocate(raster.pixel_count());
   if (this->heat_back_ == nullptr) {
@@ -291,7 +298,7 @@ bool HearthmapComponent::start_screen_() {
     this->status_set_error(LOG_STR("no memory for the heat image"));
     return false;
   }
-  std::fill_n(this->heat_back_, raster.pixel_count(), hm::Rgb565{0});
+  clear(this->heat_back_);
   // More buffers, one per enabled layer plus one to draw into, while PSRAM stays comfortable:
   // then every layer keeps its image and a tab change shows it at once (D-055). Fewer is fine,
   // only slower on a tab change.
@@ -303,7 +310,7 @@ bool HearthmapComponent::start_screen_() {
          heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > bytes + kPsramReserve) {
     hm::Rgb565* extra = allocator.allocate(raster.pixel_count());
     if (extra == nullptr) break;
-    std::fill_n(extra, raster.pixel_count(), hm::Rgb565{0});
+    clear(extra);
     buffers.push_back(extra);
   }
   this->pipeline_->set_heat_buffers(buffers);
