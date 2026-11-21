@@ -106,6 +106,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   display::Display* present_display_ = nullptr;
   std::unique_ptr<hm::ui::Presenter> presenter_;
   const char* presenter_name_ = "off";
+  bool presenting_ = false;  ///< a DisplayPresenter is up: pulse frames are shown from loop()
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline
@@ -129,6 +130,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t last_sprite_frames_ = 0;
   uint32_t last_sprite_dropped_ = 0;
   uint64_t last_sprite_frame_us_ = 0;
+  hm::ui::Screen::ShownFrames shown_frames_;
   uint64_t last_sprite_prepare_us_ = 0;
   bool rebake_requested_ = false;
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).

@@ -228,13 +228,20 @@ int main() {
   f.refresh_total = 2500000;  // 2.5 s of 5 s: 50 %
   f.refresh_max = 402000;
   f.flushed_px = 5000000;     // 1000 kpx/s
-  char line[400];
+  f.sprite_frames = 1550;     // 310 a second
+  f.sprite_divisor = 2;
+  f.presented = 1500;
+  f.present_fallbacks = 50;
+  f.present_block = "covered";
+  char line[640];
   const std::size_t n = PerfStats::format(f, line, sizeof(line));
   std::printf("%s\n", line);
   CHECK(n == std::strlen(line));
   CHECK(std::strstr(line, "loop 10/s, gap max 412 ms") != nullptr);
   CHECK(std::strstr(line, "12 refr, 2500 ms (50%), max 402 ms") != nullptr);
   CHECK(std::strstr(line, "1000 kpx/s flushed") != nullptr);
+  CHECK(std::strstr(line, "sprites 310 frames/s (rate /2)") != nullptr);
+  CHECK(std::strstr(line, "present 1500 / fallback 50 (covered)") != nullptr);
   char tiny[8];
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   std::printf("perf checks done, %d failures\n", failures);

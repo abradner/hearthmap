@@ -21,6 +21,7 @@
 #include "hearthmap/config.h"
 #include "hearthmap/ui/fonts.h"
 #include "hearthmap/ui/ports.h"
+#include "hearthmap/ui/present.h"
 #include "hearthmap/ui/sprite_composer.h"
 #include "hearthmap/view_model.h"
 #include "lvgl.h"
@@ -99,6 +100,7 @@ struct ScreenWidgets {
   lv_obj_t* map = nullptr;            ///< Click target for TapMap; at canvas.map_area.
   lv_obj_t* heat_image = nullptr;     ///< Container of the heat image's strip images (D-052).
   std::vector<lv_obj_t*> room_pulse;  ///< Per room, config order. Hidden when not pulsing.
+  lv_obj_t* outline_pulse = nullptr;  ///< Every room outline's tiles (cells of a grid).
   std::vector<lv_obj_t*> room_label;  ///< Per room, config order.
   std::vector<lv_obj_t*> pin;         ///< Per pin, config order: the pin's container.
   std::vector<lv_obj_t*> pin_value;   ///< Per pin: value label (plain pins), else nullptr.
@@ -153,6 +155,21 @@ class Screen {
   /// background until prepared again. Never called from inside an LVGL event.
   bool prepare_step();
   PulseCounters pulse_counters() const;
+
+  /// How the pulse frames chosen since the last call were shown.
+  struct ShownFrames {
+    std::uint32_t presented = 0;
+    std::uint32_t invalidated = 0;
+    /// Per PresentBlock value, how often it stopped a present.
+    std::array<std::uint32_t, 16> blocked{};
+  };
+  /// With `deferred`, pulse frames are only chosen on LVGL's timer, and show_due_frames() shows
+  /// them (D-058): call it from the main loop, outside LVGL callbacks. Without (the default),
+  /// each frame is shown by invalidating its tile at once.
+  void set_frames_deferred(bool deferred);
+  /// Shows every pulse frame chosen since the last call through `presenter` (present_check() and
+  /// show_tile_frame(); an invalidation where it cannot present). Adds to `tally` when given.
+  void show_due_frames(Presenter& presenter, ShownFrames* tally = nullptr);
 
   /// The walls and labels have been rendered for baking (by prepare_step()).
   bool bake_ready() const;

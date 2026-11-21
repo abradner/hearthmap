@@ -1,6 +1,9 @@
 // pulse_layer.h — danger rings and room outlines as pre-rendered opaque sprites (D-053).
 //
-// Every pulse is an opaque RGB565 lv_image ("tile") over the map, above the pins. Its frames are
+// Every pulse is an opaque RGB565 lv_image ("tile") over the map, above the pins. A ring's tile
+// is its whole reach; outlines are drawn by the cells of a kCellPx grid that some room's stroke
+// passes through, one tile per cell whichever rooms share it, so outline tiles never overlap
+// one another and each can be presented (D-058). Its frames are
 // composed by us, never drawn by LVGL: the scene under the tile is captured through LVGL's own
 // renderer (render_area(): once with the pins, once without), and every frame of the tile's
 // cycle is composed from those captures once, in prepare_step(), and kept (RAM for CPU, D-053).
@@ -61,9 +64,9 @@ class PulseLayer {
   static constexpr int kRingTo = theme::kPulseRingTo;
   static constexpr int kRingWidth = theme::kPulseRingWidth;
   static constexpr int kRoomWidth = theme::kRoomPulseWidth;
-  /// Longest piece an outline edge is cut into, px, so every tile stays within the 128 x 128 a
-  /// presenter accepts.
-  static constexpr std::int32_t kEdgePieceMax = 96;
+  /// The outline grid's cell, px (a multiple of theme::kTileAlign): every outline tile lies
+  /// inside one cell, so within the 128 x 128 a presenter accepts.
+  static constexpr std::int32_t kCellPx = 64;
 
   /// `map` is the map container at `map_origin` (screen px) of `map_size`. `pins` are the pin
   /// containers, hidden while the scene under a tile is captured. Tiles are created above
@@ -76,9 +79,11 @@ class PulseLayer {
   PulseLayer(const PulseLayer&) = delete;
   PulseLayer& operator=(const PulseLayer&) = delete;
 
-  /// Per room: its outline container (hidden when not pulsing), and per pin its ring tile.
-  const std::vector<lv_obj_t*>& room_objects() const { return room_box_; }
+  /// Per room: an empty marker object, hidden when the room is not pulsing, whose line colour is
+  /// its outline's. Per pin: its ring tile. And the container of every outline tile.
+  const std::vector<lv_obj_t*>& room_objects() const { return room_marker_; }
   const std::vector<lv_obj_t*>& ring_objects() const { return ring_img_; }
+  lv_obj_t* outline_object() const { return outline_box_; }
 
   void set_ring(std::size_t pin, bool on);
   /// colour: 0xRRGGBB; `on` false hides the outline.
@@ -108,6 +113,8 @@ class PulseLayer {
   };
   /// The frames chosen since the last call, for the embedder to show (present or invalidate).
   const std::vector<Due>& take_due();
+  /// Back on the list, for the next take_due() (the embedder ran out of invalidations).
+  void requeue(const Due& d) { due_.push_back(d); }
 
   PulseStats stats() const;
   /// The LVGL objects must not be touched any more (their parent was deleted).
@@ -151,13 +158,22 @@ class PulseLayer {
     std::vector<RingRef> rings;
     std::vector<RoomRef> rooms;
   };
-  struct Edge {
+  /// One outline tile: a cell of the grid, and every room whose stroke reaches it.
+  struct Cell {
     Tile t;
-    std::vector<RoomRef> rooms;
-    float ax = 0, ay = 0, bx = 0, by = 0;
+    lv_area_t rect{};                ///< the grid cell, within the tile area
+    std::vector<std::size_t> rooms;  ///< in config order
+    std::vector<RoomRef> refs;       ///< the pulsing ones, from the last capture
+    bool gone = false;  ///< wholly under a ring's tile, which draws its strokes: no tile
+  };
+  struct Segment {
+    float ax = 0, ay = 0, bx = 0, by = 0;  // screen px
   };
   struct Room {
-    std::vector<Edge> edges;
+    std::vector<Segment> segments;
+    std::vector<std::size_t> cells;
+    std::uint32_t phase_ms = 0;  ///< a whole number of room steps at the coarsest rate
+    int shown_step = -1;
     bool on = false;
     bool allocated = false;
     std::uint16_t colour = 0;
@@ -177,10 +193,26 @@ class PulseLayer {
 
   static void on_timer(lv_timer_t* t);
   void make_tile(Tile& t, lv_obj_t* parent, lv_point_t parent_origin);
+  void size_tile(Tile& t, lv_point_t parent_origin);
+  /// The aligned box, within the cell, of the strokes of the rooms through it that pulse (and
+  /// of `with`, if it is one of them); the current area when none.
+  lv_area_t cell_area(const Cell& c, std::size_t with) const;
+  /// `a` less what the rings' tiles cover, where that leaves a rectangle (a ring's tile draws the
+  /// strokes under it, so a cell need not); false when a ring covers all of it.
+  bool trim_by_rings(lv_area_t& a) const;
+  /// The cell resized to its strokes less the rings (frames of another size are dropped).
+  void fit_cell(Cell& c);
+  void fit_cells(const Room& r);
+  void fit_cells_under(const lv_area_t& area);
+  /// What admitting `room` would add: its cells no pulsing room holds, and growth of those one
+  /// does.
+  std::size_t room_need(std::size_t room) const;
+  /// Gives up a room's memory (it stays on, waiting); its cells no other room holds are freed.
+  void drop_room(std::size_t room);
   void release(Tile& t);
   bool capture(Tile& t, bool with_pins);
   void rebuild_ring_geometry(std::size_t i);
-  void rebuild_edge_geometry(Edge& e);
+  void rebuild_cell_geometry(Cell& c);
   void compose_frame(Tile& t, std::uint32_t k, std::uint16_t* out);
   void finish_job();
   void cancel_stale_job();
@@ -189,14 +221,22 @@ class PulseLayer {
   void admit_waiting();
   void choose_divisor();
   std::size_t tile_frame_bytes(const Tile& t, bool ring) const;
-  std::size_t bytes_in_use() const;
+  /// Without rooms: what rings (and the set being composed) hold alone.
+  std::size_t bytes_in_use(bool with_rooms = true) const;
   bool fits(std::size_t more) const { return bytes_in_use() + more <= budget_.memory_bytes; }
   int ring_frame_at(std::size_t ring, std::uint32_t t_ms) const;
   std::uint8_t room_opa_at(std::size_t room, std::uint32_t t_ms) const;
   const std::uint8_t* opa_lut(std::uint8_t opa);
   bool is_ring_tile(const Tile* t) const;
   Ring* ring_of(const Tile* t);
-  Edge* edge_of(const Tile* t, std::size_t* room_index);
+  Cell* cell_of(const Tile* t);
+  /// Some room through it pulses and holds memory: the cell needs frames.
+  bool cell_active(const Cell& c) const;
+  /// Active, and not wholly under a ring: it needs frames.
+  bool cell_live(const Cell& c) const { return !c.gone && cell_active(c); }
+  /// Every cell of the room has frames.
+  bool room_ready(const Room& r) const;
+  static std::size_t cell_cost(const lv_area_t& area);
   void show_frame(Tile& t, int index);
 
   lv_obj_t* map_;
@@ -208,8 +248,10 @@ class PulseLayer {
   std::vector<lv_obj_t*> pins_;
   std::vector<Ring> rings_;
   std::vector<Room> rooms_;
+  std::vector<Cell> cells_;
   std::vector<lv_obj_t*> ring_img_;
-  std::vector<lv_obj_t*> room_box_;
+  std::vector<lv_obj_t*> room_marker_;
+  lv_obj_t* outline_box_ = nullptr;
   /// Ring alpha by distance for each of the cycle's ring frames, and its keyline's.
   std::vector<std::vector<std::uint8_t>> ring_alpha_;
   std::vector<std::vector<std::uint8_t>> ring_halo_;

@@ -69,6 +69,25 @@ uint32_t g_lvgl_errors = 0;
 
 }  // namespace
 
+static const char* present_block_name(hm::ui::PresentBlock b) {
+  using B = hm::ui::PresentBlock;
+  switch (b) {
+    case B::Ok: return "ok (presenter refused)";
+    case B::NotImage: return "not-image";
+    case B::NotRgb565: return "not-rgb565";
+    case B::Refreshing: return "refreshing";
+    case B::NotOnActiveScreen: return "not-active-screen";
+    case B::Hidden: return "hidden";
+    case B::NotOpaque: return "not-opaque";
+    case B::Transformed: return "transformed";
+    case B::SizeMismatch: return "size";
+    case B::Clipped: return "clipped";
+    case B::HasChildren: return "children";
+    case B::Covered: return "covered";
+  }
+  return "?";
+}
+
 uint32_t lvgl_warnings() {
   return g_lvgl_warnings;
 }
@@ -113,6 +132,7 @@ void HearthmapComponent::setup() {
     if (direct->begin()) {
       this->presenter_ = std::move(direct);
       this->presenter_name_ = "display";
+      this->presenting_ = true;
     } else {
       this->presenter_name_ = "off (no internal RAM for the rotation buffer)";
     }
@@ -310,6 +330,9 @@ bool HearthmapComponent::start_screen_() {
            static_cast<unsigned>(deps.pulse_memory_bytes / 1024U));
   this->screen_ = std::make_unique<hm::ui::Screen>(
       this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
+  // With a presenter, pulse frames are shown from loop(), straight to the panel where they can be
+  // (D-058); otherwise LVGL's timer invalidates them as before.
+  this->screen_->set_frames_deferred(this->presenting_);
   // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
   this->pipeline_->set_row_hook(
       [this](hm::Rgb565* image, std::int32_t stride, std::int32_t begin, std::int32_t end) {
@@ -369,6 +392,8 @@ void HearthmapComponent::show_view_() {
 }
 
 void HearthmapComponent::frame_slice_() {
+  // Pulse frames LVGL's timer chose since the last pass: presented, or invalidated (D-058).
+  this->screen_->show_due_frames(*this->presenter_, &this->shown_frames_);
   const uint32_t view_t0 = micros();
   this->invalidate_band_();
   const uint32_t start = millis();
@@ -534,14 +559,25 @@ void HearthmapComponent::log_perf_() {
     w.sprite_frames = c.frames - this->last_sprite_frames_;
     w.sprite_dropped = c.dropped - this->last_sprite_dropped_;
     w.sprite_kib = static_cast<uint32_t>(c.tile_bytes / 1024U);
+    w.sprite_divisor = c.frame_divisor;
     w.sprite_frame_us = static_cast<uint32_t>(c.frame_us - this->last_sprite_frame_us_);
     w.sprite_prepare_us = static_cast<uint32_t>(c.prepare_us - this->last_sprite_prepare_us_);
     this->last_sprite_frame_us_ = c.frame_us;
+    w.presented = this->shown_frames_.presented;
+    w.present_fallbacks = this->shown_frames_.invalidated;
+    std::size_t top = 0;
+    for (std::size_t k = 1; k < this->shown_frames_.blocked.size(); ++k) {
+      if (this->shown_frames_.blocked[k] > this->shown_frames_.blocked[top]) top = k;
+    }
+    w.present_block = this->shown_frames_.blocked[top] == 0
+                          ? "none"
+                          : present_block_name(static_cast<hm::ui::PresentBlock>(top));
+    this->shown_frames_ = hm::ui::Screen::ShownFrames{};
     this->last_sprite_prepare_us_ = c.prepare_us;
     this->last_sprite_frames_ = c.frames;
     this->last_sprite_dropped_ = c.dropped;
   }
-  char line[512];
+  char line[640];
   hearthmap_device::PerfStats::format(w, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
 }

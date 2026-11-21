@@ -1051,6 +1051,37 @@ TEST_CASE("pulses are sprites: smooth frames from the tick, no LVGL animation") 
   CHECK(after.tile_bytes > 0);
 }
 
+namespace {
+
+// The outline tiles showing now (screen px), in the outline container's order.
+std::vector<lv_area_t> visible_outline_tiles(const ScreenWidgets& w) {
+  std::vector<lv_area_t> out;
+  const std::uint32_t n = lv_obj_get_child_count(w.outline_pulse);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    lv_obj_t* t = lv_obj_get_child(w.outline_pulse, static_cast<std::int32_t>(i));
+    if (lv_obj_is_hidden(t)) continue;
+    lv_area_t a;
+    lv_obj_get_coords(t, &a);
+    out.push_back(a);
+  }
+  return out;
+}
+
+constexpr std::int32_t kOutlineCell = 64;  // PulseLayer::kCellPx
+
+bool any_overlap(const std::vector<lv_area_t>& tiles) {
+  for (std::size_t i = 0; i < tiles.size(); ++i) {
+    for (std::size_t j = i + 1; j < tiles.size(); ++j) {
+      const lv_area_t& a = tiles[i];
+      const lv_area_t& b = tiles[j];
+      if (a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2) return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 TEST_CASE("a room's pulse outline invalidates strips along its walls, never its interior") {
   Rig rig;
   ViewModel vm = test::temperature_vm(rig.config);
@@ -1058,17 +1089,17 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
   rig.show(vm);
   lv_obj_update_layout(rig.display.screen());
   const auto& w = rig.w();
-  // West room: map (0,0)-(0.5,0.5) of 864 x 720 at (40, 76): 432 x 360 px.
-  // Edges are cut into pieces of at most 96 px (a presented tile is at most 128 px).
-  const std::uint32_t edges = lv_obj_get_child_count(w.room_pulse[0]);
-  CHECK(edges == 2 * ((432 + 95) / 96) + 2 * ((360 + 95) / 96));
+  // West room: map (0,0)-(0.5,0.5) of 864 x 720 at (40, 76): 432 x 360 px. The outline is drawn
+  // by the cells of a 64 px grid its walls pass through: about (432 + 360) * 2 / 64 of them.
+  const std::vector<lv_area_t> tiles = visible_outline_tiles(w);
+  MESSAGE("outline tiles " << tiles.size());
+  CHECK(tiles.size() >= 2U * (432U + 360U) / 64U - 4U);
+  CHECK(tiles.size() <= 2U * (432U + 360U) / 64U + 12U);
+  CHECK_FALSE(any_overlap(tiles));  // so nothing drawn later reaches into one (presentable)
   std::uint64_t area = 0;
-  for (std::uint32_t i = 0; i < edges; ++i) {
-    lv_area_t a;
-    lv_obj_get_coords(lv_obj_get_child(w.room_pulse[0], static_cast<std::int32_t>(i)), &a);
-    // Every edge object is a strip: the stroke with its keyline and caps, aligned out to whole
-    // kTileAlign blocks (at most four of them across).
-    CHECK(std::min(lv_area_get_width(&a), lv_area_get_height(&a)) <= 4 * theme::kTileAlign);
+  for (const lv_area_t& a : tiles) {
+    // Every tile lies inside one cell (a corner cell holds two walls; others a strip).
+    CHECK(std::max(lv_area_get_width(&a), lv_area_get_height(&a)) <= kOutlineCell);
     area += lv_area_get_size(&a);
   }
   CHECK(area <= 2U * (432U + 360U + 64U) * 32U);  // the perimeter, at most 32 px wide
@@ -1178,19 +1209,13 @@ TEST_CASE("a diagonal wall's pulse is cut into small pieces, so it never invalid
   rig.show(vm);
   lv_obj_update_layout(rig.display.screen());
   const auto& w = rig.w();
-  const std::uint32_t pieces = lv_obj_get_child_count(w.room_pulse[0]);
-  // Pieces of at most 96 px: two axis-aligned edges and the diagonal.
-  CHECK(pieces == (432 + 95) / 96 + (360 + 95) / 96 + (432 + 95) / 96);
+  // Cells of the 64 px grid: two axis-aligned edges and the diagonal, each tile inside its cell.
+  const std::vector<lv_area_t> tiles = visible_outline_tiles(w);
+  CHECK(tiles.size() >= 3U);
+  CHECK_FALSE(any_overlap(tiles));
   std::uint64_t area = 0;
-  for (std::uint32_t i = 0; i < pieces; ++i) {
-    lv_area_t a;
-    lv_obj_get_coords(lv_obj_get_child(w.room_pulse[0], static_cast<std::int32_t>(i)), &a);
-    const std::int32_t lo = std::min(lv_area_get_width(&a), lv_area_get_height(&a));
-    const std::int32_t hi = std::max(lv_area_get_width(&a), lv_area_get_height(&a));
-    // A thin strip (an axis-aligned wall), or a piece no bigger than a 48 px run plus the width
-    // and caps on each axis, aligned out to whole kTileAlign blocks.
-    CHECK(hi <= 128);  // within what a presenter accepts
-    CHECK((lo <= 4 * theme::kTileAlign || hi <= 96 + 19 + 2 * theme::kTileAlign));
+  for (const lv_area_t& a : tiles) {
+    CHECK(std::max(lv_area_get_width(&a), lv_area_get_height(&a)) <= kOutlineCell);
     area += lv_area_get_size(&a);
   }
   // Under the triangle's own area; one object for the hypotenuse alone covered 443 x 371 px,
@@ -1363,9 +1388,15 @@ TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   vm.rooms[1].pulse = Severity::Warn;
   show();
   const auto& w = screen.widgets();
+  // Shown: pulsing, and a tile on the middle of its own top wall showing (the shared wall's
+  // tiles show for either room).
   auto shown = [&](std::size_t r) {
-    lv_obj_t* edge = lv_obj_get_child(w.room_pulse[r], 0);
-    return !lv_obj_is_hidden(w.room_pulse[r]) && edge != nullptr && !lv_obj_is_hidden(edge);
+    const lv_point_t probe{r == 0 ? 40 + 216 : 40 + 432 + 216, 82};  // tiles start at y 80
+    bool tile = false;
+    for (const lv_area_t& a : visible_outline_tiles(w)) {
+      tile = tile || (probe.x >= a.x1 && probe.x <= a.x2 && probe.y >= a.y1 && probe.y <= a.y2);
+    }
+    return !lv_obj_is_hidden(w.room_pulse[r]) && tile;
   };
   MESSAGE("sprite bytes with one room " << screen.pulse_counters().tile_bytes);
   CHECK(shown(0));
@@ -1403,4 +1434,53 @@ TEST_CASE("a press on a pin is acknowledged before release; elsewhere nothing sh
   rig.display.press(40 + 700, 76 + 600);
   CHECK(hidden(marker()));
   rig.display.release();
+}
+
+namespace {
+
+struct CountingPresenter final : Presenter {
+  int calls = 0;
+  bool present(int, int, const View565& tile) override {
+    ++calls;
+    return tile.px != nullptr;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("deferred pulse frames are presented when nothing covers them, without invalidating") {
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  rig.show(vm);
+  rig.screen->set_frames_deferred(true);
+  lv_display_add_event_cb(rig.display.display(), count_invalidation, LV_EVENT_INVALIDATE_AREA,
+                          nullptr);
+  rig.display.render();
+  g_invalidated = 0;
+  CountingPresenter presenter;
+  Screen::ShownFrames tally;
+  for (std::uint32_t t = 0; t <= 1600; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+    rig.screen->show_due_frames(presenter, &tally);
+  }
+  MESSAGE("presented " << tally.presented << ", fell back " << tally.invalidated);
+  CHECK(tally.presented >= 10);  // a ring's frames, straight to the panel
+  CHECK(presenter.calls == static_cast<int>(tally.presented));
+  CHECK(tally.invalidated == 0);
+  CHECK(g_invalidated == 0);  // and LVGL was asked to repaint nothing
+
+  // A presenter that refuses: every frame falls back to an invalidation, so none is lost.
+  NoPresenter none;
+  Screen::ShownFrames refused;
+  for (std::uint32_t t = 1616; t <= 2400; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+    rig.screen->show_due_frames(none, &refused);
+  }
+  CHECK(refused.presented == 0);
+  CHECK(refused.invalidated >= 10);
+  CHECK(g_invalidated > 0);
 }

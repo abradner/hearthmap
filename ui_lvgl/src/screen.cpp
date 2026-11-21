@@ -672,6 +672,7 @@ struct Screen::Impl {
         deps.sprite_composer != nullptr ? *deps.sprite_composer : detail::cpu_sprite_composer());
     w.room_pulse = pulses->room_objects();
     w.pin_pulse = pulses->ring_objects();
+    w.outline_pulse = pulses->outline_object();
 
     // The walls and room labels, baked into the heat image when memory allows (D-055).
     std::vector<lv_obj_t*> draw = walls;
@@ -681,7 +682,7 @@ struct Screen::Impl {
     }
     std::vector<lv_obj_t*> hide{w.heat_image};
     for (lv_obj_t* p : w.pin) hide.push_back(p);
-    for (lv_obj_t* o : w.room_pulse) hide.push_back(o);
+    hide.push_back(w.outline_pulse);
     for (lv_obj_t* o : w.pin_pulse) hide.push_back(o);
     const lv_area_t area{a.x, a.y, a.x + a.width - 1, a.y + a.height - 1};
     bake = std::make_unique<detail::MapBake>(w.map, area, std::move(draw), std::move(hide));
@@ -1595,6 +1596,36 @@ bool Screen::bake_ready() const {
 bool Screen::bake_rows(std::uint16_t* image, std::int32_t stride, std::int32_t row_begin,
                        std::int32_t row_end) const {
   return impl_->bake && impl_->bake->apply(image, stride, row_begin, row_end);
+}
+
+void Screen::set_frames_deferred(bool deferred) {
+  if (impl_->pulses) impl_->pulses->set_defer(deferred);
+}
+
+void Screen::show_due_frames(Presenter& presenter, ShownFrames* tally) {
+  if (impl_->w.root == nullptr || !impl_->pulses) return;
+  // A fallback invalidates the whole tile; LVGL repaints the whole screen past 32 areas, so past
+  // kMaxFallbacks the remaining frames wait for the next call.
+  constexpr std::uint32_t kMaxFallbacks = 20;
+  std::uint32_t fallbacks = 0;
+  const std::vector<detail::PulseLayer::Due>& due = impl_->pulses->take_due();
+  for (const detail::PulseLayer::Due& d : due) {
+    if (fallbacks >= kMaxFallbacks) {
+      impl_->pulses->requeue(d);
+      continue;
+    }
+    PresentBlock why = PresentBlock::Ok;
+    const TileShown shown = show_tile_frame(d.image, *d.dsc, d.frame, presenter, &why);
+    if (shown == TileShown::Invalidated) ++fallbacks;
+    if (tally == nullptr) continue;
+    if (shown == TileShown::Presented) {
+      ++tally->presented;
+    } else {
+      ++tally->invalidated;
+      const auto k = static_cast<std::size_t>(why);
+      if (k < tally->blocked.size()) ++tally->blocked[k];
+    }
+  }
 }
 
 PulseCounters Screen::pulse_counters() const {
