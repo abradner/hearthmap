@@ -220,9 +220,11 @@ void PulseLayer::release(Tile& t) {
     lv_obj_set_hidden(t.img, true);
     lv_image_set_src(t.img, nullptr);
   }
-  t.below = {};
-  t.full = {};
-  t.out = {};
+  // Give the memory back (assigning {} would keep the capacity, and the budget no longer counts
+  // a released tile).
+  std::vector<std::uint16_t>().swap(t.below);
+  std::vector<std::uint16_t>().swap(t.full);
+  std::vector<std::uint16_t>().swap(t.out);
   t.dsc.data = nullptr;
   t.has_base = false;
   t.dirty = true;
@@ -242,8 +244,8 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
     release(r.t);
     r.allocated = false;
     r.frame = -1;
-    r.rings.clear();
-    r.rooms.clear();
+    std::vector<RingRef>().swap(r.rings);
+    std::vector<RoomRef>().swap(r.rooms);
     // A freed slot goes to the next pulsing pin without one.
     for (Ring& x : rings_) {
       if (x.on && !x.allocated && fits(tile_bytes(x.t))) {
@@ -275,7 +277,10 @@ void PulseLayer::set_room(std::size_t room, bool on, std::uint32_t colour) {
     r.allocated = true;
     r.step = -1;
   } else if (!on && r.allocated) {
-    for (Edge& e : r.edges) release(e.t);
+    for (Edge& e : r.edges) {
+      release(e.t);
+      std::vector<std::uint8_t>().swap(e.coverage);
+    }
     r.allocated = false;
     r.step = -1;
   } else if (on && was_on) {

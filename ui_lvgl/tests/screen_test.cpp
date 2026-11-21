@@ -1102,7 +1102,9 @@ TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") 
     rig.display.set_time_ms(t);
     rig.display.run_timers();
   }
-  CHECK(g_invalidated == 0);              // nothing left moving
+  CHECK(g_invalidated == 0);  // nothing left moving
+  // The cleared pulses gave their memory back (the budget no longer counts them).
+  CHECK(rig.screen->pulse_counters().tile_bytes == 0);
   CHECK(timer_count() == timers_before);  // the clock stopped itself
   CHECK(hidden(w.pin_pulse[0]));          // and nothing came back
   CHECK(hidden(w.room_pulse[1]));

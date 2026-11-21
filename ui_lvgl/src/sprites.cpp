@@ -150,6 +150,13 @@ void opaque_image_cover_cb(lv_event_t* e) {
   if (lv_image_get_scale_x(img) != LV_SCALE_NONE || lv_image_get_scale_y(img) != LV_SCALE_NONE ||
       lv_image_get_rotation(img) != 0)
     return;
+  // Drawn where it stands: an offset (or a tiled or stretched alignment) would leave pixels of
+  // the widget the image does not cover.
+  if (lv_image_get_offset_x(img) != 0 || lv_image_get_offset_y(img) != 0) return;
+  const lv_image_align_t align = lv_image_get_inner_align(img);
+  if (align != LV_IMAGE_ALIGN_DEFAULT && align != LV_IMAGE_ALIGN_CENTER &&
+      align != LV_IMAGE_ALIGN_TOP_LEFT)
+    return;
   lv_area_t coords;
   lv_obj_get_coords(img, &coords);
   if (static_cast<std::int32_t>(dsc->header.w) != lv_area_get_width(&coords) ||

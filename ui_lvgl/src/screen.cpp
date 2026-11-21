@@ -1325,6 +1325,12 @@ struct Screen::Impl {
       // Reveal the new image a strip at a time, from the top.
       if (reveal_timer == nullptr)
         reveal_timer = lv_timer_create(on_reveal_tick, kRevealStepMs, this);
+      if (reveal_timer == nullptr) {
+        // No timer (LVGL out of memory): reveal everything at once rather than never.
+        while (reveal_step_now()) {
+        }
+        finish_reveal();
+      }
     }
     count();
     heat_dimmed = behind;
@@ -1334,14 +1340,25 @@ struct Screen::Impl {
     static_cast<Impl*>(lv_timer_get_user_data(t))->reveal_step();
   }
 
-  void reveal_step() {
+  /// Shows the next hidden strip; false when none was left (and the reveal is finished).
+  bool reveal_step_now() {
     for (lv_obj_t* strip : heat_strips) {
       if (lv_obj_is_hidden(strip)) {
         lv_obj_set_hidden(strip, false);
-        return;
+        return true;
       }
     }
+    return false;
+  }
+
+  void reveal_step() {
+    if (reveal_step_now()) return;
     stop_reveal_timer();
+    finish_reveal();
+  }
+
+  // The new image is whole again: sprites are captured against it before they reappear.
+  void finish_reveal() {
     if (pulses) {
       pulses->mark_all_dirty(true);
       pulses->set_veiled(false);
