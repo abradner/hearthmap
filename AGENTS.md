@@ -252,6 +252,12 @@ add rather than rewrite.
 - **With `esp32_hosted`, a Wi-Fi call can block the main loop for the whole RPC timeout.** It is
   5 s by default, equal to ESPHome's default task watchdog, so a silent co-processor resets the
   panel; the component requires `esp32: watchdog_timeout` of at least 16 s (D-061).
+- **ESPHome compiles ESP-IDF's log at ERROR, which hides esp-hosted's warnings.** `esp32:
+  framework: log_level` defaults to `ERROR` (CONFIG_LOG_DEFAULT_LEVEL_ERROR), and esp-hosted
+  3.1.0 reports a P4 out of DMA-capable RAM only at WARN or DEBUG (`mempool OOM start (TX)`,
+  `dma_alloc(...) failed`, `rx_get_buffer(...) failed`) while it drops the packet. A link that
+  dies that way logs nothing at all. `hearthmap: diagnostics: true` opens them (D-063); otherwise
+  set `log_level: WARN` before reading a quiet log as "no Wi-Fi error".
 - **`operator new` aborts on this target.** Exceptions are off, so a `std::vector` that cannot
   allocate calls `abort()` on every boot that reaches it; the present self-check did this with
   internal RAM full. Large pixel buffers go in PSRAM through `heap_caps_malloc`, checked.
