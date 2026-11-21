@@ -1229,3 +1229,77 @@ def test_stall_judge_and_breadcrumbs(tmp_path):
     out = _build_and_run(tmp_path, [str(tmp_path / "stall_test.cpp"), str(COMPONENT / "loop_breadcrumb.cpp")],
                          [COMPONENT])
     assert "0 failures" in out
+
+
+DIAG_TEST = r"""
+#include <cstdio>
+#include <cstring>
+#include "diag_report.h"
+using namespace esphome::hearthmap_panel;
+int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+int main() {
+  // A counter's age: the first sample starts the clock, a change restarts it.
+  CounterAge a;
+  CHECK(a.update(1000, 5) == 0);
+  CHECK(a.update(11000, 5) == 10000);  // never seen to move: time since the first sample
+  CHECK(a.update(21000, 6) == 0);      // moved
+  CHECK(a.update(31000, 6) == 10000);
+  CHECK(a.update(41000, 6) == 20000);
+  CHECK(a.update(51000, 7) == 0);
+  // Across the millisecond clock's wrap.
+  CounterAge w;
+  CHECK(w.update(0xFFFFF000u, 1) == 0);
+  CHECK(w.update(0x00001000u, 1) == 0x2000u);
+  // A counter that wraps to the same value it held is the one blind spot: it reads as stalled.
+  // Shares of one core, in tenths of a percent.
+  CHECK(share_permille(0, 0) == 0);
+  CHECK(share_permille(50, 100) == 500);
+  CHECK(share_permille(1, 3) == 333);
+  CHECK(share_permille(200, 100) == 2000);  // not clamped: a counter jump shows as such
+  // The lines.
+  char line[384];
+  MemorySample m;
+  m.internal_free = 40 * 1024; m.internal_min = 12 * 1024; m.dma_largest = 1500;
+  m.failed_allocs = 3; m.failed_dma_allocs = 2; m.last_failed_size = 1536; m.last_failed_caps = 0x8;
+  const int n = format_memory_line(42, m, line, sizeof(line));
+  CHECK(n > 0 && n < static_cast<int>(sizeof(line)));
+  CHECK(std::strstr(line, "t=42s internal free 40K min 12K") != nullptr);
+  CHECK(std::strstr(line, "dma largest 1K") != nullptr);
+  CHECK(std::strstr(line, "failed allocs 3, dma 2 (last 1536 B caps 0x8)") != nullptr);
+  LinkSample l;
+  l.hosted_stats = true; l.rx_in = 100; l.rx_in_age_ms = 65000; l.rx_out = 99; l.tx_drop = 7;
+  l.rpc_err = 0x107; l.rpc_ms = 5003; l.ping_running = true; l.ping_lost = 6; l.ping_age_ms = 60000;
+  l.loop_age_ms = 33;
+  const int k = format_link_line(l, "ESP_ERR_TIMEOUT", line, sizeof(line));
+  CHECK(k > 0 && k < static_cast<int>(sizeof(line)));
+  CHECK(std::strstr(line, "rx in 100 (65s ago)") != nullptr);
+  CHECK(std::strstr(line, "drop 7") != nullptr);
+  CHECK(std::strstr(line, "rssi call ESP_ERR_TIMEOUT (5003 ms)") != nullptr);
+  CHECK(std::strstr(line, "lost 6 (reply 60s ago)") != nullptr);
+  CHECK(std::strstr(line, "api down | loop 33 ms ago") != nullptr);
+  l = LinkSample{};
+  l.rssi = -61; l.rpc_ms = 12;
+  format_link_line(l, "ESP_OK", line, sizeof(line));
+  CHECK(std::strstr(line, "sdio counters not built") != nullptr);
+  CHECK(std::strstr(line, "rssi -61 (12 ms)") != nullptr);
+  CHECK(std::strstr(line, "ping gw not started") != nullptr);
+  // The widest values still fit the device's buffer.
+  LinkSample big;
+  big.hosted_stats = true; big.ping_running = true;
+  big.tx_in = big.tx_out = big.tx_drop = big.credit_stalls = big.rx_in = big.rx_out = 0xFFFFFFFFu;
+  big.rx_in_age_ms = big.rx_out_age_ms = big.tx_out_age_ms = big.ping_age_ms = 0xFFFFFFFFu;
+  big.ping_ok = big.ping_lost = big.rpc_ms = big.loop_age_ms = 0xFFFFFFFFu; big.rpc_err = 0x7FFFFFFF;
+  const int wide = format_link_line(big, "ESP_ERR_WIFI_NOT_STARTED", line, sizeof(line));
+  CHECK(wide > 0 && wide < static_cast<int>(sizeof(line)));
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_hosted_diagnostics_report(tmp_path):
+    (tmp_path / "diag_test.cpp").write_text(DIAG_TEST)
+    out = _build_and_run(tmp_path, [str(tmp_path / "diag_test.cpp"), str(COMPONENT / "diag_report.cpp")],
+                         [COMPONENT])
+    assert "0 failures" in out

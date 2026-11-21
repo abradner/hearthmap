@@ -28,6 +28,8 @@ hearthmap:
   # blitter: software       or ppa: large fills, blends and copies on the ESP32-P4's PPA (D-057)
   # present: false          true (with display_id): animated tiles skip LVGL's refresh (D-058)
   # display_id: ...         the display LVGL draws to (needed by present)
+  # diagnostics: false      true: a 10 s hosted Wi-Fi link report on the UART (D-063)
+  # pulse_sprites: animated still or off: bisecting aids for the Wi-Fi link fault (D-063)
 ```
 
 A full example device is `examples/flat/esphome/flat-panel.yaml`.
@@ -265,6 +267,31 @@ Measured on the panel with `tools/bench` (its README has every number):
     watchdog_timeout: 16s
   ```
 
+- **Hosted link diagnostics** (`diagnostics: true`, off by default, D-063): a task prints two
+  lines every 10 s straight to the UART (`[I][hm.diag]:`), and every 60 s one line per task:
+
+  ```
+  t=<s>s internal free <K> min <K> largest <K> | dma largest <K> (internal <K>) | psram free <K> largest <K> | failed allocs <n>, dma <n> (last <B> B caps 0x<caps>)
+  sdio tx in <n> out <n> drop <n> stall <n> (out <s>s ago) rx in <n> (<s>s ago) out <n> (<s>s ago) | rssi <dBm> (<ms> ms) | ping gw ok <n> lost <n> (reply <s>s ago) | api up | loop <ms> ms ago
+  task <name> prio <p> cpu <x.y>% stack free <B> B
+  ```
+
+  The heap figures come from `heap_caps`; failed allocations from ESP-IDF's failed-allocation
+  hook (every `NULL` return, with its size and capability bits; `0x8` is `MALLOC_CAP_DMA`). The
+  `sdio` counters are esp-hosted's own (`CONFIG_ESP_HOSTED_HOST_PKT_STATS`, which the option
+  turns on), with how long each has stood still. `rssi` is one Wi-Fi call to the co-processor,
+  made from the report task and timed (an `ESP_ERR_TIMEOUT` near 5000 ms is a co-processor that
+  does not answer). `ping gw` is an ICMP echo to the gateway through lwIP every 10 s. The option
+  also raises ESP-IDF's compiled log ceiling to INFO and its runtime level to WARN, so esp-hosted's
+  warnings (`mempool OOM start`, `dma_alloc ... failed`, `rx_get_buffer ... failed`) appear; ESPHome
+  builds ESP-IDF's log at ERROR by default, which hides them. The task, the ping session and the
+  hook cost about 10 KiB of internal RAM, and the ping and the call add a little traffic, so the
+  option changes what it measures slightly: compare like with like.
+- **Bisecting aids** (`pulse_sprites`, default `animated`, D-063): `still` builds and keeps every
+  pulse sprite but never animates one (each shows one frame); `off` never captures or composes
+  them (the map bake still runs). With `present: false` these separate the sprites' memory from
+  their per-frame work. `examples/flat/esphome/flat-panel-diag.yaml` is the example with
+  `diagnostics: true`.
 - ESPHome's own flush waits for the display copy with no timeout; the draft upstream report is
   `docs/upstream/mipi-dsi-unbounded-wait.md`. hearthmap's own display and PPA calls check their
   preconditions so they cannot be refused once started.

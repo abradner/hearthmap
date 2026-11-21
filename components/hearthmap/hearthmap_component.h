@@ -20,6 +20,7 @@
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/view_model.h"
 #include "hearthmap_gen/generated_config.h"
+#include "hosted_diag.h"
 #include "loop_breadcrumb.h"
 #include "panel_pipeline.h"
 #include "perf_stats.h"
@@ -64,6 +65,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_present_display(display::Display* display) { present_display_ = display; }
   /// The task watchdog's timeout (esp32: watchdog_timeout), for the stall monitor (D-062).
   void set_watchdog_ms(uint32_t ms) { watchdog_ms_ = ms; }
+  /// `pulse_sprites: still | off`: a bisecting aid for the Wi-Fi link fault (D-063).
+  void set_pulse_mode(hm::ui::PulseMode mode) { pulse_mode_ = mode; }
 
   /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
   /// setup().
@@ -114,6 +117,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool stall_monitor_ = false;
   Crumb crumb_before_refresh_ = Crumb::Elsewhere;
   bool presenting_ = false;  ///< a DisplayPresenter is up: pulse frames are shown from loop()
+  hm::ui::PulseMode pulse_mode_ = hm::ui::PulseMode::Animated;
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline

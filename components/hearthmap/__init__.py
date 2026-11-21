@@ -9,6 +9,8 @@ YAML:
       # optional: lvgl_id, refresh_interval (30s), min_redraw_interval (500ms),
       #           heat_refresh_interval (15s), touchscreen_id (touch latency in the perf log),
       #           blitter (software | ppa; default software), present (false) with display_id
+      # bisecting aids for the hosted Wi-Fi link (D-063), off by default:
+      #           diagnostics (false), pulse_sprites (animated | still | off; default animated)
 
 Build-time work lives in hearthmap_codegen.py (pure Python, unit-tested); this file is only the
 ESPHome surface. See README.md for how core and ui_lvgl reach the build.
@@ -45,6 +47,8 @@ CONF_TOUCHSCREEN_ID = "touchscreen_id"
 CONF_BLITTER = "blitter"
 CONF_PRESENT = "present"
 CONF_DISPLAY_ID = "display_id"
+CONF_DIAGNOSTICS = "diagnostics"
+CONF_PULSE_SPRITES = "pulse_sprites"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -58,6 +62,10 @@ BlitterKind = hearthmap_panel_ns.enum("BlitterKind", is_class=True)
 # `blitter: ppa` routes large pixel moves to the ESP32-P4's PPA (ppa_blitter.h, D-057); any other
 # target, or a refused driver, falls back to plain C++ at runtime, so it only ever costs speed.
 BLITTER_KINDS = {"software": BlitterKind.Software, "ppa": BlitterKind.Ppa}
+PulseMode = cg.global_ns.namespace("hearthmap").namespace("ui").enum("PulseMode", is_class=True)
+# `pulse_sprites: still` composes the sprites but never animates them; `off` never builds them.
+# For bisecting the hosted Wi-Fi link fault (docs/decisions.md D-063), not for normal use.
+PULSE_MODES = {"animated": PulseMode.Animated, "still": PulseMode.Still, "off": PulseMode.Off}
 
 
 def _load_schema() -> dict:
@@ -135,6 +143,9 @@ CONFIG_SCHEMA = cv.All(
             # (display_presenter.h, D-058); needs the display LVGL draws to.
             cv.Optional(CONF_PRESENT, default=False): cv.boolean,
             cv.Optional(CONF_DISPLAY_ID): cv.use_id(display.Display),
+            # A 10 s heap / SDIO / Wi-Fi / lwIP / task report on the UART (hosted_diag.h, D-063).
+            cv.Optional(CONF_DIAGNOSTICS, default=False): cv.boolean,
+            cv.Optional(CONF_PULSE_SPRITES, default="animated"): cv.enum(PULSE_MODES, lower=True),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_document,
@@ -193,6 +204,21 @@ def _write_build_tree(config: dict) -> None:
     gen.sync_tree(Path(CORE.relative_src_path()), files, owned)
 
 
+def _diagnostics_sdkconfig() -> None:
+    """What `diagnostics: true` needs from ESP-IDF and esp-hosted (D-063): esp-hosted's SDIO
+    packet counters (read by hosted_diag.cpp; their own periodic INFO line stays below the
+    runtime log level), FreeRTOS run-time stats for the task table, and a compiled log ceiling
+    of INFO, so that esp-hosted's WARN lines exist for hosted_diag.cpp to let through at runtime
+    (ESPHome compiles ESP-IDF's log at ERROR by default)."""
+    from esphome.components.esp32 import add_idf_sdkconfig_option
+
+    add_idf_sdkconfig_option("CONFIG_ESP_HOSTED_HOST_PKT_STATS", True)
+    add_idf_sdkconfig_option("CONFIG_ESP_HOSTED_HOST_PKT_STATS_INTERVAL_SEC", 600)
+    add_idf_sdkconfig_option("CONFIG_FREERTOS_USE_TRACE_FACILITY", True)
+    add_idf_sdkconfig_option("CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS", True)
+    add_idf_sdkconfig_option("CONFIG_LOG_MAXIMUM_LEVEL_INFO", True)
+
+
 @coroutine_with_priority(CoroPriority.FINAL)
 async def _psram_malloc() -> None:
     """Let plain malloc/new use PSRAM for large blocks. The psram component sets
@@ -219,6 +245,11 @@ async def to_code(config: dict) -> None:
     wdt = CORE.config.get("esp32", {}).get(CONF_WATCHDOG_TIMEOUT)
     if wdt is not None:
         cg.add(var.set_watchdog_ms(int(wdt.total_milliseconds)))
+    cg.add(var.set_pulse_mode(config[CONF_PULSE_SPRITES]))
+    if config[CONF_DIAGNOSTICS]:
+        cg.add_define("HEARTHMAP_DIAGNOSTICS")
+        if CORE.using_toolchain_esp_idf:
+            _diagnostics_sdkconfig()
     if config[CONF_PRESENT]:
         cg.add(var.set_present_display(await cg.get_variable(config[CONF_DISPLAY_ID])))
     if CONF_TOUCHSCREEN_ID in config:
