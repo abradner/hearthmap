@@ -151,6 +151,10 @@ The lvgl component's flush is PPA rotate into a PSRAM buffer (22 Mpx/s) then the
 Caution: these placements were measured with no network. On the panel with Wi-Fi, a 256 kB
 internal draw buffer broke the hosted Wi-Fi co-processor link (D-059).
 
+Correction (found in review after the runs): the overlay card's flush figure includes the card's
+teardown refresh, spread over the five timed refreshes, so its flush share is overstated and its
+render share understated; its total is right. The bench no longer counts that refresh.
+
 ### Tiles (firmware 4): one small opaque image tile
 
 An LVGL refresh with nothing invalid costs 14 us; with one 2 x 2 area, 660 us (flush 170 us).
