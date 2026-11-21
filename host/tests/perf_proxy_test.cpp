@@ -406,7 +406,8 @@ TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budge
 namespace {
 
 /// Pixels LVGL redraws to answer one action: the refreshes in the few ticks after it.
-std::uint64_t answer_px(HeadlessDisplay& display, std::uint32_t& t, std::uint64_t& largest) {
+std::uint64_t answer_px(HeadlessDisplay& display, std::uint32_t& t, std::uint64_t& largest,
+                        double& largest_ms) {
   Counts counts;
   g_counts = &counts;
   for (int i = 0; i < 4; ++i, t += kTickMs) {
@@ -415,6 +416,7 @@ std::uint64_t answer_px(HeadlessDisplay& display, std::uint32_t& t, std::uint64_
   }
   g_counts = nullptr;
   largest = counts.max_refresh_px;
+  largest_ms = counts.max_refresh_ms;
   return counts.flushed_px;
 }
 
@@ -442,20 +444,27 @@ TEST_CASE("perf proxy: what a tap costs to answer (informative)") {
   const auto x = static_cast<std::int32_t>(a.x + p.x * a.width);
   const auto y = static_cast<std::int32_t>(a.y + p.y * a.height);
   std::uint64_t largest = 0;
+  double ms = 0;
   display.tap(x, y);
   REQUIRE(app.process_events() == 1);
   REQUIRE(app.ui_state().overlay_pin.has_value());
-  const std::uint64_t open = answer_px(display, t, largest);
-  std::printf("perf proxy [tap answers]: open overlay %.0f kpx (largest refresh %.0f)\n",
-              static_cast<double>(open) / 1000.0, static_cast<double>(largest) / 1000.0);
+  const std::uint64_t open = answer_px(display, t, largest, ms);
+  std::printf(
+      "perf proxy [tap answers]: open overlay %.0f kpx (largest refresh %.0f kpx, "
+      "%.0f ms)\n",
+      static_cast<double>(open) / 1000.0, static_cast<double>(largest) / 1000.0, ms);
   display.tap(20, 780);  // the scrim
   REQUIRE(app.process_events() == 1);
-  const std::uint64_t close = answer_px(display, t, largest);
-  std::printf("perf proxy [tap answers]: close overlay %.0f kpx (largest refresh %.0f)\n",
-              static_cast<double>(close) / 1000.0, static_cast<double>(largest) / 1000.0);
+  const std::uint64_t close = answer_px(display, t, largest, ms);
+  std::printf(
+      "perf proxy [tap answers]: close overlay %.0f kpx (largest refresh %.0f kpx, "
+      "%.0f ms)\n",
+      static_cast<double>(close) / 1000.0, static_cast<double>(largest) / 1000.0, ms);
   app.set_layer(Layer::Temperature);
-  const std::uint64_t tab = answer_px(display, t, largest);
-  std::printf("perf proxy [tap answers]: change layer %.0f kpx (largest refresh %.0f)\n",
-              static_cast<double>(tab) / 1000.0, static_cast<double>(largest) / 1000.0);
+  const std::uint64_t tab = answer_px(display, t, largest, ms);
+  std::printf(
+      "perf proxy [tap answers]: change layer %.0f kpx (largest refresh %.0f kpx, "
+      "%.0f ms)\n",
+      static_cast<double>(tab) / 1000.0, static_cast<double>(largest) / 1000.0, ms);
   CHECK(open > 0);
 }
