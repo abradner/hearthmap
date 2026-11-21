@@ -361,9 +361,9 @@ void HearthmapComponent::frame_slice_() {
   this->heat_active_ = false;
   if (!this->pipeline_->take_published()) return;
 
-  // The finished back buffer is now the front: point the screen's image at it. If the map was
-  // dimmed (a layer change, or the first image), undimming repaints it whole; otherwise it is
-  // repainted in bands (invalidate_band_).
+  // The finished back buffer is now the front: point the screen's image at it. If the image was
+  // hidden as behind (a layer change, or the first image), the Screen reveals it a strip at a
+  // time (D-052); otherwise it is repainted in bands here (invalidate_band_).
   const bool was_dimmed = this->dimmed_;
   this->heat_dsc_.data = reinterpret_cast<const uint8_t*>(this->pipeline_->front());
   if (was_dimmed) {

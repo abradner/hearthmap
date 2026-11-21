@@ -47,9 +47,10 @@ struct SourceStatus {
   /// now". The overlay then shows the room only, with no "seen" time.
   bool restamped = false;
   /// The heat image does not show the view model's active layer yet (a rebuild for the newly
-  /// selected layer is in progress, or no image has been drawn). The heat image is dimmed until
-  /// an update clears it, so a layer's colours are never shown under another layer's tab at
-  /// full strength.
+  /// selected layer is in progress, or no image has been drawn). The heat image is hidden (the map
+  /// shows the background under walls, labels and pins) until an update clears it, then revealed in
+  /// bands over about half a second, so a layer's colours are never shown under another
+  /// layer's tab (D-052).
   bool heat_behind = false;
 };
 
@@ -65,9 +66,9 @@ struct ScreenWidgets {
   lv_obj_t* root = nullptr;
   lv_obj_t* clock = nullptr;
   lv_obj_t* summary = nullptr;
-  std::vector<lv_obj_t*> tabs;  ///< One per ViewModel::tabs entry, same order.
-  lv_obj_t* map = nullptr;      ///< Click target for TapMap; at canvas.map_area.
-  lv_obj_t* heat_image = nullptr;
+  std::vector<lv_obj_t*> tabs;        ///< One per ViewModel::tabs entry, same order.
+  lv_obj_t* map = nullptr;            ///< Click target for TapMap; at canvas.map_area.
+  lv_obj_t* heat_image = nullptr;     ///< Container of the heat image's strip images (D-052).
   std::vector<lv_obj_t*> room_pulse;  ///< Per room, config order. Hidden when not pulsing.
   std::vector<lv_obj_t*> room_label;  ///< Per room, config order.
   std::vector<lv_obj_t*> pin;         ///< Per pin, config order: the pin's container.
@@ -82,7 +83,9 @@ struct ScreenWidgets {
   std::vector<lv_obj_t*> hud_room;
   std::vector<lv_obj_t*> hud_percent;
   lv_obj_t* hud_more = nullptr;
-  lv_obj_t* scrim = nullptr;  ///< The overlay: hidden when no pin is open.
+  /// The overlay: hidden when no pin is open. Card-sized and drawing nothing itself; its click
+  /// area reaches past every screen edge, so it takes every tap outside the card (D-052).
+  lv_obj_t* scrim = nullptr;
   lv_obj_t* overlay_card = nullptr;
   lv_obj_t* overlay_title = nullptr;
   lv_obj_t* overlay_subtitle = nullptr;

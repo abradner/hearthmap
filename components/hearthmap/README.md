@@ -114,9 +114,9 @@ config is proven to be refused, and the example proven to load.
     starts at once for the first image and for a layer change (restarting one in flight for
     another layer); for changed readings on the same layer at most once per
     `heat_refresh_interval`, so chatty sensors cannot keep the pipeline busy; for unchanged
-    readings never. Until a layer change's image lands (about a second on the panel) the map is
-    **dimmed** to 40 %, so one layer's colours never show at full strength under another's tab;
-    undimming repaints the map whole. Otherwise a new image is repainted in 48-row bands, one per
+    readings never. Until a layer change's image lands (about a second on the panel) the map's
+    heat image is **hidden** (background under walls, labels and pins), so one layer's colours
+    never show under another's tab, and then revealed a strip at a time (D-052). Otherwise a new image is repainted in 48-row bands, one per
     `loop()` call at most every 25 ms, instead of one long LVGL refresh. The first image logs its
     time at INFO; later ones log at DEBUG with the running count of LVGL warnings and errors.
 - LVGL's image cache is off in ESPHome's build (`LV_CACHE_DEF_SIZE` 0), so pointing the heat

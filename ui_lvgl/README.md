@@ -40,8 +40,9 @@ and passes a `SourceStatus` (D-046, D-047).
   counts the touches and the tests pin it. A value change below display precision writes nothing.
 - **Touch.** Pins are not click targets: a tap in the map area is `TapMap` with the tap point,
   and core's `hit_test()` decides what was hit. Tabs send `SelectLayer`, HUD cards
-  `TapHudItem`. While the overlay is open its scrim covers the whole screen: a tap on it sends
-  `CloseOverlay`, a tap on the card sends nothing (`docs/decisions.md` D-013, amended).
+  `TapHudItem`. While the overlay is open its scrim takes every tap outside the card (it draws nothing and is
+  only the card's size, but its click area reaches past every screen edge, D-052): a tap on it
+  sends `CloseOverlay`, a tap on the card sends nothing (`docs/decisions.md` D-013, amended).
 - **Heat image.** Colour is resolved per heat cell through core's `ColourLut`, never per pixel.
   The rasterizer blends neighbouring cells of the pixel's own room in integer arithmetic (so the
   image is bit-identical across compilers), draws outdoor rooms in the outdoor fill, and draws
@@ -62,9 +63,12 @@ and passes a `SourceStatus` (D-046, D-047).
   invalidates thin strips along the walls only. The timer stops itself when nothing pulses. The
   embedder needs nothing but LVGL's timer handler; `host/tests/perf_proxy_test.cpp` bounds what
   this costs per second.
-- **The heat image reports that it covers the map** when it is opaque and undimmed, so LVGL starts
-  a refresh inside the map at the image instead of filling the background under it first (LVGL
-  9.6's image widget never reports cover without an opaque background of its own).
+- **The heat image is 16 strip images** over slices of the embedder's buffer (D-052). Each reports
+  that it covers its area when opaque (LVGL 9.6's image widget never does without an opaque
+  background of its own), so a refresh inside the map starts at the image instead of filling the
+  background under it first. While the image is behind its layer every strip is hidden (the map
+  shows the background under walls, labels and pins); when it catches up the strips come back
+  one per 30 ms, so the new image is revealed in bands.
 - **LVGL 9.6 clipping.** `overflow_visible` alone no longer lets children draw outside their
   parent: they are clipped to the parent's extended draw area. Containers whose children stick
   out (pin value labels, badges) set one (`allow_overflow()` in `screen.cpp`); a render test

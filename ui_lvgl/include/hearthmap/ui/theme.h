@@ -42,6 +42,8 @@ inline constexpr std::uint32_t kLeaf = 0x3FA56B;
 inline constexpr std::uint32_t kLeafStale = 0x4B5563;
 
 // Overlay
+/// The spec's scrim behind the detail card. Not drawn on the panel since D-052 (a full-screen
+/// blend cost a long refresh each way); kept as the spec's value.
 inline constexpr std::uint32_t kScrim = 0x050709;
 inline constexpr std::uint8_t kScrimOpa = 184;      ///< 0.72 * 255, rounded.
 inline constexpr std::uint8_t kHappyRangeOpa = 89;  ///< 0.35 * 255, rounded.

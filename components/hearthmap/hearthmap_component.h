@@ -105,7 +105,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool connected_ = false;  ///< The API connection state the last view was built with.
   bool first_heat_logged_ = false;
   bool heat_active_ = false;  ///< A heat rebuild is in flight (for the timing log).
-  bool dimmed_ = false;       ///< The last Screen update dimmed the heat image.
+  bool dimmed_ = false;       ///< The last Screen update hid the heat image as behind.
   uint32_t heat_started_ms_ = 0;
   uint32_t last_view_ms_ = 0;
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).

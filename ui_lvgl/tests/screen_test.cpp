@@ -357,27 +357,53 @@ TEST_CASE("offline replaces the house summary in the warn colour and clears on r
   CHECK(text_rgb(rig.w().summary) == theme::kTextSecondary);
 }
 
-TEST_CASE("a heat image behind the active layer is dimmed until it catches up") {
+TEST_CASE("a heat image behind the active layer is veiled, then revealed in bands") {
   Rig rig;
   for (auto& p : rig.heat) p = 0xF800;  // pure red
   const ViewModel vm = test::temperature_vm(rig.config);
-  auto px = [&]() {
+  // Map area 864 x 720 at (40, 76): one pixel near the top of the map, one near the bottom.
+  auto px_at = [&](int map_y) {
     rig.display.render();
-    return rig.display.framebuffer()[static_cast<std::size_t>(77 + 300) * 1280U + 41U + 300U];
+    return rig.display.framebuffer()[static_cast<std::size_t>(76 + map_y) * 1280U + 41U + 300U];
   };
   rig.show(vm);
-  CHECK(px() == 0xF800);
+  CHECK(px_at(5) == 0xF800);
   SourceStatus behind;
   behind.heat_behind = true;
   rig.screen->update(vm, rig.header, 1000, behind);
-  const std::uint16_t dimmed = px();
-  CHECK(dimmed != 0xF800);
-  CHECK((dimmed >> 11) < 0x1F / 2);  // well under half the red: clearly not the layer's colour
+  // No colour of the image shows while it is behind: the map is the background.
+  const std::uint16_t bg =
+      static_cast<std::uint16_t>(lv_color_to_u16(lv_color_hex(theme::kBackground)));
+  CHECK(px_at(5) == bg);
+  CHECK(px_at(700) == bg);
   const std::size_t before = rig.screen->writes();
   rig.screen->update(vm, rig.header, 1000, behind);
   CHECK(rig.screen->writes() == before);  // unchanged status writes nothing
+
+  // Caught up: the image comes back from the top, a strip per timer tick, not all at once.
   rig.show(vm);
-  CHECK(px() == 0xF800);
+  CHECK(px_at(700) == bg);
+  rig.display.set_time_ms(2000);
+  rig.display.run_timers();
+  rig.display.set_time_ms(2040);
+  rig.display.run_timers();
+  CHECK(px_at(5) == 0xF800);
+  CHECK(px_at(700) == bg);
+  for (std::uint32_t t = 2040; t <= 3000; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+  }
+  CHECK(px_at(5) == 0xF800);
+  CHECK(px_at(700) == 0xF800);
+
+  // Falling behind again mid-reveal veils everything again.
+  rig.screen->update(vm, rig.header, 1000, behind);
+  rig.show(vm);
+  rig.display.set_time_ms(3040);
+  rig.display.run_timers();
+  rig.screen->update(vm, rig.header, 1000, behind);
+  CHECK(px_at(5) == bg);
+  CHECK(px_at(700) == bg);
 }
 
 TEST_CASE("a non-plant overlay has no thirst row and lists its rows as stats") {
@@ -1075,17 +1101,43 @@ TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") 
   CHECK(timer_count() == timers_before + 1);
 }
 
-TEST_CASE("the heat image tells LVGL it covers the map, unless it is dimmed") {
+TEST_CASE("the heat image tells LVGL it covers the map, unless it is veiled") {
   Rig rig;
   rig.show(test::temperature_vm(rig.config));
   lv_obj_update_layout(rig.display.screen());
   const auto& w = rig.w();
-  lv_area_t inside{400, 600, 420, 620};  // map area 864 x 720 at (40, 76), away from pins
-  CHECK(lv_refr_get_top_obj(&inside, rig.display.screen()) == w.heat_image);
-  lv_area_t across{20, 600, 60, 620};  // straddles the map's left edge
-  CHECK(lv_refr_get_top_obj(&across, rig.display.screen()) != w.heat_image);
+  // Map area 864 x 720 at (40, 76); away from pins, and inside one veil strip (rows 495..539).
+  lv_area_t inside{400, 580, 420, 600};
+  // The image is drawn as strips (children of heat_image): the one holding the area covers it.
+  lv_obj_t* top = lv_refr_get_top_obj(&inside, rig.display.screen());
+  REQUIRE(top != nullptr);
+  CHECK(lv_obj_get_parent(top) == w.heat_image);
+  lv_area_t across{20, 580, 60, 600};  // straddles the map's left edge
+  top = lv_refr_get_top_obj(&across, rig.display.screen());
+  CHECK((top == nullptr || lv_obj_get_parent(top) != w.heat_image));
   SourceStatus dim;
   dim.heat_behind = true;
   rig.screen->update(test::temperature_vm(rig.config), rig.header, 1000, dim);
-  CHECK(lv_refr_get_top_obj(&inside, rig.display.screen()) != w.heat_image);
+  lv_obj_update_layout(rig.display.screen());
+  // Hidden while behind: LVGL starts at the background (a fill, not the image).
+  top = lv_refr_get_top_obj(&inside, rig.display.screen());
+  CHECK((top == nullptr || lv_obj_get_parent(top) != w.heat_image));
+}
+
+TEST_CASE("a swapped heat buffer is drawn from the new pixels") {
+  Rig rig;
+  for (auto& p : rig.heat) p = 0xF800;                // red
+  std::vector<Rgb565> back(rig.heat.size(), 0x07E0);  // green
+  rig.show(test::temperature_vm(rig.config));
+  auto px_at = [&](int map_y) {
+    rig.display.render();
+    return rig.display.framebuffer()[static_cast<std::size_t>(76 + map_y) * 1280U + 41U + 300U];
+  };
+  CHECK(px_at(5) == 0xF800);
+  CHECK(px_at(700) == 0xF800);
+  // The embedder points its descriptor at the other buffer, as the device does after a rebuild.
+  rig.heat_dsc.data = reinterpret_cast<const std::uint8_t*>(back.data());
+  rig.screen->invalidate_heat();
+  CHECK(px_at(5) == 0x07E0);
+  CHECK(px_at(700) == 0x07E0);  // every strip, not just the first
 }

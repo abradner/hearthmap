@@ -141,6 +141,11 @@ std::string slurp(const std::string& path) {
   return ss.str();
 }
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+// lv_image_header_t is a set of bit-fields; GCC's -Wconversion flags every write to them.
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
 /// Plant photos as the device has them: RGB565, pre-sized for every disc (D-039).
 class SizedPhotos final : public ui::ImageProvider {
  public:
@@ -171,6 +176,9 @@ class SizedPhotos final : public ui::ImageProvider {
   }
   mutable std::map<int, std::unique_ptr<Img>> cache_;
 };
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 /// A fictional house shaped like the panel's first real install (the same shape as
 /// components/hearthmap/tests/test_cpp.py's panel-like config): 18 rooms on a 6 x 3 grid, some
@@ -354,4 +362,61 @@ TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budge
   CHECK(r.counts.flushed_px > 0);
   CHECK(r.flushed_per_s() <= kBudgetFlushedPxPerS);
   CHECK(r.counts.max_refresh_px <= kBudgetLargestRefreshPx);
+}
+
+namespace {
+
+/// Pixels LVGL redraws to answer one action: the refreshes in the few ticks after it.
+std::uint64_t answer_px(HeadlessDisplay& display, std::uint32_t& t, std::uint64_t& largest) {
+  Counts counts;
+  g_counts = &counts;
+  for (int i = 0; i < 4; ++i, t += kTickMs) {
+    display.set_time_ms(t);
+    display.run_timers();
+  }
+  g_counts = nullptr;
+  largest = counts.max_refresh_px;
+  return counts.flushed_px;
+}
+
+}  // namespace
+
+// Not a budget yet: what answering a tap costs, printed so device numbers can be read against it.
+TEST_CASE("perf proxy: what a tap costs to answer (informative)") {
+  const Scenario s = panel_like();
+  HeadlessDisplay display(1280, 800);
+  install_task_counter();
+  for (lv_event_code_t code :
+       {LV_EVENT_FLUSH_START, LV_EVENT_INVALIDATE_AREA, LV_EVENT_REFR_START, LV_EVENT_REFR_READY})
+    lv_display_add_event_cb(display.display(), on_display_event, code, nullptr);
+  SizedPhotos photos;
+  App app(display.screen(), s.config, s.readings, s.now, 0, &photos);
+  app.set_layer(Layer::Soil);
+  std::uint32_t t = 0;
+  display.render();
+  for (; t < 1000; t += kTickMs) {
+    display.set_time_ms(t);
+    display.run_timers();
+  }
+  const CanvasRect& a = s.config.canvas.map_area;
+  const MapPoint p = s.config.pins[8].position;
+  const auto x = static_cast<std::int32_t>(a.x + p.x * a.width);
+  const auto y = static_cast<std::int32_t>(a.y + p.y * a.height);
+  std::uint64_t largest = 0;
+  display.tap(x, y);
+  REQUIRE(app.process_events() == 1);
+  REQUIRE(app.ui_state().overlay_pin.has_value());
+  const std::uint64_t open = answer_px(display, t, largest);
+  std::printf("perf proxy [tap answers]: open overlay %.0f kpx (largest refresh %.0f)\n",
+              static_cast<double>(open) / 1000.0, static_cast<double>(largest) / 1000.0);
+  display.tap(20, 780);  // the scrim
+  REQUIRE(app.process_events() == 1);
+  const std::uint64_t close = answer_px(display, t, largest);
+  std::printf("perf proxy [tap answers]: close overlay %.0f kpx (largest refresh %.0f)\n",
+              static_cast<double>(close) / 1000.0, static_cast<double>(largest) / 1000.0);
+  app.set_layer(Layer::Temperature);
+  const std::uint64_t tab = answer_px(display, t, largest);
+  std::printf("perf proxy [tap answers]: change layer %.0f kpx (largest refresh %.0f)\n",
+              static_cast<double>(tab) / 1000.0, static_cast<double>(largest) / 1000.0);
+  CHECK(open > 0);
 }

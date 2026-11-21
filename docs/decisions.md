@@ -592,7 +592,7 @@ input, compared exactly, so the field is not computed to find out). Samples that
 rebuild runs are picked up when it lands, under the same interval. **What the user sees:** pins,
 values, the HUD, tabs and the overlay follow every reading and tap at once; the heat image may lag
 the pins by up to the interval. After a layer change the tab and the pins switch at once and the
-map is dimmed to 40 % until the new layer's image lands (about a second on the panel), so one
+map is dimmed to 40 % (since D-052: hidden) until the new layer's image lands (about a second on the panel), so one
 layer's colours never show at full strength under another's tab. Dimming and undimming each
 repaint the map whole (a style change invalidates the image); other new images still repaint in
 48-row bands (D-038). The first image is dimmed the same way until it lands. **Guard:**
@@ -682,8 +682,33 @@ simulated seconds on the example and on a panel-shaped fictional house and bound
 (500 kpx/s, about 15 % of the loop at the panel's rates) and the largest single refresh (75 kpx,
 about 22 ms); the previous code fails every bound by 40 to 80 times. `ui_lvgl/tests/screen_test.cpp`
 checks the step counts, that no property animation runs, the strip geometry, that a cleared pulse
-leaves nothing moving and stops the timer, and the cover check. **Not yet changed** (wait for the
-next device numbers): the dimmed map and the overlay scrim are full-screen blends whose show and
-hide each repaint everything, so a tab change or opening an overlay still costs a refresh of a few
-hundred ms; the heat repaint after a swap; the draw buffer size. **Would change if:** the device
+leaves nothing moving and stops the timer, and the cover check. **Not changed here** (D-052 takes the dimmed map and the overlay scrim): the heat repaint after
+a swap; the draw buffer size. **Would change if:** the device
 shows the remaining cost elsewhere, or the steps read as flicker on the glass.
+
+### D-052 A tap's answer repaints only what it changes: no full-screen scrim, no dimmed map (provisional)
+
+**Question:** the detail overlay drew a 72 % scrim over the whole screen, and a layer change
+dimmed the whole map to 40 % until its image landed (D-047). Each is a full-area blend, and
+showing or hiding it repaints the area: on the panel, about 230 ms to render and 80 ms to flush
+the full screen (D-051's rates), more for a blend, so opening or closing an overlay or changing
+tab could not be answered within about 150 ms. The host proxy measured 1,046 kpx redrawn to
+open the overlay and 1,047 kpx to close it. **Default:** (1) the scrim is only the card's size
+(card plus its "tap outside" hint) and draws nothing; its click area reaches past every screen
+edge, so a tap anywhere outside the card still closes the overlay (R12 unchanged, the tap-routing
+tests pass unchanged); the hint gets an opaque pill so it reads on the map. Opening or closing
+now redraws about 420 kpx. (2) The heat image is 16 strip images over slices of the embedder's
+buffer; while it is behind its layer every strip is hidden, so the map shows the background
+under walls, labels and pins (a fill, not a blend of the image), and when it catches up the
+strips come back one per 30 ms, so the new image is revealed in bands instead of one long
+refresh. Swapping the buffer behind the descriptor still invalidates nothing; the strips follow
+the descriptor's pointer at the next update or `invalidate_heat()`. **Trade:** the overlay no
+longer darkens the screen around the card, and during a layer change (about a second) the map
+shows empty rooms rather than the previous layer's colours at 40 %. Neither shows a claim the
+data does not back; both look less like the approved mockup. **Guard:**
+`ui_lvgl/tests/screen_test.cpp` ("veiled, then revealed in bands", "a swapped heat buffer is drawn
+from the new pixels", the cover test, and the unchanged tap-routing cases);
+`host/tests/perf_proxy_test.cpp` prints what each tap costs (informative, no budget yet).
+Goldens overlay-plant and overlay-climate change for (1) only. **Would change if:** the owner
+prefers the darkened backdrop at the cost of a slower overlay, or the device shows the card's own
+repaint is still too slow.
