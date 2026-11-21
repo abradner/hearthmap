@@ -285,6 +285,12 @@ struct Screen::Impl {
 
   std::vector<std::vector<lv_point_precise_t>> room_points;
   std::unique_ptr<detail::PulseLayer> pulses;
+  lv_obj_t* press_marker = nullptr;
+  struct RoundPhoto {
+    std::vector<std::uint16_t> px;
+    lv_image_dsc_t dsc{};
+  };
+  std::map<std::string, std::unique_ptr<RoundPhoto>, std::less<>> round_photos;
   std::unique_ptr<detail::MapBake> bake;
   std::vector<lv_obj_t*> walls;
   std::optional<bool> objects_baked;
@@ -360,6 +366,34 @@ struct Screen::Impl {
         UiEvent::tap_map(CanvasPoint{static_cast<double>(p.x), static_cast<double>(p.y)}));
   }
 
+  // A press on a pin is acknowledged at once by a ring around it (D-056), drawn in the next
+  // refresh, before the tap's event has been applied: core's hit_test() says which pin.
+  static void on_map_press(lv_event_t* e) {
+    Impl* s = self(e);
+    lv_indev_t* indev = lv_indev_active();
+    if (indev == nullptr || s->press_marker == nullptr) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    lv_area_t root;
+    lv_obj_get_coords(s->w.root, &root);
+    const HitResult hit = hit_test(s->config, CanvasPoint{static_cast<double>(p.x - root.x1),
+                                                          static_cast<double>(p.y - root.y1)});
+    if (hit.kind != HitResult::Kind::Pin || hit.index >= s->config.pins.size()) return;
+    const lv_point_precise_t c = s->map_px(s->config.pins[hit.index].position);
+    const std::int32_t r = in_pot(s->config.pins[hit.index].kind)
+                               ? kPlantRadius + 6
+                               : kPlainDotRadius + kPlainDotBorder + 6;
+    lv_obj_set_size(s->press_marker, 2 * r, 2 * r);
+    lv_obj_set_pos(s->press_marker, static_cast<std::int32_t>(c.x) - r,
+                   static_cast<std::int32_t>(c.y) - r);
+    lv_obj_set_hidden(s->press_marker, false);
+  }
+
+  static void on_map_release(lv_event_t* e) {
+    Impl* s = self(e);
+    if (s->press_marker != nullptr) lv_obj_set_hidden(s->press_marker, true);
+  }
+
   static void on_tab_click(lv_event_t* e) {
     auto* obj = lv_event_get_current_target_obj(e);
     const auto layer =
@@ -386,6 +420,7 @@ struct Screen::Impl {
     Impl* s = self(e);
     s->w = ScreenWidgets{};
     if (s->pulses) s->pulses->forget_objects();
+    s->press_marker = nullptr;
     if (s->bake) s->bake->forget_objects();
     s->heat_strips.clear();
     s->stop_reveal_timer();
@@ -530,6 +565,9 @@ struct Screen::Impl {
     allow_overflow(w.map, 160);
     lv_obj_set_clickable(w.map, true);
     lv_obj_add_event_cb(w.map, on_map_click, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(w.map, on_map_press, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(w.map, on_map_release, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(w.map, on_map_release, LV_EVENT_PRESS_LOST, this);
 
     build_heat_strips(heat);
 
@@ -571,6 +609,45 @@ struct Screen::Impl {
     pin_look.assign(config.pins.size(), std::nullopt);
     for (std::size_t i = 0; i < config.pins.size(); ++i) build_pin(i);
     build_pulses();
+    // Above the pulses: the press acknowledgement ring.
+    press_marker = make_box(w.map);
+    lv_obj_set_style_radius(press_marker, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(press_marker, 3, 0);
+    lv_obj_set_style_border_color(press_marker, hex(theme::kTextPrimary), 0);
+    lv_obj_set_style_border_opa(press_marker, LV_OPA_COVER, 0);
+    lv_obj_set_hidden(press_marker, true);
+  }
+
+  /// The overlay disc's photo cut round over the card colour, once per photo (D-056), so the
+  /// disc needs no clipping mask; nullptr when the photo is not a 128 px RGB565 image.
+  const lv_image_dsc_t* rounded_overlay_photo(const Pin& pin, const lv_image_dsc_t* photo) {
+    const int d = 2 * kOverlayDiscRadius;
+    if (photo == nullptr || !pin.photo.has_value() || photo->header.cf != LV_COLOR_FORMAT_RGB565 ||
+        static_cast<int>(photo->header.w) != d || static_cast<int>(photo->header.h) != d ||
+        photo->data == nullptr)
+      return nullptr;
+    auto it = round_photos.find(*pin.photo);
+    if (it != round_photos.end()) return &it->second->dsc;
+    auto round = std::make_unique<RoundPhoto>();
+    round->px.resize(static_cast<std::size_t>(d) * static_cast<std::size_t>(d));
+    const auto* src = reinterpret_cast<const std::uint16_t*>(photo->data);
+    const std::uint16_t card = rgb565(theme::kCard);
+    const float rr = static_cast<float>(kOverlayDiscRadius);
+    for (int y = 0; y < d; ++y) {
+      for (int x = 0; x < d; ++x) {
+        const float dx = static_cast<float>(x) + 0.5f - rr;
+        const float dy = static_cast<float>(y) + 0.5f - rr;
+        const float cov = std::min(1.0f, std::max(0.0f, rr - std::sqrt(dx * dx + dy * dy) + 0.5f));
+        const std::size_t i =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(d) + static_cast<std::size_t>(x);
+        round->px[i] = blend565(card, src[i], static_cast<std::uint32_t>(cov * 255.0f + 0.5f));
+      }
+    }
+    detail::fill_image_dsc(round->dsc, LV_COLOR_FORMAT_RGB565, static_cast<std::uint32_t>(d),
+                           static_cast<std::uint32_t>(d), 2, round->px.data());
+    const lv_image_dsc_t* out = &round->dsc;
+    round_photos.emplace(*pin.photo, std::move(round));
+    return out;
   }
 
   void build_pulses() {
@@ -864,12 +941,20 @@ struct Screen::Impl {
     w.overlay_card = card;
     lv_obj_set_size(card, kOverlayW, kOverlayH);
     lv_obj_set_pos(card, 0, 0);
-    lv_obj_set_style_radius(card, 20, 0);
+    // Square, opaque, its 2 px stroke as four thin fills (D-056): a rounded corner and a border
+    // are masked shapes LVGL draws at about 1 us per pixel of the card's area on the panel.
     lv_obj_set_style_bg_color(card, hex(theme::kCard), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_border_color(card, hex(theme::kCardStroke), 0);
-    lv_obj_set_style_border_opa(card, LV_OPA_COVER, 0);
+    for (const lv_area_t& edge : {lv_area_t{0, 0, kOverlayW - 1, 1},
+                                  lv_area_t{0, kOverlayH - 2, kOverlayW - 1, kOverlayH - 1},
+                                  lv_area_t{0, 0, 1, kOverlayH - 1},
+                                  lv_area_t{kOverlayW - 2, 0, kOverlayW - 1, kOverlayH - 1}}) {
+      lv_obj_t* line = make_box(card);
+      lv_obj_set_pos(line, edge.x1, edge.y1);
+      lv_obj_set_size(line, lv_area_get_width(&edge), lv_area_get_height(&edge));
+      lv_obj_set_style_bg_color(line, hex(theme::kCardStroke), 0);
+      lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+    }
     // Clickable with no handler: a tap on the card is absorbed (sends nothing).
     lv_obj_set_clickable(card, true);
 
@@ -1034,6 +1119,8 @@ struct Screen::Impl {
         lv_obj_set_flex_align(pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_clickable(pill, true);
+        // Pressed: the pill lightens at once, before the layer changes (D-056).
+        lv_obj_set_style_bg_color(pill, hex(theme::kCardStroke), LV_STATE_PRESSED);
         lv_obj_set_user_data(pill,
                              reinterpret_cast<void*>(static_cast<std::uintptr_t>(index_of(layer))));
         lv_obj_add_event_cb(pill, on_tab_click, LV_EVENT_CLICKED, this);
@@ -1404,8 +1491,14 @@ struct Screen::Impl {
         }
         if (all || prev->stale != o.stale) {
           if (pin.kind == PinKind::Plant) {
-            set_disc_image(overlay_disc, photo_for(pin, 2 * kOverlayDiscRadius),
+            const lv_image_dsc_t* photo = photo_for(pin, 2 * kOverlayDiscRadius);
+            const lv_image_dsc_t* round = rounded_overlay_photo(pin, photo);
+            set_disc_image(overlay_disc, round != nullptr ? round : photo,
                            o.stale ? &overlay_leaf_stale : &overlay_leaf);
+            // A photo already cut round over the card needs no clipping mask (D-056).
+            lv_obj_set_style_clip_corner(overlay_disc.face, round == nullptr, 0);
+            lv_obj_set_style_bg_opa(overlay_disc.face,
+                                    round == nullptr ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
           } else {
             set_disc_image(overlay_disc, nullptr, nullptr);
           }

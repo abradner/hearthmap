@@ -829,3 +829,20 @@ removing the instant switch or the background build each fails it), the adapted 
 test, and the bake fidelity screen test (skipping the blend fails it). Goldens all change for the
 edge-wall pixels. **Would change if:** PSRAM gets tight (fewer kept layers is the first thing to
 give), or the owner wants the edge walls whole (bake a 2 px margin).
+
+### D-056 A tap is acknowledged at once; the detail card is cheap to draw; heat slices yield (provisional)
+
+**Question:** on the panel a tap on a pin took 204-408 ms to show anything, because the first
+thing drawn was the whole overlay card, and the card's rounded corners and 2 px border are masked
+shapes over its whole 660 x 600 area (the proxy's breakdown: the border alone about 220 ms of
+the 425 ms modelled to open it). **Default:** (1) a press on a pin shows a ring around it in the
+next refresh (core's `hit_test()` picks the pin, as the tap will), before the tap's event has
+been applied; a pressed tab pill lightens (`LV_STATE_PRESSED`). Both are a few kpx. (2) The card
+is square and opaque, its stroke four 2 px fills; the overlay disc's photo is cut round over the
+card colour once per photo, so the disc needs no clipping mask. Modelled opening: 425 -> 193 ms;
+what remains is the disc's moisture arc and the text. (3) Heat work runs 8 ms per `loop()` once
+the screen is running (20 ms for boot), so a pulse frame waits at most that long behind it.
+**Trades:** the card's 20 px rounded corners and the photo's circular clipping by LVGL (now a
+pre-cut circle, the same look); a rebuild takes about twice as long in wall time. **Would change
+if:** the owner wants the rounded card back (a pre-rendered card background would bring it at
+little cost once the overlay is slow nowhere else), or the press ring is unwelcome.

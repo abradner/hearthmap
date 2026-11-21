@@ -27,6 +27,10 @@ namespace {
 // the rasterizer's build, heat-field rows), small enough that a slice overruns the budget by at
 // most one step even at the schema's maximums (components/hearthmap/README.md, "Cost").
 constexpr uint32_t kSliceBudgetMs = 20;
+// Heat work once the screen is running: shorter, so a pulse frame (one every 80 ms per ring,
+// rings offset in phase, so one due every few milliseconds) waits at most this long behind it
+// (D-056). A rebuild takes longer in wall time; nothing waits on it.
+constexpr uint32_t kHeatSliceBudgetMs = 8;
 // After a new heat image is swapped in, the map is invalidated in bands of this many rows, one
 // band per loop() call at most every kBandIntervalMs, so LVGL repaints it over several refreshes
 // instead of in one long one (a full 920 x 736 repaint took 645 ms on the panel).
@@ -404,7 +408,7 @@ void HearthmapComponent::frame_slice_() {
       this->heat_active_ = true;
       this->heat_started_ms_ = millis();
     }
-  } while (!idle && millis() - start < kSliceBudgetMs);
+  } while (!idle && millis() - start < kHeatSliceBudgetMs);
   if (!idle) return;
   this->heat_active_ = false;
   this->handle_publish_();

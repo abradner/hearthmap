@@ -429,6 +429,13 @@ std::uint64_t answer_px(HeadlessDisplay& display, std::uint32_t& t, std::uint64_
   g_counts = nullptr;
   largest = counts.max_refresh_px;
   largest_ms = counts.max_refresh_ms;
+  std::printf("    drawn (kpx, modelled ms):");
+  for (std::size_t i = 0; i < counts.task_px.size(); ++i) {
+    if (counts.task_px[i] == 0) continue;
+    std::printf(" %s %.0f/%.0f", task_name(i), static_cast<double>(counts.task_px[i]) / 1000.0,
+                static_cast<double>(counts.task_px[i]) * kRates.task_us_per_px[i] / 1000.0);
+  }
+  std::printf("; %u flushes\n", counts.flushes);
   return counts.flushed_px;
 }
 
