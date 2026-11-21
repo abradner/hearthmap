@@ -369,8 +369,9 @@ void HearthmapComponent::frame_slice_() {
     this->handle_publish_();  // a tab change to a kept image is shown in this same call
   }
   if (touched) {
-    this->perf_.events_applied(millis(), this->screen_->writes() != writes_before);
-    this->perf_.cause_tap();
+    const bool changed = this->screen_->writes() != writes_before;
+    this->perf_.events_applied(millis(), changed);
+    if (changed) this->perf_.cause_tap();  // a tap that changed nothing draws nothing
   }
   const uint32_t heat_t0 = micros();
   // Counts this call's work when it returns, whichever way it returns.
@@ -388,7 +389,9 @@ void HearthmapComponent::frame_slice_() {
   // The map bake and the pulse sprites first (one band or tile per step, a small software render
   // each), before the next heat work (D-053, D-055). When the bake becomes ready every kept
   // image is redrawn with the walls and labels in it.
-  if (this->screen_->prepare_step()) return;
+  // One unit per slice, then heat work in what is left: a queue that keeps refilling (a value
+  // near a pulse changing every pass) must not hold the heat image back.
+  this->screen_->prepare_step();
   if (!this->rebake_requested_ && this->screen_->bake_ready()) {
     this->rebake_requested_ = true;
     this->pipeline_->request_rebuild_all();

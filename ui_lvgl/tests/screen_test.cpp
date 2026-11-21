@@ -1288,3 +1288,47 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
   rig.screen->update(vm, rig.header, 1000, SourceStatus{});
   CHECK_FALSE(hidden(rig.w().room_label[0]));
 }
+
+TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
+  // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
+  Config c = test::small_config();
+  host::HeadlessDisplay display{1280, 800};
+  RecordingSink sink;
+  HeatRasterizer raster{c};
+  std::vector<Rgb565> heat(raster.pixel_count(), 0);
+  lv_image_dsc_t dsc{};
+  dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+  dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+  dsc.header.w = static_cast<std::uint32_t>(raster.width());
+  dsc.header.h = static_cast<std::uint32_t>(raster.height());
+  dsc.header.stride = static_cast<std::uint32_t>(raster.width() * 2);
+  dsc.data_size = static_cast<std::uint32_t>(heat.size() * 2);
+  dsc.data = reinterpret_cast<const std::uint8_t*>(heat.data());
+  ScreenDeps deps;
+  deps.fonts = builtin_fonts();
+  deps.sink = &sink;
+  // One room's strips: perimeter 2 x (432 + 360) px, 11 px wide plus corners, 8 bytes a pixel.
+  deps.pulse_memory_bytes = 170U * 1024U;
+  Screen screen(display.screen(), c, &dsc, deps);
+  ViewModel vm = test::temperature_vm(c);
+  const HeaderText header{"09:00", ""};
+  auto show = [&]() {
+    screen.update(vm, header, 1000);
+    while (screen.prepare_step()) {
+    }
+  };
+  vm.rooms[0].pulse = Severity::Warn;
+  vm.rooms[1].pulse = Severity::Warn;
+  show();
+  const auto& w = screen.widgets();
+  auto shown = [&](std::size_t r) {
+    lv_obj_t* edge = lv_obj_get_child(w.room_pulse[r], 0);
+    return !lv_obj_is_hidden(w.room_pulse[r]) && edge != nullptr && !lv_obj_is_hidden(edge);
+  };
+  CHECK(shown(0));
+  CHECK_FALSE(shown(1));  // over budget: waits
+  vm.rooms[0].pulse = Severity::Ok;
+  show();
+  CHECK_FALSE(shown(0));
+  CHECK(shown(1));  // the freed memory went to the waiting room, with no change of its own
+}

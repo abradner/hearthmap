@@ -48,7 +48,8 @@ std::uint8_t clamp255(float v) {
 // arbitrary screen area instead of one object's area: find the top-most object that covers the
 // area, draw it and everything above it into a layer over our buffer, and run the dispatcher
 // until the layer's tasks are done. The same thing a refresh does for one area, minus the flush.
-bool render_area(lv_obj_t* subtree, const lv_area_t& area, std::uint16_t* out) {
+bool render_area(lv_obj_t* subtree, const lv_area_t& area, std::uint16_t* out,
+                 std::uint16_t background) {
   const std::int32_t w = lv_area_get_width(&area);
   const std::int32_t h = lv_area_get_height(&area);
   if (subtree == nullptr || out == nullptr || w <= 0 || h <= 0) return false;
@@ -65,7 +66,7 @@ bool render_area(lv_obj_t* subtree, const lv_area_t& area, std::uint16_t* out) {
 
   lv_obj_t* top = lv_refr_get_top_obj(&area, screen);
   if (top == nullptr) {
-    lv_draw_buf_clear(&buf, nullptr);
+    std::fill(out, out + static_cast<std::size_t>(w) * static_cast<std::size_t>(h), background);
     top = screen;
   }
 

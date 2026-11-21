@@ -574,7 +574,14 @@ struct Screen::Impl {
   }
 
   void build_pulses() {
-    const CanvasRect& a = config.canvas.map_area;
+    // Sprites and the bake capture in display coordinates: take the map's real position, which
+    // differs from the canvas one when the embedder's parent is not at the display's origin.
+    lv_obj_update_layout(w.root);
+    lv_area_t map_coords;
+    lv_obj_get_coords(w.map, &map_coords);
+    CanvasRect a = config.canvas.map_area;
+    a.x = map_coords.x1;
+    a.y = map_coords.y1;
     std::vector<lv_point_t> centres;
     for (const Pin& pin : config.pins) {
       const lv_point_precise_t c = map_px(pin.position);

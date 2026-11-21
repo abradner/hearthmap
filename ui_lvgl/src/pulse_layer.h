@@ -121,13 +121,17 @@ class PulseLayer {
     bool allocated = false;
     bool geometry_dirty = true;
     int frame = -1;
+    std::uint32_t frame_ms = 0;  ///< when `frame` was shown
     std::uint32_t phase = 0;
     std::vector<RingRef> rings;
     std::vector<RoomRef> rooms;
   };
   struct Edge {
     Tile t;
-    std::vector<std::uint8_t> coverage;
+    /// Outlines through this tile, in room order (its own and any neighbour's that pulses), so
+    /// overlapping tiles of adjacent rooms show the same strokes.
+    std::vector<RoomRef> rooms;
+    bool geometry_dirty = true;
     float ax = 0, ay = 0, bx = 0, by = 0;
   };
   struct Room {
@@ -151,7 +155,10 @@ class PulseLayer {
   void release(Tile& t);
   bool capture(Tile& t);
   void compose_ring(std::size_t i, const lv_area_t& box);
-  void compose_edge(const Room& room, Edge& e);
+  void compose_edge(Edge& e);
+  void rebuild_edge_geometry(Edge& e);
+  void admit_waiting();
+  std::size_t ring_admission_bytes(const Ring& r) const;
   void rebuild_ring_geometry(std::size_t i);
   void update_visibility();
   void update_animated_rooms();

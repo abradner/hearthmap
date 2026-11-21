@@ -29,9 +29,10 @@ using ui::SpriteComposer;
 /// Renders what `subtree` (an object and its children; nothing above or beside it) shows in `area`
 /// (screen coordinates) into `out`, `w x h` RGB565 pixels, row-major, where w and h are the
 /// area's size. Uses LVGL's own renderer, the same path a refresh takes, without touching the
-/// display: nothing is invalidated or flushed. Pixels nothing in the subtree covers are zero.
-/// Returns false if LVGL could not finish the drawing.
-bool render_area(lv_obj_t* subtree, const lv_area_t& area, std::uint16_t* out);
+/// display: nothing is invalidated or flushed. Pixels nothing in the subtree covers are
+/// `background` (RGB565). Returns false if LVGL could not finish the drawing.
+bool render_area(lv_obj_t* subtree, const lv_area_t& area, std::uint16_t* out,
+                 std::uint16_t background = 0);
 
 /// LV_EVENT_COVER_CHECK handler for an opaque RGB565 image drawn unscaled at full opacity: it
 /// covers any area inside it. LVGL 9.6's image widget never says so without an opaque

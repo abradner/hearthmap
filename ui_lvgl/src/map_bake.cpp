@@ -37,8 +37,7 @@ bool MapBake::prepare_step() {
   const lv_area_t band{area_.x1, area_.y1 + y0, area_.x2, area_.y1 + y1 - 1};
 
   lv_display_t* disp = lv_obj_get_display(map_);
-  const bool invalidation = lv_display_is_invalidation_enabled(disp);
-  lv_display_enable_invalidation(disp, false);
+  lv_display_enable_invalidation(disp, false);  // a counter in LVGL 9.6: paired below
   std::vector<lv_obj_t*> hidden;
   for (lv_obj_t* o : hide_) {
     if (!lv_obj_is_hidden(o)) hidden.push_back(o);
@@ -65,7 +64,7 @@ bool MapBake::prepare_step() {
 
   for (lv_obj_t* o : shown) lv_obj_set_hidden(o, true);
   for (lv_obj_t* o : hidden) lv_obj_set_hidden(o, false);
-  lv_display_enable_invalidation(disp, invalidation);
+  lv_display_enable_invalidation(disp, true);
 
   // What shows through, from the green channel (6 bits): over white minus over black is
   // (1 - coverage) x white.

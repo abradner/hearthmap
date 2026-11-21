@@ -207,10 +207,18 @@ std::size_t PulseLayer::tile_bytes(const Tile& t) {
 
 std::size_t PulseLayer::bytes_in_use() const {
   std::size_t n = 0;
-  for (const Ring& r : rings_) n += r.allocated ? tile_bytes(r.t) : 0U;
+  for (const Ring& r : rings_) {
+    if (!r.allocated) continue;
+    n += tile_bytes(r.t);
+    for (const RingRef& ref : r.rings) n += ref.distance.capacity() * 2U;
+    for (const RoomRef& ref : r.rooms) n += ref.coverage.capacity();
+  }
   for (const Room& room : rooms_) {
     if (!room.allocated) continue;
-    for (const Edge& e : room.edges) n += tile_bytes(e.t);
+    for (const Edge& e : room.edges) {
+      n += tile_bytes(e.t);
+      for (const RoomRef& ref : e.rooms) n += ref.coverage.capacity();
+    }
   }
   return n;
 }
@@ -235,7 +243,7 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
   Ring& r = rings_[pin];
   r.on = on;
   if (on) {
-    if (fits(tile_bytes(r.t))) {
+    if (fits(ring_admission_bytes(r))) {
       allocate(r.t);
       r.allocated = true;
       r.frame = -1;
@@ -246,15 +254,7 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
     r.frame = -1;
     std::vector<RingRef>().swap(r.rings);
     std::vector<RoomRef>().swap(r.rooms);
-    // A freed slot goes to the next pulsing pin without one.
-    for (Ring& x : rings_) {
-      if (x.on && !x.allocated && fits(tile_bytes(x.t))) {
-        allocate(x.t);
-        x.allocated = true;
-        x.frame = -1;
-        break;
-      }
-    }
+    admit_waiting();
   }
   for (Ring& x : rings_) x.geometry_dirty = true;
   update_visibility();
@@ -279,17 +279,59 @@ void PulseLayer::set_room(std::size_t room, bool on, std::uint32_t colour) {
   } else if (!on && r.allocated) {
     for (Edge& e : r.edges) {
       release(e.t);
-      std::vector<std::uint8_t>().swap(e.coverage);
+      std::vector<RoomRef>().swap(e.rooms);
     }
     r.allocated = false;
     r.step = -1;
+    admit_waiting();
   } else if (on && was_on) {
     r.step = -1;  // colour change: recompose at the next tick
   }
   update_animated_rooms();
   for (Ring& x : rings_) x.geometry_dirty = true;
+  for (Room& x : rooms_) {
+    for (Edge& e : x.edges) e.geometry_dirty = true;
+  }
   update_visibility();
   ensure_timer();
+}
+
+void PulseLayer::admit_waiting() {
+  // Memory came free: pulses waiting for it get it, rings first, then rooms, in config order.
+  for (Ring& x : rings_) {
+    if (x.on && !x.allocated && fits(ring_admission_bytes(x))) {
+      allocate(x.t);
+      x.allocated = true;
+      x.frame = -1;
+      for (Ring& y : rings_) y.geometry_dirty = true;
+    }
+  }
+  for (Room& x : rooms_) {
+    if (!x.on || x.allocated) continue;
+    std::size_t need = 0;
+    for (const Edge& e : x.edges) need += tile_bytes(e.t);
+    if (!fits(need)) continue;
+    for (Edge& e : x.edges) allocate(e.t);
+    x.allocated = true;
+    x.step = -1;
+  }
+  update_animated_rooms();
+}
+
+std::size_t PulseLayer::ring_admission_bytes(const Ring& r) const {
+  // The tile, plus a distance table or coverage mask (2 bytes per pixel at most) for each pulse
+  // it overlaps, as rebuild_ring_geometry() will allocate them.
+  std::size_t overlaps = 1;  // its own ring
+  for (const Ring& o : rings_) {
+    if (&o != &r && o.allocated && std::abs(o.cx - r.cx) < 2.0f * kRingReach &&
+        std::abs(o.cy - r.cy) < 2.0f * kRingReach)
+      ++overlaps;
+  }
+  for (const Room& room : rooms_) {
+    if (room.on && intersects(room.extent, r.t.area)) ++overlaps;
+  }
+  return tile_bytes(r.t) +
+         static_cast<std::size_t>(r.t.w) * static_cast<std::size_t>(r.t.h) * 2U * overlaps;
 }
 
 void PulseLayer::update_animated_rooms() {
@@ -352,8 +394,7 @@ void PulseLayer::update_visibility() {
 
 bool PulseLayer::capture(Tile& t) {
   lv_display_t* disp = lv_obj_get_display(map_);
-  const bool invalidation = lv_display_is_invalidation_enabled(disp);
-  lv_display_enable_invalidation(disp, false);
+  lv_display_enable_invalidation(disp, false);  // a counter in LVGL 9.6: paired below
   // Pulses are never part of what lies under a pulse.
   std::vector<lv_obj_t*> hidden;
   for (Ring& r : rings_) {
@@ -363,7 +404,9 @@ bool PulseLayer::capture(Tile& t) {
     if (!lv_obj_is_hidden(box)) hidden.push_back(box);
   }
   for (lv_obj_t* o : hidden) lv_obj_set_hidden(o, true);
-  bool ok = render_area(map_, t.area, t.full.data());
+  // Where nothing in the map draws, the screen's background shows: capture that, not black.
+  const std::uint16_t bg = rgb565(theme::kBackground);
+  bool ok = render_area(map_, t.area, t.full.data(), bg);
   // Then without the pins that reach into the tile: whatever differs between the two captures
   // is drawn over the pulses.
   std::vector<lv_obj_t*> pins;
@@ -371,10 +414,10 @@ bool PulseLayer::capture(Tile& t) {
     if (!lv_obj_is_hidden(p) && intersects(pin_extent(p), t.area)) pins.push_back(p);
   }
   for (lv_obj_t* p : pins) lv_obj_set_hidden(p, true);
-  ok = render_area(map_, t.area, t.below.data()) && ok;
+  ok = render_area(map_, t.area, t.below.data(), bg) && ok;
   for (lv_obj_t* p : pins) lv_obj_set_hidden(p, false);
   for (lv_obj_t* o : hidden) lv_obj_set_hidden(o, false);
-  lv_display_enable_invalidation(disp, invalidation);
+  lv_display_enable_invalidation(disp, true);
   ++stats_.captures;
   t.has_base = ok;
   t.dirty = false;
@@ -384,7 +427,12 @@ bool PulseLayer::capture(Tile& t) {
 void PulseLayer::rebuild_ring_geometry(std::size_t i) {
   Ring& r = rings_[i];
   r.rings.clear();
+  // Its own ring first, so the cap on layers in compose_ring() never drops it.
+  std::vector<std::size_t> order{i};
   for (std::size_t j = 0; j < rings_.size(); ++j) {
+    if (j != i) order.push_back(j);
+  }
+  for (std::size_t j : order) {
     const Ring& o = rings_[j];
     if (!o.on || !o.allocated) continue;
     const lv_area_t reach{
@@ -472,9 +520,39 @@ void PulseLayer::compose_ring(std::size_t i, const lv_area_t& box_in) {
   if (alive_ && !lv_obj_is_hidden(r.t.img)) lv_obj_invalidate_area(r.t.img, &box);
 }
 
-void PulseLayer::compose_edge(const Room& room, Edge& e) {
+void PulseLayer::rebuild_edge_geometry(Edge& e) {
+  e.rooms.clear();
+  for (std::size_t k = 0; k < rooms_.size(); ++k) {
+    const Room& room = rooms_[k];
+    if (!room.on || !intersects(room.extent, e.t.area)) continue;
+    RoomRef ref;
+    ref.room = k;
+    for (const Edge& seg : room.edges) {
+      const lv_area_t box{static_cast<std::int32_t>(std::min(seg.ax, seg.bx)) - kRoomWidth,
+                          static_cast<std::int32_t>(std::min(seg.ay, seg.by)) - kRoomWidth,
+                          static_cast<std::int32_t>(std::max(seg.ax, seg.bx)) + kRoomWidth,
+                          static_cast<std::int32_t>(std::max(seg.ay, seg.by)) + kRoomWidth};
+      if (!intersects(box, e.t.area)) continue;
+      add_segment_coverage(e.t.area.x1, e.t.area.y1, e.t.w, e.t.h, seg.ax, seg.ay, seg.bx, seg.by,
+                           static_cast<float>(kRoomWidth), ref.coverage);
+    }
+    if (!ref.coverage.empty()) e.rooms.push_back(std::move(ref));
+  }
+  e.geometry_dirty = false;
+}
+
+void PulseLayer::compose_edge(Edge& e) {
   if (!e.t.has_base) return;
-  const Overlay o{e.coverage.data(), room.colour, room.opa};
+  // Every outline through this tile, in room order, so overlapping tiles of adjacent rooms
+  // agree (a neighbour's stroke may lag its own steps by one of this room's).
+  Overlay overlays[8];
+  std::size_t no = 0;
+  for (const RoomRef& ref : e.rooms) {
+    if (no == 8) break;
+    const Room& room = rooms_[ref.room];
+    overlays[no++] =
+        Overlay{ref.coverage.data(), room.colour, room.on ? room.opa : std::uint8_t{0}};
+  }
   ComposeJob job;
   job.below = e.t.below.data();
   job.full = e.t.full.data();
@@ -482,8 +560,8 @@ void PulseLayer::compose_edge(const Room& room, Edge& e) {
   job.stride = e.t.w;
   job.x1 = e.t.w;
   job.y1 = e.t.h;
-  job.overlays = &o;
-  job.overlay_count = 1;
+  job.overlays = overlays;
+  job.overlay_count = no;
   ops_->compose(job);
   if (alive_ && !lv_obj_is_hidden(e.t.img)) lv_obj_invalidate(e.t.img);
 }
@@ -506,13 +584,9 @@ bool PulseLayer::prepare_step() {
     for (Edge& e : room.edges) {
       if (!e.t.dirty) continue;
       capture(e.t);
-      e.coverage.assign(static_cast<std::size_t>(e.t.w) * static_cast<std::size_t>(e.t.h), 0);
-      for (const Edge& seg : room.edges) {
-        add_segment_coverage(e.t.area.x1, e.t.area.y1, e.t.w, e.t.h, seg.ax, seg.ay, seg.bx, seg.by,
-                             static_cast<float>(kRoomWidth), e.coverage);
-      }
+      rebuild_edge_geometry(e);
       update_visibility();
-      compose_edge(room, e);
+      compose_edge(e);
       did = true;
       break;
     }
@@ -523,6 +597,16 @@ bool PulseLayer::prepare_step() {
     rebuild_ring_geometry(i);
     compose_ring(i, r.t.area);
     did = true;
+  }
+  for (std::size_t k = 0; k < rooms_.size() && !did; ++k) {
+    if (!rooms_[k].allocated) continue;
+    for (Edge& e : rooms_[k].edges) {
+      if (!e.t.has_base || !e.geometry_dirty) continue;
+      rebuild_edge_geometry(e);
+      compose_edge(e);
+      did = true;
+      break;
+    }
   }
   return stats().pending;
 }
@@ -553,7 +637,7 @@ void PulseLayer::tick(std::uint32_t now_ms) {
     if (step == room.step) continue;
     room.step = step;
     room.opa = step >= 0 ? room_opa_[static_cast<std::size_t>(step)] : std::uint8_t{255};
-    for (Edge& e : room.edges) compose_edge(room, e);
+    for (Edge& e : room.edges) compose_edge(e);
     ++stats_.frames;
     // Ring tiles over this outline catch up at their own next frame (at most one ring frame
     // later), so a room step never costs a separate repaint of a ring tile.
@@ -563,12 +647,16 @@ void PulseLayer::tick(std::uint32_t now_ms) {
     if (!r.on || !r.allocated || !r.t.has_base) continue;
     const int frame =
         static_cast<int>(((now_ms + r.phase) % kRingCycleMs) * kRingFrames / kRingCycleMs);
-    if (frame == r.frame) continue;
+    constexpr std::uint32_t kFrameMs = kRingCycleMs / kRingFrames;
+    if (frame == r.frame && now_ms - r.frame_ms < kFrameMs) continue;
     const int old = r.frame;
     if (old >= 0) {
-      stats_.dropped += static_cast<std::uint32_t>(
-          (frame - old - 1 + static_cast<int>(kRingFrames)) % static_cast<int>(kRingFrames));
+      // Frame boundaries passed since the last frame shown (wrap-safe), less the one shown now.
+      const std::uint32_t passed = (now_ms - r.frame_ms + kFrameMs / 2U) / kFrameMs;
+      if (passed > 1U) stats_.dropped += passed - 1U;
     }
+    r.frame_ms = now_ms;
+    if (frame == old) continue;  // whole cycles later: the same picture
     r.frame = frame;
     ++stats_.frames;
     lv_area_t box = ring_box(r, frame);
@@ -634,13 +722,16 @@ PulseStats PulseLayer::stats() const {
     for (const RoomRef& ref : r.rooms) s.tile_bytes += ref.coverage.capacity();
     if (r.allocated) {
       s.rings_shown += r.on ? 1U : 0U;
-      s.pending = s.pending || r.t.dirty || r.geometry_dirty;
+      // Only work prepare_step() can do: geometry needs a captured base (a failed capture waits
+      // for the next change under the tile instead of stalling the embedder's slices).
+      s.pending = s.pending || r.t.dirty || (r.geometry_dirty && r.t.has_base);
     }
   }
   for (const Room& room : rooms_) {
     for (const Edge& e : room.edges) {
-      s.tile_bytes += bytes(e.t) + e.coverage.capacity();
-      if (room.allocated) s.pending = s.pending || e.t.dirty;
+      s.tile_bytes += bytes(e.t);
+      for (const RoomRef& ref : e.rooms) s.tile_bytes += ref.coverage.capacity();
+      if (room.allocated) s.pending = s.pending || e.t.dirty || (e.geometry_dirty && e.t.has_base);
     }
     s.rooms_animated += room.animated ? 1U : 0U;
   }
