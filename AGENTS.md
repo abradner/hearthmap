@@ -549,6 +549,17 @@ test lives** (if one exists).
    with a fake clock, since the host's speed hides the failure. Regression test:
    `components/hearthmap/tests/test_cpp.py::test_heat_rebuild_policy_and_immediate_taps`
    (D-047).
+3. **The panel spent three quarters of its time redrawing a pulse.** Rooms pulsed by animating
+   the opacity of one `lv_line` per room, and on the panel LVGL refreshed 13 times a second at
+   about 60 ms each, leaving the main loop (and touch) 13 passes a second. Root cause: LVGL 9.6
+   sizes a line object from its own origin (0, 0) to its farthest point, so a polyline placed at
+   the map's origin covered everything up to the room's far corner, and every animation frame
+   re-rendered that whole rectangle in software; the host renders it in microseconds, so nothing
+   showed until the device's perf log. General rule: on the panel, cost is pixels invalidated per
+   second; know each animated object's real area (`lv_obj_get_coords`), animate in steps on a
+   shared clock rather than per frame, and keep a host budget on what LVGL is asked to draw.
+   Regression tests: `host/tests/perf_proxy_test.cpp` and the pulse cases in
+   `ui_lvgl/tests/screen_test.cpp` (D-051).
 
 ## 10. Maintaining This Document
 

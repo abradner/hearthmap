@@ -246,3 +246,10 @@ perf 5000 ms: loop 41/s, gap max 380 ms | lvgl 12 refr, 2900 ms (58%), max 402 m
   set), `press` and `click` are LVGL's own input events on this display; `read>press` is the
   worst time from a read to LVGL seeing the press; `click>drawn` the worst time from a click to
   the end of the first refresh after the component applied it, with the number of clicks timed.
+
+First reading (c182d6b, real config of the panel-sized shape, temperature layer, nobody
+touching): `loop 13/s, gap max 86 ms | lvgl 64 refr, 3902 ms (76%), max 67 ms, flush 989 ms in
+64, 2642 kpx/s flushed`. That is about 4.5 Mpx/s of software rendering and about 13 Mpx/s through
+the flush path, the rates the host budget in `host/tests/perf_proxy_test.cpp` is set from
+(D-051). Before time was valid the loop ran 61 times a second with gaps of 100 to 141 ms and no
+LVGL refreshes, so about 100 ms of the worst gap comes from other components.

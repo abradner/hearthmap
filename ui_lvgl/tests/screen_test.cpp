@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
@@ -11,6 +12,7 @@
 #include "hearthmap/ui/heat_image.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/ui/theme.h"
+#include "src/core/lv_refr_private.h"  // lv_refr_get_top_obj(), for the cover test
 
 using namespace hearthmap;
 using namespace hearthmap::ui;
@@ -943,4 +945,147 @@ TEST_CASE("an RGB565 photo that must be scaled hits the device's missing format,
   const std::uint16_t px = fern_centre_pixel(photos);
   CHECK(g_not_enabled > 0);
   CHECK(px != DevicePhotos::kColour);
+}
+
+// ---- pulses and drawing cost (components/hearthmap/README.md, "Measuring") ----------------------
+
+namespace {
+
+std::size_t timer_count() {
+  std::size_t n = 0;
+  for (lv_timer_t* t = lv_timer_get_next(nullptr); t != nullptr; t = lv_timer_get_next(t)) ++n;
+  return n;
+}
+
+std::uint64_t g_invalidated = 0;
+void count_invalidation(lv_event_t* e) {
+  const auto* a = static_cast<const lv_area_t*>(lv_event_get_param(e));
+  if (a != nullptr) g_invalidated += lv_area_get_size(a);
+}
+
+}  // namespace
+
+TEST_CASE("pulses step a few times per cycle, with no property animation") {
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  vm.rooms[0].pulse = Severity::Warn;
+  rig.show(vm);
+  const auto& w = rig.w();
+  REQUIRE_FALSE(hidden(w.pin_pulse[0]));
+  REQUIRE_FALSE(hidden(w.room_pulse[0]));
+  lv_obj_t* edge = lv_obj_get_child(w.room_pulse[0], 0);
+  REQUIRE(edge != nullptr);
+
+  int ring_changes = 0, room_changes = 0;
+  std::int32_t ring_w = lv_obj_get_style_width(w.pin_pulse[0], LV_PART_MAIN);
+  lv_opa_t ring_o = lv_obj_get_style_opa(w.pin_pulse[0], LV_PART_MAIN);
+  lv_opa_t room_o = lv_obj_get_style_line_opa(edge, LV_PART_MAIN);
+  for (std::uint32_t t = 0; t <= 5600; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+    CHECK(lv_anim_count_running() == 0);
+    const std::int32_t rw = lv_obj_get_style_width(w.pin_pulse[0], LV_PART_MAIN);
+    const lv_opa_t ro = lv_obj_get_style_opa(w.pin_pulse[0], LV_PART_MAIN);
+    if (rw != ring_w || ro != ring_o) ++ring_changes;
+    ring_w = rw;
+    ring_o = ro;
+    const lv_opa_t eo = lv_obj_get_style_line_opa(edge, LV_PART_MAIN);
+    if (eo != room_o) ++room_changes;
+    room_o = eo;
+  }
+  // 5.6 s: 3.5 ring cycles of 4 frames, 2 room cycles of 4 steps. A smooth animation would
+  // change at almost every one of the 350 ticks.
+  CHECK(ring_changes >= 12);
+  CHECK(ring_changes <= 15);
+  CHECK(room_changes >= 7);
+  CHECK(room_changes <= 9);
+}
+
+TEST_CASE("a room's pulse outline invalidates strips along its walls, never its interior") {
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.rooms[0].pulse = Severity::Danger;
+  rig.show(vm);
+  lv_obj_update_layout(rig.display.screen());
+  const auto& w = rig.w();
+  // West room: map (0,0)-(0.5,0.5) of 864 x 720 at (40, 76): 432 x 360 px.
+  const std::uint32_t edges = lv_obj_get_child_count(w.room_pulse[0]);
+  CHECK(edges == 4);
+  std::uint64_t area = 0;
+  for (std::uint32_t i = 0; i < edges; ++i) {
+    lv_area_t a;
+    lv_obj_get_coords(lv_obj_get_child(w.room_pulse[0], static_cast<std::int32_t>(i)), &a);
+    // Every edge object is a strip at most 2 x 5 + 1 px thick.
+    CHECK(std::min(lv_area_get_width(&a), lv_area_get_height(&a)) <= 11);
+    area += lv_area_get_size(&a);
+  }
+  CHECK(area <= 2U * (432U + 360U) * 12U);  // the perimeter, 12 px wide
+  CHECK(area < 432U * 360U / 8U);           // an eighth of the room
+
+  // One step of the pulse invalidates no more than those strips (plus their draw margin).
+  lv_display_add_event_cb(rig.display.display(), count_invalidation, LV_EVENT_INVALIDATE_AREA,
+                          nullptr);
+  rig.display.render();
+  g_invalidated = 0;
+  for (std::uint32_t t = 0; t <= 2800; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+  }
+  CHECK(g_invalidated > 0);  // it does pulse
+  // At most five steps in that window, each the strips plus their drawing margin (under 2x).
+  CHECK(g_invalidated < 5U * 2U * area);
+}
+
+TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") {
+  Rig rig;
+  const std::size_t timers_before = timer_count();
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  vm.rooms[1].pulse = Severity::Danger;
+  rig.show(vm);
+  CHECK(timer_count() == timers_before + 1);
+  const auto& w = rig.w();
+
+  vm.pins[0].active_severity = Severity::Ok;
+  vm.pins[0].active_value = 21.0;
+  vm.rooms[1].pulse = Severity::Ok;
+  rig.show(vm);
+  CHECK(hidden(w.pin_pulse[0]));
+  CHECK(hidden(w.room_pulse[1]));
+  lv_display_add_event_cb(rig.display.display(), count_invalidation, LV_EVENT_INVALIDATE_AREA,
+                          nullptr);
+  rig.display.render();
+  g_invalidated = 0;
+  for (std::uint32_t t = 0; t <= 3200; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+  }
+  CHECK(g_invalidated == 0);              // nothing left moving
+  CHECK(timer_count() == timers_before);  // the clock stopped itself
+  CHECK(hidden(w.pin_pulse[0]));          // and nothing came back
+  CHECK(hidden(w.room_pulse[1]));
+
+  // A pulse can start again after stopping.
+  vm.rooms[1].pulse = Severity::Warn;
+  rig.show(vm);
+  CHECK_FALSE(hidden(w.room_pulse[1]));
+  CHECK(timer_count() == timers_before + 1);
+}
+
+TEST_CASE("the heat image tells LVGL it covers the map, unless it is dimmed") {
+  Rig rig;
+  rig.show(test::temperature_vm(rig.config));
+  lv_obj_update_layout(rig.display.screen());
+  const auto& w = rig.w();
+  lv_area_t inside{400, 600, 420, 620};  // map area 864 x 720 at (40, 76), away from pins
+  CHECK(lv_refr_get_top_obj(&inside, rig.display.screen()) == w.heat_image);
+  lv_area_t across{20, 600, 60, 620};  // straddles the map's left edge
+  CHECK(lv_refr_get_top_obj(&across, rig.display.screen()) != w.heat_image);
+  SourceStatus dim;
+  dim.heat_behind = true;
+  rig.screen->update(test::temperature_vm(rig.config), rig.header, 1000, dim);
+  CHECK(lv_refr_get_top_obj(&inside, rig.display.screen()) != w.heat_image);
 }

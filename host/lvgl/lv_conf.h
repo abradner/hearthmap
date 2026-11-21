@@ -18,6 +18,10 @@
 
 #define LV_USE_OS LV_OS_NONE
 
+/* ESPHome 2026.11.0's lvgl component sets 16 ms (its __init__.py); the refresh and animation
+ * timers run at this period, so host runs that count refreshes per second match the panel. */
+#define LV_DEF_REFR_PERIOD 16
+
 /* Warnings are compiled in (as on the device, where ESPHome prints them) and go nowhere unless a
  * test registers a print callback: ui_lvgl's tests count them (docs/decisions.md D-039). */
 #define LV_USE_LOG 1

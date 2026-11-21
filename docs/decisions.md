@@ -655,3 +655,35 @@ badge and the HUD are the judgement; the room colour is a picture of how dry the
 **Would change if:** the room colour should agree with the pins, by giving each soil sample a
 value already normalised against its own band (issue 17), which would make the field's
 domain "fraction of the way out of the happy range" rather than raw thirst.
+
+### D-051 Pulses are stepped on one clock, and drawing cost has a budget (provisional)
+
+**What happened:** on the panel the screen looked right but touch was slow. The first measured
+build (c182d6b, perf log, real config, temperature layer, nobody touching) spent 76 % of all time
+in LVGL refreshes, 12.8 a second of about 61 ms each, flushing 2.6 Mpx/s; the main loop ran 13
+times a second. Two causes, both in `ui_lvgl/src/screen.cpp`: the room pulse animated `line_opa`
+on one `lv_line` per room, and LVGL 9.6 sizes a line object from its own origin to its farthest
+point, so the line sat at the map's origin and every animation frame invalidated everything from
+the map's top-left corner to the room's far corner, about 60 times a second; and each danger ring
+was resized every 16 ms. The host proxy measured those scenes asking for 21 to 42 Mpx/s, at a
+software rendering rate on the panel of about 4.5 Mpx/s. **Default:** (1) pulses are steps on one
+LVGL timer, a pure function of LVGL's tick: a ring shows radius 30, 40, 50 px at opacity 1, 0.6,
+0.25, then nothing, over 1.6 s; a room outline opacity 1, 0.67, 0.35, 0.67 over 2.8 s; objects are
+offset over eight slots so their steps spread over different refreshes; the timer stops when
+nothing pulses. (2) A room outline is one line object per edge, positioned on its edge, so a step
+invalidates strips along the walls. (3) The heat image tells LVGL it covers the area it is asked
+about when it is opaque RGB565 at full opacity, so a refresh inside the map does not fill the
+background first (the private cover-check struct is written: LVGL's public setter can only weaken
+the verdict). (4) The component holds heat-rebuild steps for 300 ms after a press. **Trade:** the
+spec's smooth ripple (radius 26 to 52, fading, 1.6 s) and eased outline (0.35 to 1, 2.8 s) become
+three ring frames and four outline steps over the same periods; adjacent rooms may show different
+steps at one instant. **Guard:** `host/tests/perf_proxy_test.cpp` runs the real Screen for 10
+simulated seconds on the example and on a panel-shaped fictional house and bounds pixels flushed
+(500 kpx/s, about 15 % of the loop at the panel's rates) and the largest single refresh (75 kpx,
+about 22 ms); the previous code fails every bound by 40 to 80 times. `ui_lvgl/tests/screen_test.cpp`
+checks the step counts, that no property animation runs, the strip geometry, that a cleared pulse
+leaves nothing moving and stops the timer, and the cover check. **Not yet changed** (wait for the
+next device numbers): the dimmed map and the overlay scrim are full-screen blends whose show and
+hide each repaint everything, so a tab change or opening an overlay still costs a refresh of a few
+hundred ms; the heat repaint after a swap; the draw buffer size. **Would change if:** the device
+shows the remaining cost elsewhere, or the steps read as flicker on the glass.

@@ -1,8 +1,11 @@
 #include "hearthmap/ui/screen.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -14,6 +17,10 @@
 #include "hearthmap/ui/format.h"
 #include "hearthmap/ui/theme.h"
 #include "image_util.h"
+// The cover-check result is only writable through LVGL's private struct (heat_cover_cb). The root
+// of the LVGL tree is on the include path in both builds (the host's CMake, and LVGL's own ESP-IDF
+// component description).
+#include "lvgl_private.h"
 
 namespace hearthmap::ui {
 
@@ -27,11 +34,25 @@ constexpr int kPlainDotRadius = 7;
 constexpr int kPlainDotBorder = 3;
 constexpr int kPlantRadius = 22;
 constexpr int kPinRingWidth = 6;
-constexpr int kPulseFrom = 26;
-constexpr int kPulseTo = 52;
+// Pulses are stepped, not animated (components/hearthmap/README.md, "Measuring"): every frame
+// of a property animation re-renders the object's whole area and everything under it in
+// software, which on the panel kept LVGL busy for most of every second. A stepped pulse changes
+// a few times a second, each change touches only the object's own small area, and objects are
+// spread over kPulseSlots offsets so their steps do not all land in the same refresh.
+constexpr std::uint32_t kPulseTickMs = 50;  // how often the pulse clock looks; changes are rarer
+constexpr std::uint32_t kPulseSlots = 8;
+// Danger ring around a pin: a ripple of kRingFrames frames, then a gap, every kRingCycleMs.
 constexpr int kPulseWidth = 4;
-constexpr std::uint32_t kPulsePeriodMs = 1600;
-constexpr std::uint32_t kRoomPulseHalfPeriodMs = 1400;  // ~2.8 s full cycle
+constexpr std::uint32_t kRingCycleMs = 1600;
+struct RingFrame {
+  int radius;  // 0: hidden
+  lv_opa_t opa;
+};
+constexpr RingFrame kRingFrames[] = {{30, 255}, {40, 150}, {50, 60}, {0, 0}};
+constexpr int kPulseTo = 50;  // largest ring radius: the holder's half size
+// Room outline: opacity steps over kRoomCycleMs (the old eased ramp ran 0.35..1..0.35 over 2.8 s).
+constexpr std::uint32_t kRoomCycleMs = 2800;
+constexpr lv_opa_t kRoomSteps[] = {255, 172, 89, 172};
 constexpr int kRoomPulseWidth = 5;
 constexpr int kBadgeW = 28;
 constexpr int kHudTextWidth = 146;  // card 328 - text x 84 - "100%" at 28 px - margins
@@ -152,17 +173,41 @@ void badge_draw_cb(lv_event_t* e) {
   lv_draw_triangle(layer, &d);
 }
 
-void room_pulse_exec(void* var, std::int32_t v) {
-  // Opacity 0.35..1 on an eased (sine-like) ramp.
-  const std::int32_t opa = 89 + ((255 - 89) * v) / 1000;
-  lv_obj_set_style_line_opa(static_cast<lv_obj_t*>(var), static_cast<lv_opa_t>(opa), 0);
+/// The step of a cycle of `steps` equal steps over `cycle_ms` that object `index` shows at
+/// `now_ms`. Objects are offset by their slot so that their steps fall at different times.
+std::size_t pulse_step(std::uint32_t now_ms, std::size_t index, std::uint32_t cycle_ms,
+                       std::size_t steps) {
+  const std::uint32_t step_ms = cycle_ms / static_cast<std::uint32_t>(steps);
+  const auto slot = static_cast<std::uint32_t>(index % kPulseSlots);
+  const std::uint32_t shifted = now_ms + slot * (step_ms / kPulseSlots);
+  return static_cast<std::size_t>((shifted / step_ms) % steps);
 }
 
-void pin_pulse_exec(void* var, std::int32_t v) {
-  auto* ring = static_cast<lv_obj_t*>(var);
-  const std::int32_t r = kPulseFrom + ((kPulseTo - kPulseFrom) * v) / 1000;
-  lv_obj_set_size(ring, 2 * r, 2 * r);
-  lv_obj_set_style_border_opa(ring, static_cast<lv_opa_t>((255 * (1000 - v)) / 1000), 0);
+// LVGL 9.6's image widget never reports that it covers an area unless it also has an opaque
+// background: its class handler runs lv_obj's cover check first (no background: "not cover") and
+// only ever downgrades that verdict. The heat image is an opaque RGB565 picture, so for an area
+// inside it, drawn at full opacity, it does cover: saying so lets LVGL start each refresh of the
+// map at the image instead of filling the screen's background under it first. The public
+// lv_event_set_cover_res() can only weaken a verdict, so the private struct is written.
+void heat_cover_cb(lv_event_t* e) {
+  auto* info = static_cast<lv_cover_check_info_t*>(lv_event_get_param(e));
+  if (info == nullptr || info->res == LV_COVER_RES_MASKED) return;
+  lv_obj_t* img = lv_event_get_current_target_obj(e);
+  const void* src = lv_image_get_src(img);
+  if (src == nullptr || lv_image_src_get_type(src) != LV_IMAGE_SRC_VARIABLE) return;
+  const auto* dsc = static_cast<const lv_image_dsc_t*>(src);
+  if (dsc->header.cf != LV_COLOR_FORMAT_RGB565 || dsc->data == nullptr) return;
+  if (lv_obj_get_style_image_opa(img, LV_PART_MAIN) < LV_OPA_MAX) return;
+  if (lv_obj_get_style_opa(img, LV_PART_MAIN) < LV_OPA_MAX) return;
+  lv_area_t coords;
+  lv_obj_get_coords(img, &coords);
+  if (lv_image_get_scale_x(img) != LV_SCALE_NONE || lv_image_get_scale_y(img) != LV_SCALE_NONE ||
+      lv_image_get_rotation(img) != 0)
+    return;
+  if (static_cast<std::int32_t>(dsc->header.w) != lv_area_get_width(&coords) ||
+      static_cast<std::int32_t>(dsc->header.h) != lv_area_get_height(&coords))
+    return;
+  if (lv_area_is_in(info->area, &coords, 0)) info->res = LV_COVER_RES_COVER;
 }
 
 // ---- what each widget shows, for diffing ----------------------------------------------------
@@ -286,6 +331,18 @@ struct Screen::Impl {
   LeafImage overlay_leaf_stale{88, theme::kLeafStale};
 
   std::vector<std::vector<lv_point_precise_t>> room_points;
+  /// Per room, its outline as one short line object per edge (points relative to each object,
+  /// which sits on its edge), so a pulse step invalidates thin strips along the walls, never the
+  /// room's interior. lv_line sizes itself from its own origin to its farthest point, so one
+  /// polyline object at the map's origin would invalidate everything from the map's top-left
+  /// corner to the room's far corner.
+  std::vector<std::vector<lv_obj_t*>> room_edges;
+  std::vector<std::array<lv_point_precise_t, 2>> edge_points;  // sized once: lines keep pointers
+  /// The pulse step each object shows now: -1 when not pulsing (hidden), -2 when it has just
+  /// started and no step is shown yet.
+  std::vector<int> room_step;
+  std::vector<int> ring_step;
+  lv_timer_t* pulse_timer = nullptr;
   std::vector<Disc> pin_disc;  // per pin; holder == nullptr for plain pins
   std::vector<lv_obj_t*> pin_dot;
   std::vector<Disc> hud_disc;
@@ -368,8 +425,22 @@ struct Screen::Impl {
   // ---- construction ---------------------------------------------------------------------------
 
   // LVGL frees the tree with its parent: if the embedder deletes the parent first, forget every
-  // widget so update() and ~Screen() never touch freed objects.
-  static void on_root_deleted(lv_event_t* e) { self(e)->w = ScreenWidgets{}; }
+  // widget so update() and ~Screen() never touch freed objects, and stop the pulse clock.
+  static void on_root_deleted(lv_event_t* e) {
+    Impl* s = self(e);
+    s->w = ScreenWidgets{};
+    s->room_edges.clear();
+    s->room_step.clear();
+    s->ring_step.clear();
+    s->stop_pulse_timer();
+  }
+
+  ~Impl() { stop_pulse_timer(); }
+
+  void stop_pulse_timer() {
+    if (pulse_timer != nullptr) lv_timer_delete(pulse_timer);
+    pulse_timer = nullptr;
+  }
 
   void build_root(lv_obj_t* parent) {
     w.root = make_box(parent);
@@ -514,6 +585,7 @@ struct Screen::Impl {
     lv_obj_set_clickable(w.heat_image, false);
     lv_obj_set_pos(w.heat_image, 0, 0);
     if (heat != nullptr) lv_image_set_src(w.heat_image, heat);
+    lv_obj_add_event_cb(w.heat_image, heat_cover_cb, LV_EVENT_COVER_CHECK, nullptr);
 
     // Walls (indoor rooms; the outdoor fill comes from the heat image), then the pulse outlines
     // on top, so a pulsing room's outline covers its walls.
@@ -534,18 +606,7 @@ struct Screen::Impl {
       lv_obj_set_style_line_color(wall, hex(theme::kWall), 0);
       lv_obj_set_style_line_opa(wall, LV_OPA_COVER, 0);
     }
-    for (std::size_t r = 0; r < config.rooms.size(); ++r) {
-      lv_obj_t* pulse = lv_line_create(w.map);
-      lv_obj_remove_style_all(pulse);
-      lv_obj_set_clickable(pulse, false);
-      lv_line_set_points(pulse, room_points[r].data(),
-                         static_cast<std::uint32_t>(room_points[r].size()));
-      lv_obj_set_style_line_width(pulse, kRoomPulseWidth, 0);
-      lv_obj_set_style_line_rounded(pulse, true, 0);
-      lv_obj_set_style_line_opa(pulse, LV_OPA_COVER, 0);
-      lv_obj_set_hidden(pulse, true);
-      w.room_pulse.push_back(pulse);
-    }
+    build_room_pulses();
     for (std::size_t r = 0; r < config.rooms.size(); ++r) {
       lv_obj_t* label = make_label(w.map, deps.fonts.px20, theme::kTextSecondary);
       lv_label_set_text(label, config.rooms[r].name.c_str());
@@ -556,6 +617,7 @@ struct Screen::Impl {
 
     // Danger pulses below every pin, then the pins.
     w.pin_pulse.assign(config.pins.size(), nullptr);
+    ring_step.assign(config.pins.size(), -1);
     for (std::size_t i = 0; i < config.pins.size(); ++i) {
       const lv_point_precise_t c = map_px(config.pins[i].position);
       lv_obj_t* holder = make_box(w.map);
@@ -567,7 +629,7 @@ struct Screen::Impl {
       lv_obj_set_style_border_width(ring, kPulseWidth, 0);
       lv_obj_set_style_border_color(ring, hex(theme::kDanger), 0);
       lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
-      lv_obj_set_size(ring, 2 * kPulseFrom, 2 * kPulseFrom);
+      lv_obj_set_size(ring, 2 * kRingFrames[0].radius, 2 * kRingFrames[0].radius);
       lv_obj_set_align(ring, LV_ALIGN_CENTER);
       lv_obj_set_hidden(ring, true);
       w.pin_pulse[i] = ring;
@@ -580,6 +642,105 @@ struct Screen::Impl {
     w.pin_ring.assign(config.pins.size(), nullptr);
     pin_look.assign(config.pins.size(), std::nullopt);
     for (std::size_t i = 0; i < config.pins.size(); ++i) build_pin(i);
+  }
+
+  // One hidden container per room at the room's bounding box (it carries the pulse colour, for
+  // embedders and tests), holding one line object per edge.
+  void build_room_pulses() {
+    constexpr std::int32_t pad = kRoomPulseWidth;  // room for the width and the round caps
+    std::size_t edges = 0;
+    for (const auto& pts : room_points) edges += pts.size() > 1 ? pts.size() - 1 : 0;
+    edge_points.assign(edges, {});
+    room_edges.assign(config.rooms.size(), {});
+    room_step.assign(config.rooms.size(), -1);
+    std::size_t e = 0;
+    for (std::size_t r = 0; r < config.rooms.size(); ++r) {
+      const auto& pts = room_points[r];
+      lv_obj_t* box = make_box(w.map);
+      allow_overflow(box, pad);
+      std::int32_t x1 = LV_COORD_MAX, y1 = LV_COORD_MAX, x2 = -LV_COORD_MAX, y2 = -LV_COORD_MAX;
+      for (const auto& p : pts) {
+        x1 = std::min<std::int32_t>(x1, static_cast<std::int32_t>(p.x));
+        y1 = std::min<std::int32_t>(y1, static_cast<std::int32_t>(p.y));
+        x2 = std::max<std::int32_t>(x2, static_cast<std::int32_t>(p.x));
+        y2 = std::max<std::int32_t>(y2, static_cast<std::int32_t>(p.y));
+      }
+      if (pts.empty()) x1 = y1 = x2 = y2 = 0;
+      lv_obj_set_pos(box, x1, y1);
+      lv_obj_set_size(box, x2 - x1 + 1, y2 - y1 + 1);
+      lv_obj_set_style_line_opa(box, LV_OPA_COVER, 0);
+      for (std::size_t k = 0; k + 1 < pts.size(); ++k, ++e) {
+        const auto ax = static_cast<std::int32_t>(pts[k].x);
+        const auto ay = static_cast<std::int32_t>(pts[k].y);
+        const auto bx = static_cast<std::int32_t>(pts[k + 1].x);
+        const auto by = static_cast<std::int32_t>(pts[k + 1].y);
+        const std::int32_t ox = std::min(ax, bx) - pad;
+        const std::int32_t oy = std::min(ay, by) - pad;
+        auto& ep = edge_points[e];
+        ep[0].x = static_cast<lv_value_precise_t>(ax - ox);
+        ep[0].y = static_cast<lv_value_precise_t>(ay - oy);
+        ep[1].x = static_cast<lv_value_precise_t>(bx - ox);
+        ep[1].y = static_cast<lv_value_precise_t>(by - oy);
+        lv_obj_t* line = lv_line_create(box);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_clickable(line, false);
+        lv_obj_set_pos(line, ox - x1, oy - y1);
+        lv_line_set_points(line, ep.data(), 2);
+        // The object ends at its farthest point; the width and cap need `pad` more.
+        lv_obj_set_size(line, std::abs(bx - ax) + 2 * pad + 1, std::abs(by - ay) + 2 * pad + 1);
+        lv_obj_set_style_line_width(line, kRoomPulseWidth, 0);
+        lv_obj_set_style_line_rounded(line, true, 0);
+        lv_obj_set_style_line_opa(line, LV_OPA_COVER, 0);
+        room_edges[r].push_back(line);
+      }
+      lv_obj_set_hidden(box, true);
+      w.room_pulse.push_back(box);
+    }
+  }
+
+  // ---- the pulse clock -------------------------------------------------------------------------
+
+  static void on_pulse_tick(lv_timer_t* t) {
+    static_cast<Impl*>(lv_timer_get_user_data(t))->apply_pulse_steps(lv_tick_get());
+  }
+
+  /// Show every running pulse's step for `now_ms`, writing only what changed; stop the clock
+  /// when nothing pulses.
+  void apply_pulse_steps(std::uint32_t now_ms) {
+    bool any = false;
+    for (std::size_t r = 0; r < room_step.size(); ++r) {
+      if (room_step[r] == -1) continue;
+      any = true;
+      const auto step =
+          static_cast<int>(pulse_step(now_ms, r, kRoomCycleMs, std::size(kRoomSteps)));
+      if (step == room_step[r]) continue;
+      room_step[r] = step;
+      for (lv_obj_t* line : room_edges[r]) lv_obj_set_style_line_opa(line, kRoomSteps[step], 0);
+    }
+    for (std::size_t i = 0; i < ring_step.size(); ++i) {
+      if (ring_step[i] == -1) continue;
+      any = true;
+      const auto step =
+          static_cast<int>(pulse_step(now_ms, i, kRingCycleMs, std::size(kRingFrames)));
+      if (step == ring_step[i]) continue;
+      ring_step[i] = step;
+      show_ring_frame(w.pin_pulse[i], kRingFrames[step]);
+    }
+    if (!any) stop_pulse_timer();
+  }
+
+  static void show_ring_frame(lv_obj_t* ring, const RingFrame& f) {
+    if (f.radius == 0) {
+      lv_obj_set_style_opa(ring, LV_OPA_TRANSP, 0);  // stays "shown": the pulse is running
+      return;
+    }
+    lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
+    lv_obj_set_size(ring, 2 * f.radius, 2 * f.radius);
+    lv_obj_set_style_border_opa(ring, f.opa, 0);
+  }
+
+  void ensure_pulse_timer() {
+    if (pulse_timer == nullptr) pulse_timer = lv_timer_create(on_pulse_tick, kPulseTickMs, this);
   }
 
   lv_obj_t* make_badge(lv_obj_t* parent) {
@@ -957,23 +1118,20 @@ struct Screen::Impl {
       const Severity sev = rv.pulse == Severity::Stale ? Severity::Ok : rv.pulse;
       auto& prev = room_pulse[rv.room_index];
       if (prev == sev) continue;
-      lv_obj_t* line = w.room_pulse[rv.room_index];
-      lv_anim_delete(line, room_pulse_exec);
+      lv_obj_t* box = w.room_pulse[rv.room_index];
       if (sev == Severity::Ok) {
-        set_hidden(line, true);
+        room_step[rv.room_index] = -1;
+        set_hidden(box, true);
       } else {
-        lv_obj_set_style_line_color(line, hex(severity_colour(sev)), 0);
-        set_hidden(line, false);
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, line);
-        lv_anim_set_exec_cb(&a, room_pulse_exec);
-        lv_anim_set_values(&a, 0, 1000);
-        lv_anim_set_duration(&a, kRoomPulseHalfPeriodMs);
-        lv_anim_set_reverse_duration(&a, kRoomPulseHalfPeriodMs);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-        lv_anim_start(&a);
+        const lv_color_t colour = hex(severity_colour(sev));
+        lv_obj_set_style_line_color(box, colour, 0);
+        for (lv_obj_t* line : room_edges[rv.room_index]) {
+          lv_obj_set_style_line_color(line, colour, 0);
+        }
+        room_step[rv.room_index] = -2;  // running; the step is written below
+        set_hidden(box, false);
+        ensure_pulse_timer();
+        apply_pulse_steps(lv_tick_get());
       }
       prev = sev;
     }
@@ -1038,20 +1196,11 @@ struct Screen::Impl {
         set_hidden(w.pin_badge[i], look.badge == Severity::Ok);
       }
       if (first || prev->pulse != look.pulse) {
-        lv_obj_t* ring = w.pin_pulse[i];
-        lv_anim_delete(ring, pin_pulse_exec);
-        set_hidden(ring, !look.pulse);
+        set_hidden(w.pin_pulse[i], !look.pulse);
+        ring_step[i] = look.pulse ? -2 : -1;  // -2: running; the frame is written below
         if (look.pulse) {
-          lv_anim_t a;
-          lv_anim_init(&a);
-          lv_anim_set_var(&a, ring);
-          lv_anim_set_exec_cb(&a, pin_pulse_exec);
-          lv_anim_set_values(&a, 0, 1000);
-          lv_anim_set_duration(&a, kPulsePeriodMs);
-          lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-          lv_anim_set_path_cb(&a, lv_anim_path_linear);
-          lv_anim_set_early_apply(&a, true);
-          lv_anim_start(&a);
+          ensure_pulse_timer();
+          apply_pulse_steps(lv_tick_get());
         }
       }
       const Pin& pin = config.pins[i];

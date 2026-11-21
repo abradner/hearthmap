@@ -54,8 +54,17 @@ and passes a `SourceStatus` (D-046, D-047).
   the widest value pill a plain pin may show; else top-left. This depends on the config only, so
   updates never move a label. The HUD gap shrinks from 10 px (never below 4) so `max_items`
   cards and the "+N more" line end 12 px above the bottom edge; the spec's cap of 7 fits.
-- **Animations.** Room and danger pulses are LVGL animations started and stopped by `update()`;
-  they need nothing from the embedder but LVGL's timer handler.
+- **Pulses are stepped, not animated** (D-051). One LVGL timer (50 ms) shows each running
+  pulse's step for the current time: a danger ring steps through radius 30, 40 and 50 px at
+  falling opacity, then a gap, every 1.6 s; a room outline steps through opacity 1, 0.67, 0.35,
+  0.67 every 2.8 s. Objects are offset over eight slots so their steps fall in different
+  refreshes. A room outline is one short line object per edge, sitting on that edge, so a step
+  invalidates thin strips along the walls only. The timer stops itself when nothing pulses. The
+  embedder needs nothing but LVGL's timer handler; `host/tests/perf_proxy_test.cpp` bounds what
+  this costs per second.
+- **The heat image reports that it covers the map** when it is opaque and undimmed, so LVGL starts
+  a refresh inside the map at the image instead of filling the background under it first (LVGL
+  9.6's image widget never reports cover without an opaque background of its own).
 - **LVGL 9.6 clipping.** `overflow_visible` alone no longer lets children draw outside their
   parent: they are clipped to the parent's extended draw area. Containers whose children stick
   out (pin value labels, badges) set one (`allow_overflow()` in `screen.cpp`); a render test
