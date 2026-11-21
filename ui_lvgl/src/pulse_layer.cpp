@@ -360,62 +360,87 @@ std::size_t PulseLayer::tile_frame_bytes(const Tile& t, bool ring) const {
 }
 
 std::size_t PulseLayer::bytes_in_use(bool with_rooms) const {
-  // Per allocated tile, what it holds or what it will hold once prepared (captures, two tables or
-  // masks, its frames at the current rate), whichever is more: admission reserves for tiles not
-  // yet prepared.
-  auto tile = [this](const Tile& t, bool ring, std::size_t tables) {
-    const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-    const std::size_t held =
-        (t.below.capacity() + t.full.capacity() + t.shown.px.capacity()) * 2U + tables;
-    const std::size_t expected = px * 8U + tile_frame_bytes(t, ring);
-    return std::max(held, expected);
+  // What the sprites hold now: captures, tables, frame sets, and the set being composed.
+  auto held = [](const Tile& t) {
+    return (t.below.capacity() + t.full.capacity() + t.shown.px.capacity()) * 2U;
   };
   std::size_t n = job_.next.px.capacity() * 2U;
   for (const Ring& r : rings_) {
     if (!r.allocated) continue;
-    std::size_t tables = 0;
-    for (const RingRef& ref : r.rings) tables += ref.distance.capacity() * 2U;
-    for (const RoomRef& ref : r.rooms) tables += ref.coverage.capacity() + ref.halo.capacity();
-    n += tile(r.t, true, tables);
+    n += held(r.t);
+    for (const RingRef& ref : r.rings) n += ref.distance.capacity() * 2U;
+    for (const RoomRef& ref : r.rooms) n += ref.coverage.capacity() + ref.halo.capacity();
   }
   for (const Cell& c : cells_) {
-    if (!with_rooms || !cell_live(c)) continue;
-    std::size_t tables = 0;
-    for (const RoomRef& ref : c.refs) tables += ref.coverage.capacity() + ref.halo.capacity();
-    n += tile(c.t, false, tables);
+    if (!with_rooms || (!cell_live(c) && c.t.shown.px.capacity() == 0)) continue;
+    n += held(c.t);
+    for (const RoomRef& ref : c.refs) n += ref.coverage.capacity() + ref.halo.capacity();
   }
   return n;
 }
 
-// The smallest divisor of frames per cycle at which every allocated pulse fits the budget once
-// all its frames exist (captures, tables and one tile's next set included). A change recomposes
-// every tile at the new rate, the old frames playing meanwhile.
-void PulseLayer::choose_divisor() {
-  auto need_at = [this](std::uint32_t div) {
-    std::size_t n = 0, largest = 0;
-    auto add = [&](const Tile& t, bool ring) {
-      const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-      const std::size_t frames = px * 2U * ((ring ? kRingFrames : kRoomSteps) / div);
-      // Captures, the frames, and a table or mask per overlapping pulse (2 bytes a pixel each,
-      // two assumed).
-      n += px * 4U + frames + px * 4U;
-      largest = std::max(largest, frames);
-    };
-    for (const Ring& r : rings_) {
-      if (r.allocated) add(r.t, true);
-    }
-    for (const Cell& c : cells_) {
-      if (cell_live(c)) add(c.t, false);
-    }
-    return n + largest;
+// What every allocated pulse needs once all its frames exist at `div`, at the peak: captures,
+// a table per pulse reaching the tile (2 bytes a pixel each: a ring's distance table, or a room's
+// coverage and keyline), the frames, and room for one replacement set (a set is recomposed while
+// the old one plays). An upper bound of bytes_in_use() whenever every set is at `div` or coarser.
+std::size_t PulseLayer::need_at(std::uint32_t div, bool with_rooms) const {
+  std::size_t n = 0, largest = 0;
+  auto add = [&](const Tile& t, bool ring, std::size_t tables) {
+    const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
+    const std::size_t frames = px * 2U * ((ring ? kRingFrames : kRoomSteps) / div);
+    n += px * 4U + px * 2U * tables + frames;
+    largest = std::max(largest, frames);
   };
+  for (const Ring& r : rings_) {
+    if (!r.allocated) continue;
+    std::size_t tables = 0;
+    for (const Ring& o : rings_) {
+      const lv_area_t reach{static_cast<std::int32_t>(o.cx) - kRingReach,
+                            static_cast<std::int32_t>(o.cy) - kRingReach,
+                            static_cast<std::int32_t>(o.cx) + kRingReach,
+                            static_cast<std::int32_t>(o.cy) + kRingReach};
+      if (o.on && o.allocated && intersects(reach, r.t.area)) ++tables;
+    }
+    for (const Room& room : rooms_) {
+      if (room.on && room.allocated && intersects(room.extent, r.t.area)) ++tables;
+    }
+    add(r.t, true, tables);
+  }
+  if (with_rooms) {
+    for (const Cell& c : cells_) {
+      if (!cell_live(c)) continue;
+      std::size_t tables = 0;
+      for (std::size_t k : c.rooms) tables += (rooms_[k].on && rooms_[k].allocated) ? 1U : 0U;
+      add(c.t, false, tables);
+    }
+  }
+  return n + largest;
+}
+
+bool PulseLayer::fits_at_coarsest(bool with_rooms) const {
+  return need_at(kMaxDivisor, with_rooms) <= budget_.memory_bytes;
+}
+
+// The smallest divisor of frames per cycle at which every allocated pulse fits the budget at its
+// peak (need_at). Finer than before: the old sets (smaller) play while each tile is recomposed.
+// Coarser: the old sets are larger than the new, so they are given up first and the tiles step
+// aside until recomposed; keeping them would pass the budget.
+void PulseLayer::choose_divisor() {
   std::uint32_t div = budget_.min_divisor;
   if (div < 1U || div > kMaxDivisor || (div & (div - 1U)) != 0U) div = 1;
-  while (div < kMaxDivisor && need_at(div) > budget_.memory_bytes) div *= 2;
-  if (div != divisor_) {
-    divisor_ = div;
-    mark_all_dirty(false);
+  while (div < kMaxDivisor && need_at(div, true) > budget_.memory_bytes) div *= 2;
+  if (div == divisor_) return;
+  const bool coarser = div > divisor_;
+  divisor_ = div;
+  if (coarser) {
+    for (Ring& r : rings_) {
+      if (r.allocated) release(r.t);
+    }
+    for (Cell& c : cells_) {
+      if (cell_live(c)) release(c.t);
+    }
   }
+  mark_all_dirty(false);
 }
 
 void PulseLayer::set_ring(std::size_t pin, bool on) {
@@ -423,20 +448,20 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
   Ring& r = rings_[pin];
   r.on = on;
   if (on) {
-    // Admitted while its captures and frames at the coarsest rate fit.
-    const std::size_t px = static_cast<std::size_t>(r.t.w) * static_cast<std::size_t>(r.t.h);
-    const std::size_t need = px * 8U + px * 2U * (kRingFrames / kMaxDivisor);
-    // Rings come first (D-053): outlines give their memory up, the last room first, and wait.
-    // Only when giving them all up would make room: never for nothing.
-    if (!fits(need) && bytes_in_use(false) + need <= budget_.memory_bytes) {
-      for (std::size_t k = rooms_.size(); k-- > 0 && !fits(need);) {
+    // Admitted if everything still fits at the coarsest rate with it. Rings come first (D-053):
+    // outlines give their memory up, the last room first, and wait; only when giving them all
+    // up would make room, never for nothing.
+    r.allocated = true;
+    if (!fits_at_coarsest(true) && fits_at_coarsest(false)) {
+      for (std::size_t k = rooms_.size(); k-- > 0 && !fits_at_coarsest(true);) {
         if (rooms_[k].allocated) drop_room(k);
       }
     }
-    if (fits(need)) {
-      r.allocated = true;
+    if (fits_at_coarsest(true)) {
       r.t.dirty = true;
       fit_cells_under(r.t.area);  // its tile draws the strokes under it now
+    } else {
+      r.allocated = false;
     }
   } else if (r.allocated) {
     release(r.t);
@@ -458,6 +483,15 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
   ensure_timer();
 }
 
+bool PulseLayer::try_admit_room(std::size_t room) {
+  Room& r = rooms_[room];
+  r.allocated = true;
+  fit_cells(r);
+  if (fits_at_coarsest(true)) return true;
+  drop_room(room);  // frees its cells and refits the shared ones
+  return false;
+}
+
 void PulseLayer::set_room(std::size_t room, bool on, std::uint32_t colour) {
   if (room >= rooms_.size() || !alive_) return;
   Room& r = rooms_[room];
@@ -467,10 +501,7 @@ void PulseLayer::set_room(std::size_t room, bool on, std::uint32_t colour) {
   r.on = on;
   r.colour = c565;
   if (on && !r.allocated) {
-    if (fits(room_need(room))) {
-      r.allocated = true;
-      fit_cells(r);
-    }
+    (void)try_admit_room(room);
   } else if (!on && r.allocated) {
     drop_room(room);
     admit_waiting();
@@ -485,18 +516,18 @@ void PulseLayer::set_room(std::size_t room, bool on, std::uint32_t colour) {
 void PulseLayer::admit_waiting() {
   // Memory came free: pulses waiting for it get it, rings first, then rooms, in config order.
   for (Ring& x : rings_) {
-    const std::size_t px = static_cast<std::size_t>(x.t.w) * static_cast<std::size_t>(x.t.h);
-    if (x.on && !x.allocated && fits(px * 8U + px * 2U * (kRingFrames / kMaxDivisor))) {
-      x.allocated = true;
+    if (!x.on || x.allocated) continue;
+    x.allocated = true;
+    if (fits_at_coarsest(true)) {
       x.t.dirty = true;
       fit_cells_under(x.t.area);
+    } else {
+      x.allocated = false;
     }
   }
   for (std::size_t k = 0; k < rooms_.size(); ++k) {
     Room& x = rooms_[k];
-    if (!x.on || x.allocated || !fits(room_need(k))) continue;
-    x.allocated = true;
-    fit_cells(x);
+    if (!x.on || x.allocated || !try_admit_room(k)) continue;
     mark_dirty(x.extent);
   }
 }
@@ -686,13 +717,6 @@ bool PulseLayer::room_ready(const Room& r) const {
   return true;
 }
 
-std::size_t PulseLayer::cell_cost(const lv_area_t& area) {
-  // Captures and two tables or masks, and its frames at the coarsest rate.
-  const std::size_t px = static_cast<std::size_t>(lv_area_get_width(&area)) *
-                         static_cast<std::size_t>(lv_area_get_height(&area));
-  return px * 8U + px * 2U * (kRoomSteps / kMaxDivisor);
-}
-
 lv_area_t PulseLayer::cell_area(const Cell& c, std::size_t with) const {
   bool any = false;
   lv_area_t u{};
@@ -763,18 +787,6 @@ void PulseLayer::fit_cells_under(const lv_area_t& area) {
   for (Cell& c : cells_) {
     if (intersects(c.rect, area)) fit_cell(c);
   }
-}
-
-std::size_t PulseLayer::room_need(std::size_t room) const {
-  std::size_t need = 0;
-  for (std::size_t i : rooms_[room].cells) {
-    const Cell& c = cells_[i];
-    lv_area_t a = cell_area(c, room);
-    const std::size_t after = trim_by_rings(a) ? cell_cost(a) : 0U;
-    const std::size_t before = cell_live(c) ? cell_cost(c.t.area) : 0U;
-    need += after > before ? after - before : 0U;
-  }
-  return need;
 }
 
 void PulseLayer::drop_room(std::size_t room) {

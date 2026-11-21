@@ -1356,9 +1356,9 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
   CHECK_FALSE(hidden(rig.w().room_label[0]));
 }
 
-// One of small_config()'s top rooms' outline sprites fits, two do not (8 bytes a pixel of strips
-// about 20 px wide along 2 x (432 + 360) px, aligned).
-constexpr std::size_t kOneRoomBudget = 800U * 1024U;
+// One of small_config()'s top rooms' outline sprites fits, two do not, at the coarsest rate with
+// room for one replacement set (PulseLayer::need_at).
+constexpr std::size_t kOneRoomBudget = 500U * 1024U;
 
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
@@ -1530,6 +1530,33 @@ TEST_CASE("every shown pulse frame is a whole composed frame, at every rate and 
   for (std::uint32_t divisor : {1U, 2U, 4U, 8U}) walk_pulses(64U * 1024U * 1024U, divisor);
   // Memory pressure: rings take memory from outlines, which wait and come back.
   walk_pulses(1536U * 1024U, 1U);  // the divisor is memory's choice here
+}
+
+TEST_CASE("pulse sprites stay inside their memory budget while frames are recomposed") {
+  // The old set keeps playing while its replacement is composed: both must fit, at every budget.
+  for (std::size_t budget : {256U * 1024U, 400U * 1024U, 700U * 1024U, 1200U * 1024U}) {
+    CAPTURE(budget);
+    Rig rig(test::small_config(), budget, 1);
+    ViewModel vm = test::temperature_vm(rig.config);
+    vm.pins[0].active_value = 33.0;
+    vm.pins[0].active_severity = Severity::Danger;
+    vm.rooms[0].pulse = Severity::Danger;
+    vm.rooms[1].pulse = Severity::Warn;
+    std::size_t peak = 0;
+    rig.screen->update(vm, rig.header, 1000);
+    for (int round = 0; round < 3; ++round) {
+      while (rig.screen->prepare_step()) {
+        peak = std::max(peak, rig.screen->pulse_counters().tile_bytes);
+      }
+      peak = std::max(peak, rig.screen->pulse_counters().tile_bytes);
+      rig.screen->invalidate_heat();  // every tile recomposed, the old sets kept meanwhile
+      rig.display.set_time_ms(static_cast<std::uint32_t>(100 * (round + 1)));
+      rig.display.run_timers();
+    }
+    MESSAGE("budget " << budget << ", peak " << peak);
+    if (budget >= 700U * 1024U) CHECK(peak > 0);  // something was admitted to measure
+    CHECK(peak <= budget);
+  }
 }
 
 TEST_CASE("fallback invalidations stay under LVGL's area limit until a refresh") {

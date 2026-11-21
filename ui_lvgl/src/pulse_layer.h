@@ -228,9 +228,10 @@ class PulseLayer {
   void fit_cell(Cell& c);
   void fit_cells(const Room& r);
   void fit_cells_under(const lv_area_t& area);
-  /// What admitting `room` would add: its cells no pulsing room holds, and growth of those one
-  /// does.
-  std::size_t room_need(std::size_t room) const;
+  /// Admits `room` if everything fits at the coarsest rate with it; otherwise leaves it waiting.
+  bool try_admit_room(std::size_t room);
+  std::size_t need_at(std::uint32_t div, bool with_rooms) const;
+  bool fits_at_coarsest(bool with_rooms) const;
   /// Gives up a room's memory (it stays on, waiting); its cells no other room holds are freed.
   void drop_room(std::size_t room);
   void release(Tile& t);
@@ -247,7 +248,6 @@ class PulseLayer {
   std::size_t tile_frame_bytes(const Tile& t, bool ring) const;
   /// Without rooms: what rings (and the set being composed) hold alone.
   std::size_t bytes_in_use(bool with_rooms = true) const;
-  bool fits(std::size_t more) const { return bytes_in_use() + more <= budget_.memory_bytes; }
   int ring_frame_at(std::size_t ring, std::uint32_t t_ms) const;
   std::uint8_t room_opa_at(std::size_t room, std::uint32_t t_ms) const;
   const std::uint8_t* opa_lut(std::uint8_t opa);
@@ -260,7 +260,6 @@ class PulseLayer {
   bool cell_live(const Cell& c) const { return !c.gone && cell_active(c); }
   /// Every cell of the room has frames.
   bool room_ready(const Room& r) const;
-  static std::size_t cell_cost(const lv_area_t& area);
   void show_frame(Tile& t, int index);
   /// The frame of the tile's set for `now_ms`; -1 when the set is not complete or the index
   /// would fall outside it (never shown: counted as not ready).
