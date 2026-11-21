@@ -1272,19 +1272,27 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
   CHECK(hidden(rig.w().room_label[0]));
   rig.display.render();
   const std::vector<std::uint16_t>& now = rig.display.framebuffer();
-  // Inside the map (864 x 720 at 40, 76) every pixel within a couple of RGB565 steps of LVGL's
-  // own drawing: the coverage is recovered from 6 bits of green, and CI's Linux builds came out
-  // 61 pixels past a one-step tolerance where macOS passed it (cause not established). Unbaked
-  // walls or labels differ by far more.
+  // Inside the map (864 x 720 at 40, 76) every pixel within a step or two of LVGL's own drawing
+  // (the coverage is recovered from 6 bits of green). Unbaked walls or labels differ by far more.
   std::size_t off = 0, compared = 0;
+  // Pins are left out: the fixture's 8 px photo is scaled, which this LVGL build cannot do for
+  // RGB565 (D-039), and what it leaves behind was seen to differ between two renders on Linux.
+  auto near_pin = [&](std::int32_t x, std::int32_t y) {
+    for (const Pin& pin : rig.config.pins) {
+      const double px = 40 + pin.position.x * 864, py = 76 + pin.position.y * 720;
+      if (std::abs(x - px) < 60 && std::abs(y - py) < 40) return true;
+    }
+    return false;
+  };
   for (std::int32_t y = 76; y < 76 + 720; ++y) {
     for (std::int32_t x = 40; x < 40 + 864; ++x) {
+      if (near_pin(x, y)) continue;
       const std::size_t i = static_cast<std::size_t>(y) * 1280U + static_cast<std::size_t>(x);
       const int dr = std::abs(((drawn[i] >> 11) & 31) - ((now[i] >> 11) & 31));
       const int dg = std::abs(((drawn[i] >> 5) & 63) - ((now[i] >> 5) & 63));
       const int db = std::abs((drawn[i] & 31) - (now[i] & 31));
       ++compared;
-      if (dr > 2 || dg > 4 || db > 2) {
+      if (dr > 1 || dg > 2 || db > 1) {
         if (off < 8) {
           MESSAGE("bake off at " << x << "," << y << ": LVGL " << drawn[i] << " baked " << now[i]
                                  << " heat " << rig.heat[0]);
@@ -1293,7 +1301,7 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
       }
     }
   }
-  CHECK(compared > 600000);
+  CHECK(compared > 500000);
   CHECK(off == 0);
 
   // Told the image is not baked again (a fresh image without walls): the objects come back.
