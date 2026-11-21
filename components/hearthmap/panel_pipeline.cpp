@@ -230,14 +230,17 @@ void PanelPipeline::update(const hm::Readings& readings, hm::Timestamp now,
   const bool image_current =
       layer_shown && !force_ && same_samples(latest, slots_[front_slot_].samples);
   if (job_active_) {
-    // A rebuild for another layer gives way when this layer's image is up (a tab tapped away
-    // and back, or a kept image), else restarts for this layer. One for this layer runs on with
-    // the samples it started from; changes since are picked up after it lands.
+    // A rebuild for another layer runs on while this layer's image is up and current (a
+    // background build, or a tab tapped away and back to a kept image): views come every few
+    // hundred ms, faster than a rebuild on the panel, so stopping it here would restart it
+    // forever. It gives way when this layer needs a new image (its buffer stays free; background
+    // work resumes later), and restarts for this layer when nothing of it is shown. One for this
+    // layer runs on with the samples it started from; changes since are picked up after it lands.
     if (job_layer_ != layer) {
-      if (layer_shown) {
-        job_active_ = false;  // its buffer stays free; background work resumes later
-      } else {
+      if (!layer_shown) {
         start_rebuild(layer, mono_ms);
+      } else if (!image_current || job_slot_ == front_slot_) {
+        job_active_ = false;
       }
     }
     held_ = layer_shown && !image_current;

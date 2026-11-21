@@ -787,9 +787,11 @@ using Pipeline = hearthmap_device::PanelPipeline;
 static int failures = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
 
+static int last_steps = 0;  // heat_step() calls the last drain() took
 static int drain(Pipeline& p, std::uint32_t mono) {
   int guard = 0;
   while (!p.heat_step(1, mono) && ++guard < 1000000) {}
+  last_steps = guard;
   return p.take_published() ? 1 : 0;
 }
 
@@ -876,6 +878,22 @@ int main() {
     CHECK(p.front_baked());  // the background copies were redrawn with the walls too
     drain(p, now_ms);
   }
+
+  // Views arriving faster than a background rebuild finishes (sensor updates every 500 ms, a
+  // third of a rebuild between them) must not restart it each time: every image still comes up.
+  p.request_rebuild_all();
+  CHECK(drain(p, now_ms) == 1);
+  const int per_rebuild = last_steps;
+  CHECK(per_rebuild > 3);
+  const std::uint32_t before = p.heat_rebuilds();
+  for (int k = 0; k < 40 * static_cast<int>(tabs); ++k) {
+    now_ms += 500;
+    p.update(rs, 1000, st, now_ms);
+    for (int i = 0; i < per_rebuild / 3; ++i) (void)p.heat_step(1, now_ms);
+  }
+  CHECK(p.cached_layers() == tabs);
+  std::printf("background rebuilds under frequent views: %u\n", p.heat_rebuilds() - before);
+  CHECK(p.heat_rebuilds() - before <= tabs);  // one each for the other layers, none restarted
   (void)layers;
   std::printf("pool checks done, %d failures\n", failures);
   return failures == 0 ? 0 : 1;
