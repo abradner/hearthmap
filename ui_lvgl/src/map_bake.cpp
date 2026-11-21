@@ -13,7 +13,10 @@ MapBake::MapBake(lv_obj_t* map, const lv_area_t& area, std::vector<lv_obj_t*> dr
       w_(lv_area_get_width(&area)),
       h_(lv_area_get_height(&area)),
       draw_(std::move(draw)),
-      hide_(std::move(hide)) {}
+      hide_(std::move(hide)),
+      render_([](lv_obj_t* o, const lv_area_t& a, std::uint16_t* out, std::uint16_t bg) {
+        return render_area(o, a, out, bg);
+      }) {}
 
 std::size_t MapBake::bytes_needed() const {
   const std::size_t px = static_cast<std::size_t>(std::max<std::int32_t>(0, w_)) *
@@ -31,7 +34,7 @@ void MapBake::start() {
 }
 
 bool MapBake::prepare_step() {
-  if (!started_ || ready_ || !alive_) return false;
+  if (!started_ || ready_ || failed_ || !alive_) return false;
   const std::int32_t y0 = next_row_;
   const std::int32_t y1 = std::min(h_, y0 + kBandRows);
   const lv_area_t band{area_.x1, area_.y1 + y0, area_.x2, area_.y1 + y1 - 1};
@@ -52,13 +55,13 @@ bool MapBake::prepare_step() {
   // Over black: the map has no background, and render_area() leaves uncovered pixels at zero.
   std::uint16_t* black =
       premul_.data() + static_cast<std::size_t>(y0) * static_cast<std::size_t>(w_);
-  bool ok = render_area(map_, band, black);
+  bool ok = render_(map_, band, black, 0);
   // Over white: the map gets a white background for the moment.
   const lv_color_t bg = lv_obj_get_style_bg_color(map_, LV_PART_MAIN);
   const lv_opa_t bg_opa = lv_obj_get_style_bg_opa(map_, LV_PART_MAIN);
   lv_obj_set_style_bg_color(map_, lv_color_white(), 0);
   lv_obj_set_style_bg_opa(map_, LV_OPA_COVER, 0);
-  ok = render_area(map_, band, scratch_.data()) && ok;
+  ok = ok && render_(map_, band, scratch_.data(), 0);
   lv_obj_set_style_bg_color(map_, bg, 0);
   lv_obj_set_style_bg_opa(map_, bg_opa, 0);
 
@@ -66,6 +69,19 @@ bool MapBake::prepare_step() {
   for (lv_obj_t* o : hidden) lv_obj_set_hidden(o, false);
   lv_display_enable_invalidation(disp, true);
 
+  if (!ok) {
+    // Never publish a band that did not render: try it again, and after kMaxBandFailures in a
+    // row give the bake up (the objects stay; nothing half-baked reaches a heat image).
+    if (++band_failures_ >= kMaxBandFailures) {
+      failed_ = true;
+      std::vector<std::uint16_t>().swap(premul_);
+      std::vector<std::uint8_t>().swap(through_);
+      std::vector<std::uint16_t>().swap(scratch_);
+      return false;
+    }
+    return true;
+  }
+  band_failures_ = 0;
   // What shows through, from the green channel (6 bits): over white minus over black is
   // (1 - coverage) x white.
   const std::size_t n = static_cast<std::size_t>(y1 - y0) * static_cast<std::size_t>(w_);
@@ -76,10 +92,6 @@ bool MapBake::prepare_step() {
     const std::int32_t gw = (scratch_[i] >> 5) & 0x3F;
     const std::int32_t t = std::max<std::int32_t>(0, gw - gb);
     through[i] = static_cast<std::uint8_t>((t * 255 + 31) / 63);
-    if (!ok) {
-      through[i] = 255;
-      black[i] = 0;
-    }
   }
   next_row_ = y1;
   if (next_row_ >= h_) {

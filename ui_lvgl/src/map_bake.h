@@ -30,9 +30,17 @@ class MapBake {
   std::size_t bytes_needed() const;
   /// Start (allocating the bake). Without it, prepare_step() does nothing and ready() stays false.
   void start();
-  /// One band. Returns true while bands remain.
+  /// One band. Returns true while bands remain. A band whose render fails is tried again; after
+  /// kMaxBandFailures failures in a row the bake gives up: ready() stays false, the memory is
+  /// freed, and the objects stay as they are.
   bool prepare_step();
   bool ready() const { return ready_; }
+  bool failed() const { return failed_; }
+  static constexpr int kMaxBandFailures = 3;
+
+  /// The renderer (render_area()); tests replace it to make bands fail.
+  using RenderFn = bool (*)(lv_obj_t*, const lv_area_t&, std::uint16_t*, std::uint16_t);
+  void set_renderer(RenderFn fn) { render_ = fn; }
 
   /// Lay the walls and labels over rows [row_begin, row_end) of a map-sized RGB565 image with
   /// `stride` pixels per row. Returns false (and writes nothing) until ready().
@@ -57,6 +65,9 @@ class MapBake {
   std::int32_t next_row_ = 0;
   bool started_ = false;
   bool ready_ = false;
+  bool failed_ = false;
+  int band_failures_ = 0;
+  RenderFn render_ = nullptr;
   bool alive_ = true;
 };
 
