@@ -19,10 +19,12 @@ Its visual contract is the approved UI spec (mockup A); the sample render in
 | `hearthmap/ui/format.h` | Value text, moisture percent, ring length, verdicts, status colours, the house summary's words |
 | `hearthmap/ui/theme.h` | The spec's colours and fixed geometry |
 | `hearthmap/ui/blitter.h` | `Blitter` (RGB565 copy, fill, constant-alpha blend, 2x scale; clipped) and `SoftwareBlitter`, the portable default (D-054, D-057) |
+| `hearthmap/ui/memory.h` | `BulkMemory`, the embedder's memory port: every buffer the UI sizes by pixels, cells or pulses comes from it (`BulkBuffer`, `BulkVector`, `make_bulk`), never from plain `new` (D-064). The host's is malloc; the panel's is PSRAM only |
 | `hearthmap/ui/present.h` | `Presenter` (an opaque tile straight to the panel), `NoPresenter` (the host's), `present_check()` and `show_tile_frame()`: an animated tile's next frame without an LVGL refresh when that is safe, an invalidation when not (D-058) |
 
-The embedder owns the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 pixels) and its
-`lv_image_dsc_t`, the UI state (core's `UiState`), and the clock. A frame is:
+The embedder owns the memory port (installed with `set_bulk_memory()` before the first Screen or
+rasterizer is made), the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 pixels) and
+its `lv_image_dsc_t`, the UI state (core's `UiState`), and the clock. A frame is:
 
 ```
 build_view_model(config, readings, now, ui_state, vm)            // core, reuse form

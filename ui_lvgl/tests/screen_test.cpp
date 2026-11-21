@@ -12,6 +12,7 @@
 #include "headless.h"
 #include "hearthmap/ui/fonts.h"
 #include "hearthmap/ui/heat_image.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/ui/theme.h"
 #include "src/core/lv_refr_private.h"        // lv_refr_get_top_obj(), for the cover test
@@ -1719,4 +1720,108 @@ TEST_CASE("deferred pulse frames are presented when nothing covers them, without
   CHECK(refused.presented == 0);
   CHECK(refused.invalidated >= 10);
   CHECK(g_invalidated > 0);
+}
+
+namespace {
+
+/// The system heap behind a switch: while `refuse` is set every allocation is refused, as a full
+/// PSRAM would refuse it on the panel.
+struct SwitchedMemory final : BulkMemory {
+  bool refuse = false;
+  std::size_t refused = 0;
+  void* allocate(std::size_t bytes, std::size_t align) override {
+    if (refuse) {
+      ++refused;
+      return nullptr;
+    }
+    return system_bulk_memory().allocate(bytes, align);
+  }
+  void deallocate(void* p, std::size_t bytes) override {
+    system_bulk_memory().deallocate(p, bytes);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("sprite buffers the memory port refuses stop the animation, never break a frame") {
+  SwitchedMemory mem;
+  REQUIRE(set_bulk_memory(&mem));
+  {
+    Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
+    ViewModel vm = test::temperature_vm(rig.config);
+    vm.pins[0].active_value = 33.0;
+    vm.pins[0].active_severity = Severity::Danger;
+    vm.rooms[0].pulse = Severity::Danger;
+    rig.show(vm);
+    REQUIRE(rig.screen->pulse_counters().rings_shown == 1);
+    REQUIRE(rig.screen->pulse_counters().alloc_failures == 0);
+    const char* why = "";
+
+    // Everything under the sprites changes while the port refuses: preparation ends (no tile
+    // asks again at once), every tile steps aside, and no frame shown is anything but whole.
+    mem.refuse = true;
+    rig.screen->invalidate_heat();
+    int steps = 0;
+    while (rig.screen->prepare_step() && steps < 10000) ++steps;
+    CHECK(steps < 10000);
+    CHECK(mem.refused > 0);
+    PulseCounters c = rig.screen->pulse_counters();
+    CHECK(c.alloc_failures > 0);
+    CHECK(c.rings_shown == 0);
+    CHECK(c.rooms_animated == 0);
+    rig.display.set_time_ms(500);
+    rig.display.run_timers();
+    rig.display.render();
+    CHECK(rig.screen->verify_pulse_frames(&why));
+    INFO(why);
+    CHECK(rig.screen->pulse_canary_failures() == 0);
+
+    // Memory again, and the next change under them brings the pulses back.
+    mem.refuse = false;
+    rig.screen->invalidate_heat();
+    while (rig.screen->prepare_step()) {
+    }
+    c = rig.screen->pulse_counters();
+    CHECK(c.rings_shown == 1);
+    CHECK(c.rooms_animated == 1);
+    CHECK(rig.screen->verify_pulse_frames(&why));
+  }
+  CHECK(bulk_stats().in_use == 0);
+  REQUIRE(set_bulk_memory(nullptr));
+}
+
+TEST_CASE("paused sprite builds start nothing; the sets already built keep playing") {
+  Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  rig.show(vm);
+  REQUIRE(rig.screen->pulse_counters().rings_shown == 1);
+  const std::uint32_t captures = rig.screen->pulse_counters().captures;
+
+  rig.screen->set_sprite_builds_paused(true);
+  CHECK(rig.screen->pulse_counters().builds_paused);
+  // A room starts pulsing while paused: nothing is captured for it, and the ring plays on.
+  vm.rooms[0].pulse = Severity::Danger;
+  rig.screen->update(vm, rig.header, 1000);
+  CHECK_FALSE(rig.screen->prepare_step());
+  CHECK(rig.screen->pulse_counters().captures == captures);
+  CHECK(rig.screen->pulse_counters().rings_shown == 1);
+  CHECK(rig.screen->pulse_counters().rooms_animated == 0);
+
+  // A set half built when the pause comes is dropped, and built whole after it.
+  rig.screen->set_sprite_builds_paused(false);
+  CHECK(rig.screen->prepare_step());
+  CHECK(rig.screen->prepare_step());
+  rig.screen->set_sprite_builds_paused(true);
+  CHECK_FALSE(rig.screen->prepare_step());
+  rig.screen->set_sprite_builds_paused(false);
+  while (rig.screen->prepare_step()) {
+  }
+  const PulseCounters c = rig.screen->pulse_counters();
+  CHECK_FALSE(c.builds_paused);
+  CHECK(c.rooms_animated == 1);
+  const char* why = "";
+  CHECK(rig.screen->verify_pulse_frames(&why));
+  INFO(why);
 }

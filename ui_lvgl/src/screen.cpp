@@ -15,6 +15,7 @@
 
 #include "hearthmap/geometry.h"
 #include "hearthmap/ui/format.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/theme.h"
 #include "image_util.h"
 #include "map_bake.h"
@@ -283,15 +284,15 @@ struct Screen::Impl {
   LeafImage overlay_leaf_stale{88, theme::kLeafStale};
 
   std::vector<std::vector<lv_point_precise_t>> room_points;
-  std::unique_ptr<detail::PulseLayer> pulses;
+  BulkPtr<detail::PulseLayer> pulses;  // bulk storage, like everything sized by pixels (D-064)
   PulseMode pulse_mode = PulseMode::Animated;
   lv_obj_t* press_marker = nullptr;
   struct RoundPhoto {
-    std::vector<std::uint16_t> px;
+    BulkBuffer<std::uint16_t> px;
     lv_image_dsc_t dsc{};
   };
-  std::map<std::string, std::unique_ptr<RoundPhoto>, std::less<>> round_photos;
-  std::unique_ptr<detail::MapBake> bake;
+  std::map<std::string, BulkPtr<RoundPhoto>, std::less<>> round_photos;
+  BulkPtr<detail::MapBake> bake;
   std::vector<lv_obj_t*> walls;
   std::optional<bool> objects_baked;
 
@@ -631,8 +632,10 @@ struct Screen::Impl {
       return nullptr;
     auto it = round_photos.find(*pin.photo);
     if (it != round_photos.end()) return &it->second->dsc;
-    auto round = std::make_unique<RoundPhoto>();
-    round->px.resize(static_cast<std::size_t>(d) * static_cast<std::size_t>(d));
+    auto round = make_bulk<RoundPhoto>();
+    // Without memory for the cut copy the disc shows nothing new: the caller's fallback.
+    if (!round->px.resize(static_cast<std::size_t>(d) * static_cast<std::size_t>(d)))
+      return nullptr;
     const auto* src = reinterpret_cast<const std::uint16_t*>(photo->data);
     const std::uint16_t card = rgb565(theme::kCard);
     const float rr = static_cast<float>(kOverlayDiscRadius);
@@ -671,7 +674,7 @@ struct Screen::Impl {
     if (deps.pulse_memory_bytes != 0) budget.memory_bytes = deps.pulse_memory_bytes;
     budget.micros = deps.micros;
     budget.min_divisor = deps.pulse_min_divisor;
-    pulses = std::make_unique<detail::PulseLayer>(
+    pulses = make_bulk<detail::PulseLayer>(
         w.map, lv_point_t{a.x, a.y}, lv_point_t{a.width, a.height}, room_points, centres, w.pin,
         budget,
         deps.sprite_composer != nullptr ? *deps.sprite_composer : detail::cpu_sprite_composer());
@@ -690,7 +693,7 @@ struct Screen::Impl {
     hide.push_back(w.outline_pulse);
     for (lv_obj_t* o : w.pin_pulse) hide.push_back(o);
     const lv_area_t area{a.x, a.y, a.x + a.width - 1, a.y + a.height - 1};
-    bake = std::make_unique<detail::MapBake>(w.map, area, std::move(draw), std::move(hide));
+    bake = make_bulk<detail::MapBake>(w.map, area, std::move(draw), std::move(hide));
     const std::size_t bake_budget =
         deps.bake_memory_bytes != 0 ? deps.bake_memory_bytes : kDefaultBakeMemory;
     if (bake->bytes_needed() <= bake_budget) bake->start();
@@ -1600,6 +1603,10 @@ void Screen::set_pulse_mode(PulseMode mode) {
   if (impl_->pulses) impl_->pulses->set_frozen(mode == PulseMode::Still);
 }
 
+void Screen::set_sprite_builds_paused(bool paused) {
+  if (impl_->pulses) impl_->pulses->set_paused(paused);
+}
+
 bool Screen::bake_ready() const {
   return impl_->bake && impl_->bake->ready();
 }
@@ -1621,7 +1628,7 @@ void Screen::show_due_frames(Presenter& presenter, ShownFrames* tally) {
   // remaining frames wait for a call after the next refresh.
   constexpr std::uint32_t kMaxPendingAreas = 20;
   lv_display_t* disp = lv_obj_get_display(impl_->w.root);
-  const std::vector<detail::PulseLayer::Due>& due = impl_->pulses->take_due();
+  const BulkVector<detail::PulseLayer::Due>& due = impl_->pulses->take_due();
   for (const detail::PulseLayer::Due& d : due) {
     if (disp != nullptr && disp->inv_p >= kMaxPendingAreas) {
       impl_->pulses->requeue(d);
@@ -1654,6 +1661,8 @@ PulseCounters Screen::pulse_counters() const {
   c.prepare_us = s.prepare_us;
   c.frame_divisor = s.frame_divisor;
   c.not_ready = s.not_ready;
+  c.alloc_failures = s.alloc_failures;
+  c.builds_paused = s.paused;
   return c;
 }
 

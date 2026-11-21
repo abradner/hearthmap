@@ -178,8 +178,8 @@ class PanelPipeline {
   bool heat_valid_ = false;  ///< A front image exists.
   hearthmap::Layer shown_layer_ = hearthmap::Layer::Temperature;
   hearthmap::Layer job_layer_ = hearthmap::Layer::Temperature;
-  std::vector<hearthmap::Rgb565> cell_colours_;
-  hearthmap::ui::HeatRasterizer::Prepared prepared_;  ///< For cell_colours_, per image.
+  hearthmap::ui::BulkVector<hearthmap::Rgb565> cell_colours_;  ///< the memory port (D-064)
+  hearthmap::ui::HeatRasterizer::Prepared prepared_;           ///< For cell_colours_, per image.
   std::uint32_t heat_interval_ms_ = 15000;
   std::uint32_t last_start_ms_ = 0;
   bool started_once_ = false;

@@ -10,6 +10,16 @@ hearthmap_strict_warnings(hearthmap_host_tests)
 add_test(NAME host.unit COMMAND hearthmap_host_tests --no-version)
 set_tests_properties(host.unit PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
 
+# The default heap's budget (memory_budget_test.cpp, D-064): its own executable, because it
+# replaces the global operator new and delete with counting ones.
+add_executable(hearthmap_host_memory_tests main.cpp memory_budget_test.cpp)
+target_link_libraries(hearthmap_host_memory_tests PRIVATE hearthmap_host hearthmap_doctest)
+target_compile_definitions(hearthmap_host_memory_tests PRIVATE
+  HEARTHMAP_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
+hearthmap_strict_warnings(hearthmap_host_memory_tests)
+add_test(NAME host.memory COMMAND hearthmap_host_memory_tests --no-version)
+set_tests_properties(host.memory PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
+
 # ---- golden images -----------------------------------------------------------------------------
 # Each case: name, then the render arguments. Every case renders at --time-ms 400 so pulses are
 # caught mid-cycle; pulse-ring-on-red overrides it to 700, where the kitchen plant's danger ring is

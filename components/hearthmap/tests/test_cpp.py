@@ -505,7 +505,8 @@ def _pipeline(gen, schema, doc, tmp_path) -> dict:
     (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
     (tmp_path / "driver.cpp").write_text(PIPELINE_DRIVER)
     sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core]
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/memory.cpp"), *core]
     exe = tmp_path / "pipeline"
     cmd = [_cxx(), *FLAGS, "-O2", f"-I{tmp_path}", f"-I{COMPONENT}", f"-I{REPO / 'core/include'}",
            f"-I{REPO / 'ui_lvgl/include'}", *sources, "-o", str(exe)]
@@ -772,7 +773,8 @@ def test_heat_rebuild_policy_and_immediate_taps(gen, schema, example, tmp_path):
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core],
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in text, text
@@ -912,7 +914,8 @@ def test_layer_images_are_kept_and_shown_at_once(gen, schema, example, tmp_path)
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core],
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in text, text
@@ -1034,7 +1037,7 @@ def test_generated_photos_init_once_keeps_descriptors_stable(gen, tmp_path):
     out = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/photos.cpp"),
-         str(COMPONENT / "generated_photos.cpp")],
+         str(COMPONENT / "generated_photos.cpp"), str(REPO / "ui_lvgl/src/memory.cpp")],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in out, out

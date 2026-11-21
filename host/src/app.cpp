@@ -13,8 +13,8 @@ namespace hearthmap::host {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"  // lv_image_header_t bit-fields
 #endif
-static void describe_rgb565(lv_image_dsc_t& dsc, const std::vector<Rgb565>& pixels, std::int32_t w,
-                            std::int32_t h) {
+static void describe_rgb565(lv_image_dsc_t& dsc, const ui::BulkVector<Rgb565>& pixels,
+                            std::int32_t w, std::int32_t h) {
   dsc = lv_image_dsc_t{};
   dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
   dsc.header.cf = LV_COLOR_FORMAT_RGB565;
@@ -87,6 +87,13 @@ std::size_t App::process_events() {
 
 void App::set_layer(Layer layer) {
   state_ = apply(config_, state_, UiEvent::select_layer(layer));
+  refresh();
+}
+
+void App::set_readings(Readings readings, Timestamp now) {
+  readings_ = std::move(readings);
+  now_ = now;
+  heat_layer_.reset();  // the image is drawn from the readings: rebuild it
   refresh();
 }
 

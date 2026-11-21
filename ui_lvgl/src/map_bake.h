@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "hearthmap/ui/memory.h"
 #include "lvgl.h"
 
 namespace hearthmap::ui::detail {
@@ -28,7 +29,8 @@ class MapBake {
 
   /// Bytes the bake needs (3 per map pixel); the embedder decides whether it can afford them.
   std::size_t bytes_needed() const;
-  /// Start (allocating the bake). Without it, prepare_step() does nothing and ready() stays false.
+  /// Start (allocating the bake from the memory port, D-064). Without it, or when the port
+  /// refuses (failed() is then true), prepare_step() does nothing and ready() stays false.
   void start();
   /// One band. Returns true while bands remain. A band whose render fails is tried again; after
   /// kMaxBandFailures failures in a row the bake gives up: ready() stays false, the memory is
@@ -57,11 +59,12 @@ class MapBake {
   lv_obj_t* map_;
   lv_area_t area_;
   std::int32_t w_, h_;
-  std::vector<lv_obj_t*> draw_;
+  std::vector<lv_obj_t*> draw_;  // a pointer per wall and label, given once
   std::vector<lv_obj_t*> hide_;
-  std::vector<std::uint16_t> premul_;   // the drawing over black
-  std::vector<std::uint8_t> through_;   // 0..255: how much of the image beneath shows
-  std::vector<std::uint16_t> scratch_;  // one band over white
+  BulkVector<lv_obj_t*> hidden_, shown_;  // prepare_step()'s lists, kept between bands
+  BulkBuffer<std::uint16_t> premul_;      // the drawing over black
+  BulkBuffer<std::uint8_t> through_;      // 0..255: how much of the image beneath shows
+  BulkBuffer<std::uint16_t> scratch_;     // one band over white
   std::int32_t next_row_ = 0;
   bool started_ = false;
   bool ready_ = false;

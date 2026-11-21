@@ -214,10 +214,11 @@ void opaque_tiles_cover_cb(lv_event_t* e) {
   info->res = LV_COVER_RES_COVER;
 }
 
-void distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
-                    float cy, std::vector<std::uint16_t>& out) {
-  out.resize(static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
-             static_cast<std::size_t>(std::max<std::int32_t>(0, h)));
+bool distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
+                    float cy, BulkBuffer<std::uint16_t>& out) {
+  if (!out.resize(static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
+                  static_cast<std::size_t>(std::max<std::int32_t>(0, h))))
+    return false;
   std::size_t i = 0;
   for (std::int32_t y = 0; y < h; ++y) {
     const float dy = static_cast<float>(y0 + y) + 0.5f - cy;
@@ -227,11 +228,12 @@ void distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32
       out[i] = d >= 65535.0f ? 65535 : static_cast<std::uint16_t>(d + 0.5f);
     }
   }
+  return true;
 }
 
-void ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
-              std::vector<std::uint8_t>& out) {
-  out.assign(size, 0);
+bool ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
+              BulkBuffer<std::uint8_t>& out) {
+  if (!out.assign(size, 0)) return false;
   const float half = width * 0.5f;
   for (std::size_t i = 0; i < size; ++i) {
     const float d = static_cast<float>(i) / 16.0f;
@@ -242,14 +244,15 @@ void ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
     const float c = std::min(1.0f, std::min(inner, outer));
     out[i] = c <= 0.0f ? 0 : clamp255(c * static_cast<float>(opa));
   }
+  return true;
 }
 
-void add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h,
+bool add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h,
                           float ax, float ay, float bx, float by, float width,
-                          std::vector<std::uint8_t>& cov) {
+                          BulkBuffer<std::uint8_t>& cov) {
   const std::size_t n = static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
                         static_cast<std::size_t>(std::max<std::int32_t>(0, h));
-  if (cov.size() != n) cov.assign(n, 0);
+  if (cov.size() != n && !cov.assign(n, 0)) return false;
   const float vx = bx - ax;
   const float vy = by - ay;
   const float len2 = vx * vx + vy * vy;
@@ -268,6 +271,7 @@ void add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std:
       if (c > cov[i]) cov[i] = c;
     }
   }
+  return true;
 }
 
 }  // namespace hearthmap::ui::detail

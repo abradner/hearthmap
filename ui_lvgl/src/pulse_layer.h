@@ -18,6 +18,11 @@
 // Budget by construction (PulseBudget): frames per cycle are divided by 1, 2 or 4 until every
 // pulsing object fits the memory budget; past that, pulses are admitted in config order (rings
 // first) while they fit, and the rest show their badge or nothing.
+//
+// Memory (D-064): the layer itself, every frame set, capture, table and the containers holding
+// them come from the embedder's memory port (hearthmap/ui/memory.h), never the default heap. A
+// buffer the port refuses fails that tile's preparation (counted in PulseStats::alloc_failures);
+// the tile waits for the next change under it, as after a failed capture.
 #pragma once
 
 #include <array>
@@ -26,6 +31,7 @@
 #include <vector>
 
 #include "hearthmap/config.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/sprite_composer.h"
 #include "hearthmap/ui/theme.h"
 #include "lvgl.h"
@@ -42,17 +48,19 @@ struct PulseBudget {
 };
 
 struct PulseStats {
-  std::uint32_t frames = 0;         ///< Frames shown since construction.
-  std::uint32_t dropped = 0;        ///< Ring frames skipped because the clock moved on.
-  std::uint32_t captures = 0;       ///< Tiles captured since construction.
-  std::size_t tile_bytes = 0;       ///< Memory held by tiles, frames and tables now.
-  std::size_t rings_shown = 0;      ///< Rings with frames now.
-  std::size_t rooms_animated = 0;   ///< Room outlines with frames now.
-  std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4, 8: fewer frames to fit memory
-  std::uint32_t not_ready = 0;      ///< frames not shown: their set incomplete, or out of range.
-  bool pending = false;             ///< prepare_step() has work.
-  std::uint64_t frame_us = 0;       ///< Time in tick() (choosing and showing frames).
-  std::uint64_t prepare_us = 0;     ///< Time in prepare_step() (captures and composing frames).
+  std::uint32_t frames = 0;          ///< Frames shown since construction.
+  std::uint32_t dropped = 0;         ///< Ring frames skipped because the clock moved on.
+  std::uint32_t captures = 0;        ///< Tiles captured since construction.
+  std::size_t tile_bytes = 0;        ///< Memory held by tiles, frames and tables now.
+  std::size_t rings_shown = 0;       ///< Rings with frames now.
+  std::size_t rooms_animated = 0;    ///< Room outlines with frames now.
+  std::uint32_t frame_divisor = 1;   ///< 1: full frame rate; 2, 4, 8: fewer frames to fit memory
+  std::uint32_t not_ready = 0;       ///< frames not shown: their set incomplete, or out of range.
+  bool pending = false;              ///< prepare_step() has work.
+  std::uint64_t frame_us = 0;        ///< Time in tick() (choosing and showing frames).
+  std::uint64_t prepare_us = 0;      ///< Time in prepare_step() (captures and composing frames).
+  std::uint32_t alloc_failures = 0;  ///< Buffers the memory port refused (D-064).
+  bool paused = false;               ///< set_paused(): no new sets are being built.
 };
 
 class PulseLayer {
@@ -116,13 +124,16 @@ class PulseLayer {
   /// Frozen: tick() chooses every tile's frame for time 0, so each shows one fixed frame
   /// (Screen::set_pulse_mode, PulseMode::Still).
   void set_frozen(bool frozen) { frozen_ = frozen; }
+  /// Paused: prepare_step() starts nothing new (a set being composed is dropped), and the sets
+  /// already built keep playing. The embedder pauses it when memory runs short (D-064).
+  void set_paused(bool paused);
   struct Due {
     lv_obj_t* image;
     lv_image_dsc_t* dsc;
     const std::uint16_t* frame;
   };
   /// The frames chosen since the last call, for the embedder to show (present or invalidate).
-  const std::vector<Due>& take_due();
+  const BulkVector<Due>& take_due();
   /// Back on the list, for the next take_due() (the embedder ran out of invalidations).
   void requeue(const Due& d) { due_.push_back(d); }
 
@@ -143,7 +154,7 @@ class PulseLayer {
   static constexpr std::uint16_t kCanary = 0xA5C3;
   struct FrameSet {
     /// kGuardWords canaries, `count` frames of w x h back to back, kGuardWords canaries.
-    std::vector<std::uint16_t> px;
+    BulkBuffer<std::uint16_t> px;
     std::uint16_t* frames() { return px.data() + kGuardWords; }
     const std::uint16_t* frames() const { return px.data() + kGuardWords; }
     std::size_t frame_words() const {
@@ -158,9 +169,9 @@ class PulseLayer {
     lv_image_dsc_t dsc{};
     lv_area_t area{};  // screen px
     std::int32_t w = 0, h = 0;
-    std::vector<std::uint16_t> below, full;  ///< the captures
-    FrameSet shown;                          ///< what plays
-    std::uint32_t phase_ms = 0;              ///< a whole number of frames
+    BulkBuffer<std::uint16_t> below, full;  ///< the captures
+    FrameSet shown;                         ///< what plays
+    std::uint32_t phase_ms = 0;             ///< a whole number of frames
     int shown_index = -1;
     std::uint32_t shown_ms = 0;
     bool dirty = true;    ///< needs a capture and new frames
@@ -168,13 +179,13 @@ class PulseLayer {
   };
   struct RingRef {
     std::size_t ring = 0;
-    std::vector<std::uint16_t> distance;
+    BulkBuffer<std::uint16_t> distance;
     TileBox box;  ///< where that ring can reach in this tile
   };
   struct RoomRef {
     std::size_t room = 0;
-    std::vector<std::uint8_t> coverage;
-    std::vector<std::uint8_t> halo;  ///< the dark keyline under the stroke
+    BulkBuffer<std::uint8_t> coverage;
+    BulkBuffer<std::uint8_t> halo;  ///< the dark keyline under the stroke
     TileBox box;
   };
   struct Ring {
@@ -182,23 +193,23 @@ class PulseLayer {
     float cx = 0, cy = 0;
     bool on = false;
     bool allocated = false;
-    std::vector<RingRef> rings;
-    std::vector<RoomRef> rooms;
+    BulkVector<RingRef> rings;
+    BulkVector<RoomRef> rooms;
   };
   /// One outline tile: a cell of the grid, and every room whose stroke reaches it.
   struct Cell {
     Tile t;
-    lv_area_t rect{};                ///< the grid cell, within the tile area
-    std::vector<std::size_t> rooms;  ///< in config order
-    std::vector<RoomRef> refs;       ///< the pulsing ones, from the last capture
+    lv_area_t rect{};               ///< the grid cell, within the tile area
+    BulkVector<std::size_t> rooms;  ///< in config order
+    BulkVector<RoomRef> refs;       ///< the pulsing ones, from the last capture
     bool gone = false;  ///< wholly under a ring's tile, which draws its strokes: no tile
   };
   struct Segment {
     float ax = 0, ay = 0, bx = 0, by = 0;  // screen px
   };
   struct Room {
-    std::vector<Segment> segments;
-    std::vector<std::size_t> cells;
+    BulkVector<Segment> segments;
+    BulkVector<std::size_t> cells;
     std::uint32_t phase_ms = 0;  ///< a whole number of room steps at the coarsest rate
     int shown_step = -1;
     bool on = false;
@@ -238,9 +249,12 @@ class PulseLayer {
   /// Gives up a room's memory (it stays on, waiting); its cells no other room holds are freed.
   void drop_room(std::size_t room);
   void release(Tile& t);
+  /// The memory port refused one of `t`'s buffers (D-064).
+  void starve(Tile& t);
   bool capture(Tile& t, bool with_pins);
-  void rebuild_ring_geometry(std::size_t i);
-  void rebuild_cell_geometry(Cell& c);
+  /// False when the memory port refused a table (the tile's tables are then incomplete).
+  bool rebuild_ring_geometry(std::size_t i);
+  bool rebuild_cell_geometry(Cell& c);
   void compose_frame(Tile& t, std::uint32_t k, std::uint32_t frame_ms, std::uint16_t* out);
   void finish_job();
   void cancel_stale_job();
@@ -275,27 +289,31 @@ class PulseLayer {
   lv_point_t origin_;
   lv_area_t map_area_{};
   lv_area_t tile_area_{};  ///< map_area_ shrunk to whole kTileAlign blocks
+  // Object lists for the embedder and for hiding (a pointer per pin or room, sized here once)
+  // stay plain vectors: ScreenWidgets hands them out as such.
   std::vector<lv_obj_t*> pins_;
-  std::vector<lv_obj_t*> never_captured_;
-  std::vector<Ring> rings_;
-  std::vector<Room> rooms_;
-  std::vector<Cell> cells_;
+  BulkVector<lv_obj_t*> never_captured_;
+  BulkVector<Ring> rings_;
+  BulkVector<Room> rooms_;
+  BulkVector<Cell> cells_;
   std::vector<lv_obj_t*> ring_img_;
   std::vector<lv_obj_t*> room_marker_;
+  BulkVector<lv_obj_t*> capture_hidden_;  ///< capture()'s scratch, reserved once
   lv_obj_t* outline_box_ = nullptr;
   /// Ring alpha by distance for each of the cycle's ring frames, and its keyline's.
-  std::vector<std::vector<std::uint8_t>> ring_alpha_;
-  std::vector<std::vector<std::uint8_t>> ring_halo_;
-  std::vector<std::uint8_t> room_opa_;                         ///< per room step
-  std::array<std::array<std::uint8_t, 256>, 256> opa_luts_{};  ///< coverage -> alpha, per opa
+  BulkVector<BulkBuffer<std::uint8_t>> ring_alpha_;
+  BulkVector<BulkBuffer<std::uint8_t>> ring_halo_;
+  std::array<std::uint8_t, kCycleMs / kRoomStepMs> room_opa_{};  ///< per room step
+  std::array<std::array<std::uint8_t, 256>, 256> opa_luts_{};    ///< coverage -> alpha, per opa
   std::array<bool, 256> opa_lut_ready_{};
   std::uint32_t divisor_ = 1;
   Job job_;
-  std::vector<Due> due_;
-  std::vector<Due> due_out_;
-  std::vector<std::uint16_t> reference_;  ///< verify_shown()'s scratch frame
+  BulkVector<Due> due_;  ///< reserved once: at most two per tile
+  BulkVector<Due> due_out_;
+  BulkBuffer<std::uint16_t> reference_;  ///< verify_shown()'s scratch frame
   bool defer_ = false;
   bool frozen_ = false;
+  bool paused_ = false;
   lv_timer_t* timer_ = nullptr;
   bool veiled_ = false;
   bool alive_ = true;

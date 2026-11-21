@@ -27,10 +27,15 @@ std::size_t MapBake::bytes_needed() const {
 void MapBake::start() {
   if (started_ || w_ <= 0 || h_ <= 0) return;
   const std::size_t px = static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_);
-  premul_.assign(px, 0);
-  through_.assign(px, 255);
-  scratch_.assign(static_cast<std::size_t>(w_) * kBandRows, 0);
   started_ = true;
+  if (!premul_.assign(px, 0) || !through_.assign(px, 255) ||
+      !scratch_.assign(static_cast<std::size_t>(w_) * kBandRows, 0)) {
+    // The objects stay as they are, exactly as after a bake that gave up.
+    failed_ = true;
+    premul_.release();
+    through_.release();
+    scratch_.release();
+  }
 }
 
 bool MapBake::prepare_step() {
@@ -41,11 +46,13 @@ bool MapBake::prepare_step() {
 
   lv_display_t* disp = lv_obj_get_display(map_);
   lv_display_enable_invalidation(disp, false);  // a counter in LVGL 9.6: paired below
-  std::vector<lv_obj_t*> hidden;
+  BulkVector<lv_obj_t*>& hidden = hidden_;
+  hidden.clear();
   for (lv_obj_t* o : hide_) {
     if (!lv_obj_is_hidden(o)) hidden.push_back(o);
   }
-  std::vector<lv_obj_t*> shown;  // baked objects already hidden are drawn for the bake
+  BulkVector<lv_obj_t*>& shown = shown_;  // baked objects already hidden are drawn for the bake
+  shown.clear();
   for (lv_obj_t* o : draw_) {
     if (lv_obj_is_hidden(o)) shown.push_back(o);
   }
@@ -74,9 +81,9 @@ bool MapBake::prepare_step() {
     // row give the bake up (the objects stay; nothing half-baked reaches a heat image).
     if (++band_failures_ >= kMaxBandFailures) {
       failed_ = true;
-      std::vector<std::uint16_t>().swap(premul_);
-      std::vector<std::uint8_t>().swap(through_);
-      std::vector<std::uint16_t>().swap(scratch_);
+      premul_.release();
+      through_.release();
+      scratch_.release();
       return false;
     }
     return true;
@@ -96,7 +103,9 @@ bool MapBake::prepare_step() {
   next_row_ = y1;
   if (next_row_ >= h_) {
     ready_ = true;
-    scratch_ = {};
+    scratch_.release();
+    BulkVector<lv_obj_t*>().swap(hidden_);
+    BulkVector<lv_obj_t*>().swap(shown_);
   }
   return !ready_;
 }

@@ -59,6 +59,8 @@ struct SourceStatus {
   bool heat_baked = false;
 };
 
+/// The Screen's bulk storage (sprites, the bake, images) comes from the memory port
+/// (hearthmap/ui/memory.h, D-064): install the embedder's before constructing a Screen.
 struct ScreenDeps {
   Fonts fonts;
   EventSink* sink = nullptr;              ///< Required.
@@ -95,6 +97,8 @@ struct PulseCounters {
   std::uint64_t prepare_us = 0;     ///< in prepare_step() (with ScreenDeps::micros)
   std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4, 8: fewer frames to fit memory
   std::uint32_t not_ready = 0;      ///< frames held back: set incomplete, or index out of range
+  std::uint32_t alloc_failures = 0;  ///< sprite buffers the memory port refused (D-064)
+  bool builds_paused = false;        ///< Screen::set_sprite_builds_paused() is in force
 };
 
 /// Raw pointers to the widgets, for tests and for embedders that want to restyle. Owned by the
@@ -186,6 +190,10 @@ class Screen {
   /// each tile shows one fixed frame. Off never captures or composes a sprite (the map bake still
   /// runs), so pulses hold no frame memory and show nothing. Set it before the first update().
   void set_pulse_mode(PulseMode mode);
+  /// Paused, no new sprite frames are built (a set being built is dropped and built again once
+  /// resumed); pulses that already have frames keep playing, the rest wait. The embedder pauses
+  /// when memory runs short, so the animation degrades instead of anything else (D-064).
+  void set_sprite_builds_paused(bool paused);
   /// Shows every pulse frame chosen since the last call through `presenter` (present_check() and
   /// show_tile_frame(); an invalidation where it cannot present). Adds to `tally` when given.
   void show_due_frames(Presenter& presenter, ShownFrames* tally = nullptr);

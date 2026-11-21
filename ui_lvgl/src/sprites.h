@@ -11,8 +11,8 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/sprite_composer.h"
 #include "lvgl.h"
 
@@ -46,20 +46,21 @@ void opaque_image_cover_cb(lv_event_t* e);
 void opaque_tiles_cover_cb(lv_event_t* e);
 
 /// Distance from each pixel centre of a `w x h` block at (x0, y0) to the point (cx, cy), in
-/// 1/16 px, saturated at 65535.
-void distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
-                    float cy, std::vector<std::uint16_t>& out);
+/// 1/16 px, saturated at 65535. False (and `out` empty) when the memory port refuses.
+[[nodiscard]] bool distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h,
+                                  float cx, float cy, BulkBuffer<std::uint16_t>& out);
 
 /// Alpha (0..255) by distance in 1/16 px for an anti-aliased ring of `radius` and `width` at
-/// opacity `opa`; `size` entries.
-void ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
-              std::vector<std::uint8_t>& out);
+/// opacity `opa`; `size` entries. False (and `out` empty) when the memory port refuses.
+[[nodiscard]] bool ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
+                            BulkBuffer<std::uint8_t>& out);
 
 /// Coverage (0..255) of a `width` px line from (ax, ay) to (bx, by) with round caps, anti-aliased,
 /// over each pixel of a `w x h` block at (x0, y0). Combined with what `cov` already holds by
-/// taking the maximum, so a polyline's segments can be accumulated into one mask.
-void add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h,
-                          float ax, float ay, float bx, float by, float width,
-                          std::vector<std::uint8_t>& cov);
+/// taking the maximum, so a polyline's segments can be accumulated into one mask. False (and
+/// `cov` empty) when the memory port refuses.
+[[nodiscard]] bool add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w,
+                                        std::int32_t h, float ax, float ay, float bx, float by,
+                                        float width, BulkBuffer<std::uint8_t>& cov);
 
 }  // namespace hearthmap::ui::detail

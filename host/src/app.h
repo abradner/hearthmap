@@ -18,6 +18,7 @@
 #include "hearthmap/heat_field.h"
 #include "hearthmap/readings.h"
 #include "hearthmap/ui/heat_image.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/view_model.h"
@@ -48,6 +49,9 @@ class App final : public ui::EventSink {
   void refresh();
 
   void set_layer(Layer layer);
+  /// New readings at `now`: the view model and the heat image are rebuilt, as the panel does
+  /// when sensors change.
+  void set_readings(Readings readings, Timestamp now);
   const UiState& ui_state() const { return state_; }
   const ViewModel& view_model() const { return vm_; }
   const ui::Screen& screen() const { return *screen_; }
@@ -68,8 +72,9 @@ class App final : public ui::EventSink {
   std::array<ColourLut, kLayerCount> luts_;
   std::vector<HeatSample> samples_;
   HeatField field_;
-  std::vector<Rgb565> cell_colours_;
-  std::vector<Rgb565> heat_pixels_;
+  // The embedder's bulk storage goes through the memory port too (D-064), as on the panel.
+  ui::BulkVector<Rgb565> cell_colours_;
+  ui::BulkVector<Rgb565> heat_pixels_;
   lv_image_dsc_t heat_dsc_{};
   ViewModel vm_;
   std::optional<Layer> heat_layer_;

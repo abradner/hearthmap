@@ -155,10 +155,14 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
     const float radius =
         static_cast<float>(kRingFrom) + static_cast<float>(kRingTo - kRingFrom) * t;
     const auto opa = static_cast<std::uint8_t>(255.0f * (1.0f - t) + 0.5f);
-    ring_lut(radius, static_cast<float>(kRingWidth), opa, kRingLutSize, ring_alpha_[f]);
-    ring_lut(radius, static_cast<float>(kHaloWidth), halo_opa(opa), kRingLutSize, ring_halo_[f]);
+    // A table the port refuses stays empty, and compose() skips a layer without one.
+    if (!ring_lut(radius, static_cast<float>(kRingWidth), opa, kRingLutSize, ring_alpha_[f]))
+      ++stats_.alloc_failures;
+    if (!ring_lut(radius, static_cast<float>(kHaloWidth), halo_opa(opa), kRingLutSize,
+                  ring_halo_[f]))
+      ++stats_.alloc_failures;
   }
-  room_opa_.resize(kRoomSteps);
+  static_assert(std::tuple_size<decltype(room_opa_)>::value == kRoomSteps, "a step per entry");
   for (std::uint32_t s = 0; s < kRoomSteps; ++s) {
     const float t = static_cast<float>(s) / static_cast<float>(kRoomSteps);
     const float ease = 0.5f - 0.5f * std::cos(6.2831853f * t);
@@ -175,7 +179,10 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
   constexpr std::int32_t pad = kRoomHaloWidth;
   constexpr std::int32_t cell = kCellPx;
   static_assert(cell % theme::kTileAlign == 0 && cell <= 128, "cells must stay presentable");
-  std::map<std::pair<std::int32_t, std::int32_t>, std::size_t> cell_at;
+  using CellKey = std::pair<std::int32_t, std::int32_t>;
+  std::map<CellKey, std::size_t, std::less<CellKey>,
+           BulkAllocator<std::pair<const CellKey, std::size_t>>>
+      cell_at;
   auto cell_rect = [this](std::int32_t cx, std::int32_t cy) {
     const std::int32_t x = tile_area_.x1 + cx * cell, y = tile_area_.y1 + cy * cell;
     return lv_area_t{x, y, x + cell - 1, y + cell - 1};
@@ -276,6 +283,11 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
     make_tile(ring.t, map_, origin_);
     ring_img_.push_back(ring.t.img);
   }
+  // Sized once, so the frame clock and captures never grow them: a due frame per tile at most
+  // (requeue() can add one more), and everything capture() may hide.
+  due_.reserve(2 * (rings_.size() + cells_.size()));
+  due_out_.reserve(due_.capacity());
+  capture_hidden_.reserve(rings_.size() + pins_.size() + 8);
 }
 
 PulseLayer::~PulseLayer() {
@@ -327,17 +339,16 @@ void PulseLayer::size_tile(Tile& t, lv_point_t parent_origin) {
 
 void PulseLayer::release(Tile& t) {
   if (job_.tile == &t) {
-    std::vector<std::uint16_t>().swap(job_.next.px);
+    job_.next.px.release();
     job_ = Job{};
   }
   if (alive_ && t.img != nullptr) {
     lv_obj_set_hidden(t.img, true);
     lv_image_set_src(t.img, nullptr);
   }
-  // Give the memory back (assigning {} would keep the capacity).
-  std::vector<std::uint16_t>().swap(t.below);
-  std::vector<std::uint16_t>().swap(t.full);
-  std::vector<std::uint16_t>().swap(t.shown.px);
+  t.below.release();
+  t.full.release();
+  t.shown.px.release();
   t.shown.count = 0;
   t.shown.complete = false;
   t.dsc.data = nullptr;
@@ -361,20 +372,18 @@ std::size_t PulseLayer::tile_frame_bytes(const Tile& t, bool ring) const {
 
 std::size_t PulseLayer::bytes_in_use(bool with_rooms) const {
   // What the sprites hold now: captures, tables, frame sets, and the set being composed.
-  auto held = [](const Tile& t) {
-    return (t.below.capacity() + t.full.capacity() + t.shown.px.capacity()) * 2U;
-  };
-  std::size_t n = job_.next.px.capacity() * 2U;
+  auto held = [](const Tile& t) { return t.below.bytes() + t.full.bytes() + t.shown.px.bytes(); };
+  std::size_t n = job_.next.px.bytes();
   for (const Ring& r : rings_) {
     if (!r.allocated) continue;
     n += held(r.t);
-    for (const RingRef& ref : r.rings) n += ref.distance.capacity() * 2U;
-    for (const RoomRef& ref : r.rooms) n += ref.coverage.capacity() + ref.halo.capacity();
+    for (const RingRef& ref : r.rings) n += ref.distance.bytes();
+    for (const RoomRef& ref : r.rooms) n += ref.coverage.bytes() + ref.halo.bytes();
   }
   for (const Cell& c : cells_) {
-    if (!with_rooms || (!cell_live(c) && c.t.shown.px.capacity() == 0)) continue;
+    if (!with_rooms || (!cell_live(c) && c.t.shown.px.empty())) continue;
     n += held(c.t);
-    for (const RoomRef& ref : c.refs) n += ref.coverage.capacity() + ref.halo.capacity();
+    for (const RoomRef& ref : c.refs) n += ref.coverage.bytes() + ref.halo.bytes();
   }
   return n;
 }
@@ -466,8 +475,8 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
   } else if (r.allocated) {
     release(r.t);
     r.allocated = false;
-    std::vector<RingRef>().swap(r.rings);
-    std::vector<RoomRef>().swap(r.rooms);
+    BulkVector<RingRef>().swap(r.rings);
+    BulkVector<RoomRef>().swap(r.rooms);
     fit_cells_under(r.t.area);  // the cells it covered draw their strokes again
     admit_waiting();
   }
@@ -545,7 +554,7 @@ void PulseLayer::mark_dirty(const lv_area_t& area) {
 void PulseLayer::cancel_stale_job() {
   // A set being composed from captures that are now out of date is dropped and started again.
   if (job_.tile != nullptr && job_.tile->dirty) {
-    std::vector<std::uint16_t>().swap(job_.next.px);
+    job_.next.px.release();
     job_ = Job{};
   }
 }
@@ -598,12 +607,16 @@ void PulseLayer::update_visibility() {
 // two is drawn over the pulses.
 bool PulseLayer::capture(Tile& t, bool with_pins) {
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  std::vector<std::uint16_t>& out = with_pins ? t.full : t.below;
-  if (out.size() != px) out.assign(px, 0);
+  BulkBuffer<std::uint16_t>& out = with_pins ? t.full : t.below;
+  if (!out.resize(px)) {
+    starve(t);
+    return false;
+  }
   lv_display_t* disp = lv_obj_get_display(map_);
   lv_display_enable_invalidation(disp, false);  // a counter in LVGL 9.6: paired below
   // Pulses are never part of what lies under a pulse.
-  std::vector<lv_obj_t*> hidden;
+  BulkVector<lv_obj_t*>& hidden = capture_hidden_;
+  hidden.clear();
   for (Ring& r : rings_) {
     if (!lv_obj_is_hidden(r.t.img) && intersects(r.t.area, t.area)) hidden.push_back(r.t.img);
   }
@@ -625,15 +638,12 @@ bool PulseLayer::capture(Tile& t, bool with_pins) {
   return ok;
 }
 
-void PulseLayer::rebuild_ring_geometry(std::size_t i) {
+bool PulseLayer::rebuild_ring_geometry(std::size_t i) {
   Ring& r = rings_[i];
   r.rings.clear();
   // Its own ring first, so a cap on layers can only drop another ring's overlap.
-  std::vector<std::size_t> order{i};
-  for (std::size_t j = 0; j < rings_.size(); ++j) {
-    if (j != i) order.push_back(j);
-  }
-  for (std::size_t j : order) {
+  for (std::size_t n = 0; n < rings_.size(); ++n) {
+    const std::size_t j = n == 0 ? i : (n <= i ? n - 1 : n);
     const Ring& o = rings_[j];
     if (!o.on || !o.allocated) continue;
     const lv_area_t reach{
@@ -643,7 +653,9 @@ void PulseLayer::rebuild_ring_geometry(std::size_t i) {
     RingRef ref;
     ref.ring = j;
     ref.box = local_box(reach, r.t.area);
-    distance_table(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, o.cx, o.cy, ref.distance);
+    if (!distance_table(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, o.cx, o.cy, ref.distance)) {
+      return false;
+    }
     r.rings.push_back(std::move(ref));
   }
   r.rooms.clear();
@@ -658,10 +670,12 @@ void PulseLayer::rebuild_ring_geometry(std::size_t i) {
                           static_cast<std::int32_t>(std::max(e.ax, e.bx)) + kRoomHaloWidth,
                           static_cast<std::int32_t>(std::max(e.ay, e.by)) + kRoomHaloWidth};
       if (!intersects(seg, r.t.area)) continue;
-      add_segment_coverage(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, e.ax, e.ay, e.bx, e.by,
-                           static_cast<float>(kRoomWidth), ref.coverage);
-      add_segment_coverage(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, e.ax, e.ay, e.bx, e.by,
-                           static_cast<float>(kRoomHaloWidth), ref.halo);
+      if (!add_segment_coverage(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, e.ax, e.ay, e.bx, e.by,
+                                static_cast<float>(kRoomWidth), ref.coverage) ||
+          !add_segment_coverage(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, e.ax, e.ay, e.bx, e.by,
+                                static_cast<float>(kRoomHaloWidth), ref.halo)) {
+        return false;
+      }
       lv_area_t b = seg;
       if (clip(b, r.t.area)) {
         const TileBox lb = local_box(b, r.t.area);
@@ -677,9 +691,10 @@ void PulseLayer::rebuild_ring_geometry(std::size_t i) {
     }
     if (!ref.coverage.empty()) r.rooms.push_back(std::move(ref));
   }
+  return true;
 }
 
-void PulseLayer::rebuild_cell_geometry(Cell& c) {
+bool PulseLayer::rebuild_cell_geometry(Cell& c) {
   c.refs.clear();
   // Only rooms listed for the cell can reach it: their strokes are what made it a cell.
   for (std::size_t k : c.rooms) {
@@ -693,14 +708,17 @@ void PulseLayer::rebuild_cell_geometry(Cell& c) {
                           static_cast<std::int32_t>(std::max(seg.ax, seg.bx)) + kRoomHaloWidth,
                           static_cast<std::int32_t>(std::max(seg.ay, seg.by)) + kRoomHaloWidth};
       if (!intersects(box, c.t.area)) continue;
-      add_segment_coverage(c.t.area.x1, c.t.area.y1, c.t.w, c.t.h, seg.ax, seg.ay, seg.bx, seg.by,
-                           static_cast<float>(kRoomWidth), ref.coverage);
-      add_segment_coverage(c.t.area.x1, c.t.area.y1, c.t.w, c.t.h, seg.ax, seg.ay, seg.bx, seg.by,
-                           static_cast<float>(kRoomHaloWidth), ref.halo);
+      if (!add_segment_coverage(c.t.area.x1, c.t.area.y1, c.t.w, c.t.h, seg.ax, seg.ay, seg.bx,
+                                seg.by, static_cast<float>(kRoomWidth), ref.coverage) ||
+          !add_segment_coverage(c.t.area.x1, c.t.area.y1, c.t.w, c.t.h, seg.ax, seg.ay, seg.bx,
+                                seg.by, static_cast<float>(kRoomHaloWidth), ref.halo)) {
+        return false;
+      }
     }
     ref.box = TileBox{0, 0, c.t.w, c.t.h};
     if (!ref.coverage.empty()) c.refs.push_back(std::move(ref));
   }
+  return true;
 }
 
 bool PulseLayer::cell_active(const Cell& c) const {
@@ -772,7 +790,7 @@ void PulseLayer::fit_cell(Cell& c) {
                     want.y2 == c.t.area.y2;
   if (gone == c.gone && (gone || same)) return;
   release(c.t);  // frames of the old size are no use
-  std::vector<RoomRef>().swap(c.refs);
+  BulkVector<RoomRef>().swap(c.refs);
   c.gone = gone;
   if (gone) return;
   c.t.area = want;
@@ -797,7 +815,7 @@ void PulseLayer::drop_room(std::size_t room) {
     Cell& c = cells_[i];
     if (cell_active(c)) continue;  // another room still pulses through it
     release(c.t);
-    std::vector<RoomRef>().swap(c.refs);
+    BulkVector<RoomRef>().swap(c.refs);
   }
   fit_cells(r);  // the cells it shared shrink to the rooms left
   mark_dirty(r.extent);
@@ -852,7 +870,7 @@ void PulseLayer::compose_frame(Tile& t, std::uint32_t k, std::uint32_t frame_ms,
   Overlay overlays[32];
   RingLayer layers[32];
   std::size_t no = 0, nr = 0;
-  auto add_rooms = [&](const std::vector<RoomRef>& refs) {
+  auto add_rooms = [&](const BulkVector<RoomRef>& refs) {
     for (const RoomRef& ref : refs) {
       if (no + 2 > 32) break;
       const Room& room = rooms_[ref.room];
@@ -919,7 +937,7 @@ void PulseLayer::finish_job() {
   // The new set replaces the old whole; the descriptor moves to it before the old is freed.
   job_.next.complete = true;
   std::swap(t.shown, job_.next);
-  std::vector<std::uint16_t>().swap(job_.next.px);
+  job_.next.px.release();
   job_ = Job{};
   t.hidden = false;
   int index = frame_index(t, frozen_ ? 0U : lv_tick_get());
@@ -942,8 +960,29 @@ void PulseLayer::finish_job() {
   }
 }
 
+void PulseLayer::starve(Tile& t) {
+  // The port refused a buffer for this tile: it gives back what it holds and stops showing (its
+  // captures may already be newer than its frames), and waits for the next change under it
+  // rather than asking again at once.
+  ++stats_.alloc_failures;
+  release(t);
+  t.dirty = false;
+  update_visibility();
+}
+
+void PulseLayer::set_paused(bool paused) {
+  if (paused == paused_) return;
+  paused_ = paused;
+  if (paused && job_.tile != nullptr) {
+    // The set being composed is given back; its tile is built again once resumed.
+    job_.tile->dirty = true;
+    job_.next.px.release();
+    job_ = Job{};
+  }
+}
+
 bool PulseLayer::prepare_step() {
-  if (!alive_) return false;
+  if (!alive_ || paused_) return false;
   struct Timed {
     PulseLayer& self;
     std::uint32_t t0;
@@ -988,12 +1027,13 @@ bool PulseLayer::prepare_step() {
       return stats().pending;
     }
     const bool ring = is_ring_tile(&t);
+    bool tables = true;
     if (ring) {
       for (std::size_t i = 0; i < rings_.size(); ++i) {
-        if (&rings_[i].t == &t) rebuild_ring_geometry(i);
+        if (&rings_[i].t == &t) tables = rebuild_ring_geometry(i);
       }
     } else if (Cell* c = cell_of(&t)) {
-      rebuild_cell_geometry(*c);
+      tables = rebuild_cell_geometry(*c);
     }
     const std::uint32_t base = ring ? kRingFrameMs : kRoomStepMs;
     job_.next.frame_ms = base * divisor_;
@@ -1001,7 +1041,10 @@ bool PulseLayer::prepare_step() {
     // Filled with a pattern no frame holds, so a frame shown before it is composed shows.
     const std::size_t words =
         static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * job_.next.count;
-    job_.next.px.assign(words + 2 * kGuardWords, kUncomposed);
+    if (!tables || !job_.next.px.assign(words + 2 * kGuardWords, kUncomposed)) {
+      starve(t);
+      return stats().pending;
+    }
     std::fill_n(job_.next.px.begin(), kGuardWords, kCanary);
     std::fill_n(job_.next.px.end() - static_cast<std::ptrdiff_t>(kGuardWords), kGuardWords,
                 kCanary);
@@ -1119,7 +1162,7 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
   // being recaptured (its old set plays meanwhile, from captures that are being replaced).
   if (!t.dirty && job_.tile != &t && !t.below.empty() && !t.full.empty()) {
     const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(p - b) / px);
-    reference_.assign(px, 0);
+    if (!reference_.resize(px)) return fail("no memory to compose a reference frame");
     compose_frame(t, k, t.shown.frame_ms, reference_.data());
     if (!std::equal(reference_.begin(), reference_.end(), p)) {
       return fail("a shown frame differs from the same frame composed again");
@@ -1155,7 +1198,7 @@ bool PulseLayer::verify_shown(const char** why) {
   return true;
 }
 
-const std::vector<PulseLayer::Due>& PulseLayer::take_due() {
+const BulkVector<PulseLayer::Due>& PulseLayer::take_due() {
   due_out_.clear();
   std::swap(due_out_, due_);
   return due_out_;
@@ -1188,6 +1231,7 @@ PulseStats PulseLayer::stats() const {
   s.rooms_animated = 0;
   s.frame_divisor = divisor_;
   s.pending = job_.tile != nullptr;
+  s.paused = paused_;
   for (const Ring& r : rings_) {
     if (!r.allocated) continue;
     s.rings_shown += (r.on && r.t.shown.count > 0) ? 1U : 0U;
