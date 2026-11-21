@@ -63,10 +63,8 @@ void PerfStats::refresh_ready(std::uint32_t now_us, std::uint32_t now_ms) {
 
 void PerfStats::touch_read(std::uint32_t now_ms) {
   ++w_.touch_reads;
-  if (!read_pending_) {
-    read_pending_ = true;
-    read_ms_ = now_ms;
-  }
+  read_pending_ = true;
+  read_ms_ = now_ms;
 }
 
 void PerfStats::lvgl_pressed(std::uint32_t now_ms) {
@@ -84,10 +82,10 @@ void PerfStats::lvgl_clicked(std::uint32_t now_ms) {
   click_ms_ = now_ms;
 }
 
-void PerfStats::events_applied(std::uint32_t now_ms) {
+void PerfStats::events_applied(std::uint32_t now_ms, bool changed) {
   if (!click_pending_) return;
   click_pending_ = false;
-  if (now_ms - click_ms_ <= kAckTimeoutMs) ack_pending_ = true;
+  if (changed && now_ms - click_ms_ <= kAckTimeoutMs) ack_pending_ = true;
 }
 
 bool PerfStats::due(std::uint32_t now_ms) {

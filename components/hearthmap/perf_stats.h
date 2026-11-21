@@ -66,12 +66,15 @@ class PerfStats {
   void flush_finish(std::uint32_t now_us, std::uint32_t px);
   void refresh_ready(std::uint32_t now_us, std::uint32_t now_ms);
 
-  /// Touch and taps.
+  /// Touch and taps. touch_read() is one new contact: it starts that contact's timing, replacing
+  /// any earlier contact LVGL never saw pressed.
   void touch_read(std::uint32_t now_ms);
   void lvgl_pressed(std::uint32_t now_ms);
   void lvgl_clicked(std::uint32_t now_ms);
-  /// The component applied the queued UI events and updated the screen.
-  void events_applied(std::uint32_t now_ms);
+  /// The component applied the queued UI events and updated the screen; `changed` says whether
+  /// that update changed anything on screen (a tap on empty map or on the shown tab does not,
+  /// and is then not timed: the next refresh would be some pulse, not its answer).
+  void events_applied(std::uint32_t now_ms, bool changed);
 
   /// True once `window_ms` has passed since the window started (the first call starts it).
   bool due(std::uint32_t now_ms);

@@ -331,11 +331,12 @@ void HearthmapComponent::frame_slice_() {
   const bool due = !this->viewed_ || touched || connected != this->connected_ ||
                    since >= this->refresh_interval_ms_ ||
                    (this->dirty_ && since >= this->min_redraw_interval_ms_);
+  const std::size_t writes_before = this->screen_->writes();
   if (due) {
     this->refresh_view_(start, connected);
     this->show_view_();
   }
-  if (touched) this->perf_.events_applied(millis());
+  if (touched) this->perf_.events_applied(millis(), this->screen_->writes() != writes_before);
   const uint32_t heat_t0 = micros();
   // Counts this call's work when it returns, whichever way it returns.
   struct OwnTimer {

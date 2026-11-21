@@ -78,7 +78,9 @@ struct Rig {
   std::unique_ptr<Screen> screen;
   HeaderText header{"09:00", "House 21.4\xC2\xB0   52% RH"};
 
-  Rig() {
+  Rig() { init(); }
+  explicit Rig(Config c) : config(std::move(c)) { init(); }
+  void init() {
     heat_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     heat_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
     heat_dsc.header.w = static_cast<std::uint32_t>(raster.width());
@@ -1140,4 +1142,31 @@ TEST_CASE("a swapped heat buffer is drawn from the new pixels") {
   rig.screen->invalidate_heat();
   CHECK(px_at(5) == 0x07E0);
   CHECK(px_at(700) == 0x07E0);  // every strip, not just the first
+}
+
+TEST_CASE("a diagonal wall's pulse is cut into small pieces, so it never invalidates the room") {
+  Config c = test::small_config();
+  // A valid triangle whose hypotenuse runs 432 x 360 px across the map.
+  c.rooms[0].polygon = {{0.0, 0.0}, {0.5, 0.0}, {0.5, 0.5}};
+  Rig rig(c);
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.rooms[0].pulse = Severity::Danger;
+  rig.show(vm);
+  lv_obj_update_layout(rig.display.screen());
+  const auto& w = rig.w();
+  const std::uint32_t pieces = lv_obj_get_child_count(w.room_pulse[0]);
+  CHECK(pieces == 2 + (432 + 47) / 48);  // two axis-aligned edges, the diagonal in 48 px pieces
+  std::uint64_t area = 0;
+  for (std::uint32_t i = 0; i < pieces; ++i) {
+    lv_area_t a;
+    lv_obj_get_coords(lv_obj_get_child(w.room_pulse[0], static_cast<std::int32_t>(i)), &a);
+    const std::int32_t lo = std::min(lv_area_get_width(&a), lv_area_get_height(&a));
+    const std::int32_t hi = std::max(lv_area_get_width(&a), lv_area_get_height(&a));
+    // A thin strip (an axis-aligned wall), or a piece no bigger than a 48 px run plus the width
+    // and caps on each axis.
+    CHECK((lo <= 11 || hi <= 48 + 11));
+    area += lv_area_get_size(&a);
+  }
+  // Under half the triangle; one object for the hypotenuse alone covered 443 x 371 px.
+  CHECK(area < 432U * 360U / 2U / 2U);
 }

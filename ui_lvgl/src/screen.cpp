@@ -54,6 +54,7 @@ constexpr int kPulseTo = 50;  // largest ring radius: the holder's half size
 constexpr std::uint32_t kRoomCycleMs = 2800;
 constexpr lv_opa_t kRoomSteps[] = {255, 172, 89, 172};
 constexpr int kRoomPulseWidth = 5;
+constexpr std::int32_t kEdgePieceMax = 48;  // longest diagonal piece of a pulse outline, px
 // The heat image's strips (D-052), and how fast they come back after it caught up.
 constexpr std::int32_t kHeatStrips = 16;
 constexpr std::uint32_t kRevealStepMs = 30;
@@ -711,12 +712,24 @@ struct Screen::Impl {
     heat_data = heat_src->data;
   }
 
+  /// Line objects for the edge a-b: one when it is axis-aligned (its box is a thin strip
+  /// already), else enough that no piece is longer than kEdgePieceMax along either axis.
+  static std::size_t edge_pieces(lv_point_precise_t a, lv_point_precise_t b) {
+    const auto dx = std::abs(static_cast<std::int32_t>(b.x) - static_cast<std::int32_t>(a.x));
+    const auto dy = std::abs(static_cast<std::int32_t>(b.y) - static_cast<std::int32_t>(a.y));
+    if (dx == 0 || dy == 0) return 1;
+    const std::int32_t longer = std::max(dx, dy);
+    return static_cast<std::size_t>((longer + kEdgePieceMax - 1) / kEdgePieceMax);
+  }
+
   // One hidden container per room at the room's bounding box (it carries the pulse colour, for
   // embedders and tests), holding one line object per edge.
   void build_room_pulses() {
     constexpr std::int32_t pad = kRoomPulseWidth;  // room for the width and the round caps
     std::size_t edges = 0;
-    for (const auto& pts : room_points) edges += pts.size() > 1 ? pts.size() - 1 : 0;
+    for (const auto& pts : room_points) {
+      for (std::size_t k = 0; k + 1 < pts.size(); ++k) edges += edge_pieces(pts[k], pts[k + 1]);
+    }
     edge_points.assign(edges, {});
     room_edges.assign(config.rooms.size(), {});
     room_step.assign(config.rooms.size(), -1);
@@ -736,29 +749,42 @@ struct Screen::Impl {
       lv_obj_set_pos(box, x1, y1);
       lv_obj_set_size(box, x2 - x1 + 1, y2 - y1 + 1);
       lv_obj_set_style_line_opa(box, LV_OPA_COVER, 0);
-      for (std::size_t k = 0; k + 1 < pts.size(); ++k, ++e) {
-        const auto ax = static_cast<std::int32_t>(pts[k].x);
-        const auto ay = static_cast<std::int32_t>(pts[k].y);
-        const auto bx = static_cast<std::int32_t>(pts[k + 1].x);
-        const auto by = static_cast<std::int32_t>(pts[k + 1].y);
-        const std::int32_t ox = std::min(ax, bx) - pad;
-        const std::int32_t oy = std::min(ay, by) - pad;
-        auto& ep = edge_points[e];
-        ep[0].x = static_cast<lv_value_precise_t>(ax - ox);
-        ep[0].y = static_cast<lv_value_precise_t>(ay - oy);
-        ep[1].x = static_cast<lv_value_precise_t>(bx - ox);
-        ep[1].y = static_cast<lv_value_precise_t>(by - oy);
-        lv_obj_t* line = lv_line_create(box);
-        lv_obj_remove_style_all(line);
-        lv_obj_set_clickable(line, false);
-        lv_obj_set_pos(line, ox - x1, oy - y1);
-        lv_line_set_points(line, ep.data(), 2);
-        // The object ends at its farthest point; the width and cap need `pad` more.
-        lv_obj_set_size(line, std::abs(bx - ax) + 2 * pad + 1, std::abs(by - ay) + 2 * pad + 1);
-        lv_obj_set_style_line_width(line, kRoomPulseWidth, 0);
-        lv_obj_set_style_line_rounded(line, true, 0);
-        lv_obj_set_style_line_opa(line, LV_OPA_COVER, 0);
-        room_edges[r].push_back(line);
+      for (std::size_t k = 0; k + 1 < pts.size(); ++k) {
+        const auto sx = static_cast<std::int32_t>(pts[k].x);
+        const auto sy = static_cast<std::int32_t>(pts[k].y);
+        const auto tx = static_cast<std::int32_t>(pts[k + 1].x);
+        const auto ty = static_cast<std::int32_t>(pts[k + 1].y);
+        // A diagonal edge's box covers the room's interior, so it is cut into pieces of at most
+        // kEdgePieceMax px along its longer axis; only its two end pieces keep round caps (the
+        // corners), so no overlap is blended twice in the middle.
+        const std::size_t n = edge_pieces(pts[k], pts[k + 1]);
+        for (std::size_t j = 0; j < n; ++j, ++e) {
+          const auto jj = static_cast<std::int32_t>(j);
+          const auto nn = static_cast<std::int32_t>(n);
+          const std::int32_t ax = sx + (tx - sx) * jj / nn;
+          const std::int32_t ay = sy + (ty - sy) * jj / nn;
+          const std::int32_t bx = sx + (tx - sx) * (jj + 1) / nn;
+          const std::int32_t by = sy + (ty - sy) * (jj + 1) / nn;
+          const bool rounded = j == 0 || j + 1 == n;
+          const std::int32_t ox = std::min(ax, bx) - pad;
+          const std::int32_t oy = std::min(ay, by) - pad;
+          auto& ep = edge_points[e];
+          ep[0].x = static_cast<lv_value_precise_t>(ax - ox);
+          ep[0].y = static_cast<lv_value_precise_t>(ay - oy);
+          ep[1].x = static_cast<lv_value_precise_t>(bx - ox);
+          ep[1].y = static_cast<lv_value_precise_t>(by - oy);
+          lv_obj_t* line = lv_line_create(box);
+          lv_obj_remove_style_all(line);
+          lv_obj_set_clickable(line, false);
+          lv_obj_set_pos(line, ox - x1, oy - y1);
+          lv_line_set_points(line, ep.data(), 2);
+          // The object ends at its farthest point; the width and cap need `pad` more.
+          lv_obj_set_size(line, std::abs(bx - ax) + 2 * pad + 1, std::abs(by - ay) + 2 * pad + 1);
+          lv_obj_set_style_line_width(line, kRoomPulseWidth, 0);
+          lv_obj_set_style_line_rounded(line, rounded, 0);
+          lv_obj_set_style_line_opa(line, LV_OPA_COVER, 0);
+          room_edges[r].push_back(line);
+        }
       }
       lv_obj_set_hidden(box, true);
       w.room_pulse.push_back(box);

@@ -160,14 +160,14 @@ int main() {
   p.refresh_ready(90000, 90);
 
   // Touch: read -> press latency, then click -> applied -> drawn.
-  p.touch_read(100);
-  p.touch_read(130);              // the same contact read again: latency from the first read
+  p.touch_read(100);              // a contact LVGL never saw pressed...
+  p.touch_read(130);              // ...replaced by the next contact: timed from this one
   p.lvgl_pressed(180);
   p.lvgl_clicked(200);
   p.refresh_start(205000);        // a refresh before the click was applied: not its ack
   p.flush_start(205000); p.flush_finish(206000, 10);
   p.refresh_ready(207000, 207);
-  p.events_applied(260);
+  p.events_applied(260, true);
   p.refresh_start(300000);
   p.flush_start(300000); p.flush_finish(301000, 10);
   p.refresh_ready(350000, 350);   // drawn 150 ms after the click
@@ -184,7 +184,7 @@ int main() {
   CHECK(w.flushed_px == 5020);
   CHECK(w.invalidated_px == 5000);
   CHECK(w.touch_reads == 2 && w.presses == 1 && w.clicks == 1);
-  CHECK(w.read_to_press_max_ms == 80);
+  CHECK(w.read_to_press_max_ms == 50);
   CHECK(w.acks == 1 && w.click_to_ack_max_ms == 150);
 
   // The next window starts empty; a click never applied is never acked; one drawn too late is
@@ -194,12 +194,16 @@ int main() {
   p.lvgl_clicked(7000);
   p.refresh_start(7100000); p.flush_start(7100000); p.flush_finish(7101000, 1);
   p.refresh_ready(7102000, 7102);
+  p.lvgl_clicked(7500);           // a click that changed nothing on screen: not timed
+  p.events_applied(7501, false);
+  p.refresh_start(7600000); p.flush_start(7600000); p.flush_finish(7601000, 1);
+  p.refresh_ready(7602000, 7602);
   p.lvgl_clicked(8000);
-  p.events_applied(8001);
+  p.events_applied(8001, true);
   p.refresh_start(11500000); p.flush_start(11500000); p.flush_finish(11501000, 1);
   p.refresh_ready(11502000, 11502);  // 3502 ms after the click: beyond kAckTimeoutMs
   w = p.take(11600);
-  CHECK(w.loops == 0 && w.refreshes == 2);
+  CHECK(w.loops == 0 && w.refreshes == 3);
   CHECK(w.acks == 0 && w.click_to_ack_max_ms == 0);
 
   // The log line: rates per second and the share of the window spent refreshing.
