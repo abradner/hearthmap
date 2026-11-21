@@ -174,6 +174,7 @@ void HearthmapComponent::subscribe_() {
 
 void HearthmapComponent::loop() {
   this->perf_.loop_start(micros());
+  this->check_sprite_canaries_();
   this->log_perf_();
   switch (this->phase_) {
     case Phase::Booting: {
@@ -557,6 +558,22 @@ void TouchProbe::touch(touchscreen::TouchPoint /*tp*/) {
 }
 #endif
 
+// Once a second: every pulse frame set's guard words, so a write outside a set is reported where
+// it happened rather than as a corrupt picture (D-053). A few words per set.
+void HearthmapComponent::check_sprite_canaries_() {
+  const uint32_t now = millis();
+  if (!this->screen_ || now - this->last_canary_check_ms_ < 1000U) return;
+  this->last_canary_check_ms_ = now;
+  const uint32_t bad = this->screen_->pulse_canary_failures();
+  if (bad == 0) return;
+  this->canary_failures_ += bad;
+  if (!this->canary_logged_) {
+    this->canary_logged_ = true;
+    ESP_LOGE(TAG, "pulse sprites: %u frame set(s) written outside their bounds",
+             static_cast<unsigned>(bad));
+  }
+}
+
 void HearthmapComponent::log_perf_() {
   const uint32_t now = millis();
   if (!this->perf_.due(now)) return;
@@ -567,6 +584,9 @@ void HearthmapComponent::log_perf_() {
     w.sprite_dropped = c.dropped - this->last_sprite_dropped_;
     w.sprite_kib = static_cast<uint32_t>(c.tile_bytes / 1024U);
     w.sprite_divisor = c.frame_divisor;
+    w.sprite_canary = this->canary_failures_;
+    w.sprite_not_ready = c.not_ready - this->last_sprite_not_ready_;
+    this->last_sprite_not_ready_ = c.not_ready;
     w.sprite_frame_us = static_cast<uint32_t>(c.frame_us - this->last_sprite_frame_us_);
     w.sprite_prepare_us = static_cast<uint32_t>(c.prepare_us - this->last_sprite_prepare_us_);
     this->last_sprite_frame_us_ = c.frame_us;

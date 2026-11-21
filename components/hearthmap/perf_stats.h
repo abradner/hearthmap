@@ -59,6 +59,8 @@ struct PerfWindow {
   /// Capturing sprite backgrounds and composing their frames (prepare steps, inside hm heat).
   std::uint32_t sprite_prepare_us = 0;
   std::uint32_t sprite_divisor = 1;     ///< frames per cycle divided by this to fit memory
+  std::uint32_t sprite_not_ready = 0;   ///< frames held back in the window (set incomplete)
+  std::uint32_t sprite_canary = 0;      ///< frame sets found written out of bounds, since boot
   std::uint32_t presented = 0;          ///< pulse frames put on the panel directly (D-058)
   std::uint32_t present_fallbacks = 0;  ///< pulse frames shown by invalidating instead
   const char* present_block = "none";   ///< the most common reason a present was refused

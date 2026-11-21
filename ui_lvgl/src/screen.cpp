@@ -669,6 +669,7 @@ struct Screen::Impl {
     detail::PulseBudget budget;
     if (deps.pulse_memory_bytes != 0) budget.memory_bytes = deps.pulse_memory_bytes;
     budget.micros = deps.micros;
+    budget.min_divisor = deps.pulse_min_divisor;
     pulses = std::make_unique<detail::PulseLayer>(
         w.map, lv_point_t{a.x, a.y}, lv_point_t{a.width, a.height}, room_points, centres, w.pin,
         budget,
@@ -1645,7 +1646,16 @@ PulseCounters Screen::pulse_counters() const {
   c.frame_us = s.frame_us;
   c.prepare_us = s.prepare_us;
   c.frame_divisor = s.frame_divisor;
+  c.not_ready = s.not_ready;
   return c;
+}
+
+bool Screen::verify_pulse_frames(const char** why) {
+  return !impl_->pulses || impl_->pulses->verify_shown(why);
+}
+
+std::uint32_t Screen::pulse_canary_failures() const {
+  return impl_->pulses ? impl_->pulses->check_canaries() : 0U;
 }
 
 std::size_t Screen::writes() const {

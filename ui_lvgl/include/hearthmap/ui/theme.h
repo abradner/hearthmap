@@ -56,7 +56,9 @@ inline constexpr Palette kHeatPalette{Rgb888{30, 35, 41}, Rgb888{42, 120, 214},
 inline constexpr int kPulseRingFrom = 26;  ///< danger ring radius at the start of a cycle, px
 inline constexpr int kPulseRingTo = 52;    ///< and at the end, where it has faded out
 inline constexpr int kPulseRingWidth = 4;
-inline constexpr std::uint32_t kPulseRingCycleMs = 1600;
+/// The spec's 1.6 s, shortened to 1584 ms so whole frames of 33 ms (48 a cycle, 30 a second) and
+/// every coarser rate the sprites may fall back to divide it (D-053).
+inline constexpr std::uint32_t kPulseRingCycleMs = 1584;
 inline constexpr int kRoomPulseWidth = 5;                 ///< room outline width, px
 inline constexpr std::uint32_t kRoomPulseCycleMs = 2800;  ///< opacity 0.35 -> 1 -> 0.35
 inline constexpr std::uint8_t kRoomPulseMinOpa = 89;      ///< 0.35 * 255

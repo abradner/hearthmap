@@ -38,6 +38,7 @@ namespace hearthmap::ui::detail {
 struct PulseBudget {
   std::size_t memory_bytes = 2U * 1024U * 1024U;  ///< frames, captures and tables, all pulses
   std::uint32_t (*micros)() = nullptr;  ///< a microsecond clock to time captures and composing
+  std::uint32_t min_divisor = 1;        ///< keep at most 1/N of the frames (1, 2, 4 or 8)
 };
 
 struct PulseStats {
@@ -47,7 +48,8 @@ struct PulseStats {
   std::size_t tile_bytes = 0;       ///< Memory held by tiles, frames and tables now.
   std::size_t rings_shown = 0;      ///< Rings with frames now.
   std::size_t rooms_animated = 0;   ///< Room outlines with frames now.
-  std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4: fewer frames to fit memory.
+  std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4, 8: fewer frames to fit memory
+  std::uint32_t not_ready = 0;      ///< frames not shown: their set incomplete, or out of range.
   bool pending = false;             ///< prepare_step() has work.
   std::uint64_t frame_us = 0;       ///< Time in tick() (choosing and showing frames).
   std::uint64_t prepare_us = 0;     ///< Time in prepare_step() (captures and composing frames).
@@ -56,9 +58,12 @@ struct PulseStats {
 class PulseLayer {
  public:
   static constexpr std::uint32_t kCycleMs = theme::kPulseRingCycleMs;  ///< rings and rooms
-  static constexpr std::uint32_t kRingFrameMs = 32;  ///< 50 frames per cycle: 31 frames/s
-  static constexpr std::uint32_t kRoomStepMs = 64;   ///< 25 steps per cycle
-  static constexpr std::uint32_t kTickMs = 16;       ///< ESPHome's refresh period
+  static constexpr std::uint32_t kRingFrameMs = 33;  ///< 48 frames per cycle: 30 frames/s
+  static constexpr std::uint32_t kRoomStepMs = 66;   ///< 24 steps per cycle
+  /// Frames per cycle may be divided by 2, 4 or 8 to fit memory. Every divided frame time must
+  /// still divide the cycle, or the clock would ask for a frame past the end of a set.
+  static constexpr std::uint32_t kMaxDivisor = 8;
+  static constexpr std::uint32_t kTickMs = 16;  ///< ESPHome's refresh period
   static constexpr std::uint32_t kMaxInvalidationsPerTick = 20;
   static constexpr int kRingFrom = theme::kPulseRingFrom;
   static constexpr int kRingTo = theme::kPulseRingTo;
@@ -119,14 +124,31 @@ class PulseLayer {
   void requeue(const Due& d) { due_.push_back(d); }
 
   PulseStats stats() const;
+  /// Every tile that LVGL or a presenter may show points at a whole frame of a complete set of
+  /// its own size. False, with the first problem in `why`, otherwise. For tests: walks all tiles.
+  bool verify_shown(const char** why);
+  /// Frame sets whose canaries have changed (something wrote outside its frames), now.
+  std::uint32_t check_canaries() const;
+  /// What a frame not composed yet holds, so a test can tell one shown by mistake.
+  static constexpr std::uint16_t kUncomposed = 0xF81F;
   /// The LVGL objects must not be touched any more (their parent was deleted).
   void forget_objects();
 
  private:
+  /// Canary words either side of every frame set's frames, checked by check_canaries().
+  static constexpr std::size_t kGuardWords = 16;
+  static constexpr std::uint16_t kCanary = 0xA5C3;
   struct FrameSet {
-    std::vector<std::uint16_t> px;  ///< `count` frames of w x h, back to back
+    /// kGuardWords canaries, `count` frames of w x h back to back, kGuardWords canaries.
+    std::vector<std::uint16_t> px;
+    std::uint16_t* frames() { return px.data() + kGuardWords; }
+    const std::uint16_t* frames() const { return px.data() + kGuardWords; }
+    std::size_t frame_words() const {
+      return px.size() < 2 * kGuardWords ? 0 : px.size() - 2 * kGuardWords;
+    }
     std::uint32_t count = 0;
     std::uint32_t frame_ms = 0;  ///< count * frame_ms == kCycleMs
+    bool complete = false;       ///< every frame composed: only then is it shown
   };
   struct Tile {
     lv_obj_t* img = nullptr;
@@ -215,7 +237,7 @@ class PulseLayer {
   bool capture(Tile& t, bool with_pins);
   void rebuild_ring_geometry(std::size_t i);
   void rebuild_cell_geometry(Cell& c);
-  void compose_frame(Tile& t, std::uint32_t k, std::uint16_t* out);
+  void compose_frame(Tile& t, std::uint32_t k, std::uint32_t frame_ms, std::uint16_t* out);
   void finish_job();
   void cancel_stale_job();
   void update_visibility();
@@ -240,6 +262,10 @@ class PulseLayer {
   bool room_ready(const Room& r) const;
   static std::size_t cell_cost(const lv_area_t& area);
   void show_frame(Tile& t, int index);
+  /// The frame of the tile's set for `now_ms`; -1 when the set is not complete or the index
+  /// would fall outside it (never shown: counted as not ready).
+  int frame_index(const Tile& t, std::uint32_t now_ms) const;
+  bool verify_tile(Tile& t, const char** why);
 
   lv_obj_t* map_;
   PulseBudget budget_;
@@ -265,6 +291,7 @@ class PulseLayer {
   Job job_;
   std::vector<Due> due_;
   std::vector<Due> due_out_;
+  std::vector<std::uint16_t> reference_;  ///< verify_shown()'s scratch frame
   bool defer_ = false;
   lv_timer_t* timer_ = nullptr;
   bool veiled_ = false;

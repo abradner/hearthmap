@@ -820,6 +820,26 @@ quarter of the frames. The perf line shows the divisor (`rate /N`). **Guard:** t
 when more than one frame in eleven falls back (the edge pieces fell back 163 a second against
 18 presented); screen tests that outline tiles never overlap and that deferred frames are
 presented without an invalidation, or all invalidated when the presenter refuses.
+**Amended after 2aec730 on the panel: corrupt frames.** The owner saw sprite tiles turn into
+stripes, wrong colours and pieces of other images, worse the more sprites ran, with `present` on
+and off alike, at `rate /2`. Cause: the frame for a moment is (time + phase) mod cycle / frame
+time, and a divided frame time did not always divide the cycle: outlines at /2 had 128 ms frames,
+12 of them, in a 1600 ms cycle, so the last 64 ms of every cycle asked for frame 12, one past the
+end of the set, and the descriptor pointed into whatever memory followed it (rings at /4 the
+same). LVGL and the presenter both read it, so it showed on both paths, and what followed a set
+changed as sets came and went. Writes were never out of bounds: AddressSanitizer and
+UndefinedBehaviorSanitizer over the UI tests, the host tests and the renderer found nothing. Fix:
+the cycle is 1584 ms (the spec's 1.6 s, 1 % shorter), rings 48 frames of 33 ms (30 a second),
+outlines 24 steps of 66 ms, and divisors 2, 4 and 8, all dividing the cycle (`static_assert`).
+Guards, always on: a set is shown only once complete and only by an index inside it, else the
+frame is held back and counted (`not ready` in the perf line); every set has 16 canary words at
+each end, checked once a second (`canary`, and an ERROR log the first time). **Guard (test):**
+every tile walked through 20 s at each divisor and under memory pressure, with heat rebuilds,
+layer changes, rings starting and stopping mid-cycle, preparation sliced; after every step each
+shown frame must lie inside its own complete set and equal that frame composed again from the
+tile's captures, the canaries hold, no frame not yet composed (filled with a marker colour) is
+handed over, and no frame is held back. On 2aec730's arithmetic it fails at 1536 ms with a frame
+outside its set; a frame corrupted after composing, or one word written past a set, fail it too.
 
 ### D-054 The renderer is built to port: one pixel interface, budgets from memory, regions from one table (provisional)
 

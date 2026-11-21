@@ -75,6 +75,9 @@ struct ScreenDeps {
   /// Memory the map bake may hold, bytes (D-055; 3 per map pixel). 0: 4 MiB. Without enough,
   /// walls and labels stay LVGL objects.
   std::size_t bake_memory_bytes = 0;
+  /// Keep at most 1/N of the pulse frames per cycle (1, 2, 4 or 8), whatever memory allows. For
+  /// tests, and for a target that wants the memory back.
+  std::uint32_t pulse_min_divisor = 1;
 };
 
 /// The pulse sprites' counters (D-053), for an embedder's performance log.
@@ -87,7 +90,8 @@ struct PulseCounters {
   std::size_t rooms_animated = 0;
   std::uint64_t frame_us = 0;       ///< composing frames, in LVGL's timer (with ScreenDeps::micros)
   std::uint64_t prepare_us = 0;     ///< in prepare_step() (with ScreenDeps::micros)
-  std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4: fewer frames to fit memory
+  std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4, 8: fewer frames to fit memory
+  std::uint32_t not_ready = 0;      ///< frames held back: set incomplete, or index out of range
 };
 
 /// Raw pointers to the widgets, for tests and for embedders that want to restyle. Owned by the
@@ -155,6 +159,13 @@ class Screen {
   /// background until prepared again. Never called from inside an LVGL event.
   bool prepare_step();
   PulseCounters pulse_counters() const;
+  /// Every pulse tile LVGL or a presenter may show points at a whole, composed frame of its own
+  /// size, equal to that frame composed again. False, with the first problem in `why`. For
+  /// tests: walks and recomposes every tile.
+  bool verify_pulse_frames(const char** why = nullptr);
+  /// Pulse frame sets whose guard words have changed (a write outside a set), now. Cheap: a few
+  /// words per set; the panel checks it once a second.
+  std::uint32_t pulse_canary_failures() const;
 
   /// How the pulse frames chosen since the last call were shown.
   struct ShownFrames {

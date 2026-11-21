@@ -230,6 +230,7 @@ int main() {
   f.flushed_px = 5000000;     // 1000 kpx/s
   f.sprite_frames = 1550;     // 310 a second
   f.sprite_divisor = 2;
+  f.sprite_not_ready = 3;
   f.presented = 1500;
   f.present_fallbacks = 50;
   f.present_block = "covered";
@@ -240,7 +241,7 @@ int main() {
   CHECK(std::strstr(line, "loop 10/s, gap max 412 ms") != nullptr);
   CHECK(std::strstr(line, "12 refr, 2500 ms (50%), max 402 ms") != nullptr);
   CHECK(std::strstr(line, "1000 kpx/s flushed") != nullptr);
-  CHECK(std::strstr(line, "sprites 310 frames/s (rate /2)") != nullptr);
+  CHECK(std::strstr(line, "sprites 310 frames/s (rate /2), 0 dropped, 3 not ready, 0 canary") != nullptr);
   CHECK(std::strstr(line, "present 1500 / fallback 50 (covered)") != nullptr);
   char tiny[8];
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');

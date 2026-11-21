@@ -270,8 +270,11 @@ perf 5000 ms: loop 41/s, gap max 380 ms | lvgl 12 refr, 2900 ms (58%), max 402 m
 - `refresh max by cause`: the longest refresh after a tap's screen update, after a heat image's
   band repaint, and otherwise (animation: pulse sprites).
 - `sprites`: pulse frames shown per second (a ring's frame, or a room outline's step), `rate /N`
-  when memory holds only 1/N of the frames per cycle (1 is full rate: rings 31 frames/s, outlines
-  15.6 steps/s), frames skipped because the loop was late, the memory the sprites hold, time
+  when memory holds only 1/N of the frames per cycle (1 is full rate: rings 30 frames/s, outlines
+  15 steps/s; N is 1, 2, 4 or 8), frames skipped because the loop was late, `not ready` frames
+  held back because their set was incomplete or the clock asked for one outside it (always 0
+  unless something is wrong), `canary` frame sets found written outside their bounds since boot
+  (checked once a second, with an ERROR log the first time; always 0 unless something is wrong), the memory the sprites hold, time
   choosing frames (`frames`) and capturing and composing them (`prepare`) (D-053).
 - `present`: pulse tiles put on the panel directly by the presenter, tiles invalidated instead,
   and the most common reason a present was refused (the `PresentBlock`, by a short name;

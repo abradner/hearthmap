@@ -91,6 +91,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void show_status_(const char* text);
   void hide_status_();
   void hook_perf_();
+  void check_sprite_canaries_();
   void log_perf_();
   static void on_display_event_(lv_event_t* e);
   static void on_indev_event_(lv_event_t* e);
@@ -132,6 +133,10 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint64_t last_sprite_frame_us_ = 0;
   hm::ui::Screen::ShownFrames shown_frames_;
   uint64_t last_sprite_prepare_us_ = 0;
+  uint32_t last_sprite_not_ready_ = 0;
+  uint32_t last_canary_check_ms_ = 0;
+  uint32_t canary_failures_ = 0;  ///< since boot
+  bool canary_logged_ = false;
   bool rebake_requested_ = false;
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).
   uint32_t last_press_ms_ = 0;

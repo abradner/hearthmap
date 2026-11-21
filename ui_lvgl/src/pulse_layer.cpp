@@ -17,7 +17,11 @@ constexpr std::size_t kRingLutSize =
 constexpr std::int32_t kRoomHaloWidth = PulseLayer::kRoomWidth + theme::kPulseHaloExtra;
 constexpr std::uint32_t kRingFrames = PulseLayer::kCycleMs / PulseLayer::kRingFrameMs;
 constexpr std::uint32_t kRoomSteps = PulseLayer::kCycleMs / PulseLayer::kRoomStepMs;
-constexpr std::uint32_t kMaxDivisor = 4;
+constexpr std::uint32_t kMaxDivisor = PulseLayer::kMaxDivisor;
+static_assert(PulseLayer::kCycleMs % (PulseLayer::kRingFrameMs * kMaxDivisor) == 0,
+              "every ring frame rate must divide the cycle");
+static_assert(PulseLayer::kCycleMs % (PulseLayer::kRoomStepMs * kMaxDivisor) == 0,
+              "every outline step rate must divide the cycle");
 // Phases are whole multiples of the coarsest frame time, so every tile at any divisor shows its
 // neighbours exactly as they show themselves.
 constexpr std::uint32_t kRingPhaseMs = PulseLayer::kRingFrameMs * kMaxDivisor;
@@ -335,6 +339,7 @@ void PulseLayer::release(Tile& t) {
   std::vector<std::uint16_t>().swap(t.full);
   std::vector<std::uint16_t>().swap(t.shown.px);
   t.shown.count = 0;
+  t.shown.complete = false;
   t.dsc.data = nullptr;
   t.shown_index = -1;
   t.dirty = true;
@@ -404,7 +409,8 @@ void PulseLayer::choose_divisor() {
     }
     return n + largest;
   };
-  std::uint32_t div = 1;
+  std::uint32_t div = budget_.min_divisor;
+  if (div < 1U || div > kMaxDivisor || (div & (div - 1U)) != 0U) div = 1;
   while (div < kMaxDivisor && need_at(div) > budget_.memory_bytes) div *= 2;
   if (div != divisor_) {
     divisor_ = div;
@@ -827,8 +833,9 @@ PulseLayer::Cell* PulseLayer::cell_of(const Tile* t) {
 
 // Frame k of the tile's next set: the moment it stands for is k frames after the tile's phase,
 // and every pulse in the tile is drawn as it is at that moment.
-void PulseLayer::compose_frame(Tile& t, std::uint32_t k, std::uint16_t* out) {
-  const std::uint32_t t_ms = (k * job_.next.frame_ms + kCycleMs - t.phase_ms % kCycleMs) % kCycleMs;
+void PulseLayer::compose_frame(Tile& t, std::uint32_t k, std::uint32_t frame_ms,
+                               std::uint16_t* out) {
+  const std::uint32_t t_ms = (k * frame_ms + kCycleMs - t.phase_ms % kCycleMs) % kCycleMs;
   const std::uint16_t dark = rgb565(theme::kBackground);
   Overlay overlays[32];
   RingLayer layers[32];
@@ -873,7 +880,7 @@ void PulseLayer::compose_frame(Tile& t, std::uint32_t k, std::uint16_t* out) {
 
 void PulseLayer::show_frame(Tile& t, int index) {
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  const std::uint16_t* frame = t.shown.px.data() + static_cast<std::size_t>(index) * px;
+  const std::uint16_t* frame = t.shown.frames() + static_cast<std::size_t>(index) * px;
   t.shown_index = index;
   if (!alive_ || t.img == nullptr) return;
   if (lv_image_get_src(t.img) != &t.dsc) {
@@ -898,13 +905,18 @@ void PulseLayer::show_frame(Tile& t, int index) {
 void PulseLayer::finish_job() {
   Tile& t = *job_.tile;
   // The new set replaces the old whole; the descriptor moves to it before the old is freed.
+  job_.next.complete = true;
   std::swap(t.shown, job_.next);
   std::vector<std::uint16_t>().swap(job_.next.px);
   job_ = Job{};
   t.hidden = false;
-  const auto index = static_cast<int>(((lv_tick_get() + t.phase_ms) % kCycleMs) / t.shown.frame_ms);
+  int index = frame_index(t, lv_tick_get());
+  if (index < 0) {
+    ++stats_.not_ready;
+    index = 0;  // the set is complete, so frame 0 exists
+  }
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  t.dsc.data = reinterpret_cast<const std::uint8_t*>(t.shown.px.data() +
+  t.dsc.data = reinterpret_cast<const std::uint8_t*>(t.shown.frames() +
                                                      static_cast<std::size_t>(index) * px);
   for (Due& d : due_) {
     if (d.dsc == &t.dsc) d.frame = reinterpret_cast<const std::uint16_t*>(t.dsc.data);
@@ -974,14 +986,21 @@ bool PulseLayer::prepare_step() {
     const std::uint32_t base = ring ? kRingFrameMs : kRoomStepMs;
     job_.next.frame_ms = base * divisor_;
     job_.next.count = kCycleMs / job_.next.frame_ms;
-    job_.next.px.assign(
-        static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * job_.next.count, 0);
+    // Filled with a pattern no frame holds, so a frame shown before it is composed shows.
+    const std::size_t words =
+        static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * job_.next.count;
+    job_.next.px.assign(words + 2 * kGuardWords, kUncomposed);
+    std::fill_n(job_.next.px.begin(), kGuardWords, kCanary);
+    std::fill_n(job_.next.px.end() - static_cast<std::ptrdiff_t>(kGuardWords), kGuardWords,
+                kCanary);
+    job_.next.complete = false;
     job_.frame = 0;
     job_.stage = Job::Stage::Compose;
     return true;
   }
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  compose_frame(t, job_.frame, job_.next.px.data() + static_cast<std::size_t>(job_.frame) * px);
+  compose_frame(t, job_.frame, job_.next.frame_ms,
+                job_.next.frames() + static_cast<std::size_t>(job_.frame) * px);
   if (++job_.frame >= job_.next.count) finish_job();
   return stats().pending;
 }
@@ -1003,7 +1022,11 @@ void PulseLayer::tick(std::uint32_t now_ms) {
     if (t.shown.count == 0 || t.hidden || t.img == nullptr || lv_obj_is_hidden(t.img)) return;
     if (!defer_ && invalidations >= kMaxInvalidationsPerTick) return;
     const std::uint32_t fm = t.shown.frame_ms;
-    const auto index = static_cast<int>(((now_ms + t.phase_ms) % kCycleMs) / fm);
+    const int index = frame_index(t, now_ms);
+    if (index < 0) {
+      ++stats_.not_ready;
+      return;
+    }
     if (index == t.shown_index && now_ms - t.shown_ms < fm) return;
     if (t.shown_index >= 0) {
       // Frame boundaries passed since the last frame shown (wrap-safe), less the one shown now.
@@ -1033,6 +1056,90 @@ void PulseLayer::tick(std::uint32_t now_ms) {
     if (s != room.shown_step) ++stats_.frames;
     room.shown_step = s;
   }
+}
+
+int PulseLayer::frame_index(const Tile& t, std::uint32_t now_ms) const {
+  if (!t.shown.complete || t.shown.count == 0 || t.shown.frame_ms == 0) return -1;
+  const std::uint32_t index = ((now_ms + t.phase_ms) % kCycleMs) / t.shown.frame_ms;
+  return index < t.shown.count ? static_cast<int>(index) : -1;
+}
+
+bool PulseLayer::verify_tile(Tile& t, const char** why) {
+  auto fail = [why](const char* w) {
+    if (why != nullptr) *why = w;
+    return false;
+  };
+  if (!alive_ || t.img == nullptr) return true;
+  const bool src = lv_image_get_src(t.img) == &t.dsc;
+  if (!src) {
+    if (!lv_obj_is_hidden(t.img) && lv_image_get_src(t.img) != nullptr) {
+      return fail("a tile shows a source that is not its descriptor");
+    }
+    return true;
+  }
+  if (lv_obj_is_hidden(t.img) && t.dsc.data == nullptr) return true;
+  const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
+  if (t.dsc.header.w != static_cast<std::uint32_t>(t.w) ||
+      t.dsc.header.h != static_cast<std::uint32_t>(t.h) ||
+      t.dsc.header.stride != static_cast<std::uint32_t>(t.w) * 2U ||
+      lv_obj_get_width(t.img) != t.w || lv_obj_get_height(t.img) != t.h) {
+    return fail("a tile's descriptor or object is not the tile's size");
+  }
+  if (t.dsc.data == nullptr) {
+    return lv_obj_is_hidden(t.img) ? true : fail("a visible tile has no frame");
+  }
+  if (!t.shown.complete || t.shown.count == 0) return fail("a tile points into an incomplete set");
+  if (t.shown.frame_words() != px * t.shown.count)
+    return fail("a set is not count frames of w x h");
+  const auto* p = reinterpret_cast<const std::uint16_t*>(t.dsc.data);
+  const std::uint16_t* b = t.shown.frames();
+  if (p < b || p >= b + t.shown.frame_words()) return fail("a tile points outside its set");
+  if (static_cast<std::size_t>(p - b) % px != 0) return fail("a tile points between frames");
+  for (const Due& d : due_) {
+    if (d.dsc != &t.dsc) continue;
+    if (d.frame < b || d.frame >= b + t.shown.frame_words() ||
+        static_cast<std::size_t>(d.frame - b) % px != 0) {
+      return fail("a listed frame lies outside its set");
+    }
+  }
+  // The frame shown equals that frame composed afresh from the tile's captures, unless the tile is
+  // being recaptured (its old set plays meanwhile, from captures that are being replaced).
+  if (!t.dirty && job_.tile != &t && !t.below.empty() && !t.full.empty()) {
+    const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(p - b) / px);
+    reference_.assign(px, 0);
+    compose_frame(t, k, t.shown.frame_ms, reference_.data());
+    if (!std::equal(reference_.begin(), reference_.end(), p)) {
+      return fail("a shown frame differs from the same frame composed again");
+    }
+  }
+  return true;
+}
+
+std::uint32_t PulseLayer::check_canaries() const {
+  std::uint32_t bad = 0;
+  auto check = [&bad](const FrameSet& f) {
+    if (f.px.size() < 2 * kGuardWords) return;
+    for (std::size_t i = 0; i < kGuardWords; ++i) {
+      if (f.px[i] != kCanary || f.px[f.px.size() - 1 - i] != kCanary) {
+        ++bad;
+        return;
+      }
+    }
+  };
+  for (const Ring& r : rings_) check(r.t.shown);
+  for (const Cell& c : cells_) check(c.t.shown);
+  check(job_.next);
+  return bad;
+}
+
+bool PulseLayer::verify_shown(const char** why) {
+  for (Ring& r : rings_) {
+    if (!verify_tile(r.t, why)) return false;
+  }
+  for (Cell& c : cells_) {
+    if (!verify_tile(c.t, why)) return false;
+  }
+  return true;
 }
 
 const std::vector<PulseLayer::Due>& PulseLayer::take_due() {

@@ -81,8 +81,15 @@ struct Rig {
   std::unique_ptr<Screen> screen;
   HeaderText header{"09:00", "House 21.4\xC2\xB0   52% RH"};
 
+  std::size_t pulse_memory = 0;
+  std::uint32_t pulse_min_divisor = 1;
+
   Rig() { init(); }
   explicit Rig(Config c) : config(std::move(c)) { init(); }
+  Rig(Config c, std::size_t memory, std::uint32_t min_divisor)
+      : config(std::move(c)), pulse_memory(memory), pulse_min_divisor(min_divisor) {
+    init();
+  }
   void init() {
     heat_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     heat_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
@@ -95,6 +102,8 @@ struct Rig {
     deps.fonts = builtin_fonts();
     deps.sink = &sink;
     deps.photos = &photos;
+    deps.pulse_memory_bytes = pulse_memory;
+    deps.pulse_min_divisor = pulse_min_divisor;
     screen = std::make_unique<Screen>(display.screen(), config, &heat_dsc, deps);
   }
   const ScreenWidgets& w() const { return screen->widgets(); }
@@ -1028,7 +1037,7 @@ TEST_CASE("pulses are sprites: smooth frames from the tick, no LVGL animation") 
   std::vector<std::uint16_t> seen;
   std::set<const std::uint16_t*> pointers;
   const PulseCounters before = rig.screen->pulse_counters();
-  for (std::uint32_t t = 0; t <= 3200; t += 16) {
+  for (std::uint32_t t = 0; t <= 2 * 1584; t += 16) {
     rig.display.set_time_ms(t);
     rig.display.run_timers();
     CHECK(lv_anim_count_running() == 0);
@@ -1039,16 +1048,16 @@ TEST_CASE("pulses are sprites: smooth frames from the tick, no LVGL animation") 
     if (seen.empty() || seen.back() != px[probe]) seen.push_back(px[probe]);
   }
   const PulseCounters after = rig.screen->pulse_counters();
-  // 3.2 s: two cycles of 50 ring frames and of 25 room steps, at the frame rate memory allows
+  // Two cycles of 48 ring frames and of 24 room steps, at the frame rate memory allows
   // (frame_divisor), all of them precomputed.
   const std::uint32_t frames = after.frames - before.frames;
   const std::uint32_t div = after.frame_divisor;
   MESSAGE("frames " << frames << " divisor " << div);
-  CHECK(frames >= (2 * 50 + 2 * 25) / div - 4);
-  CHECK(frames <= (2 * 50 + 2 * 25) / div + 4);
+  CHECK(frames >= (2 * 48 + 2 * 24) / div - 4);
+  CHECK(frames <= (2 * 48 + 2 * 24) / div + 4);
   if (div > 1) CHECK(after.dropped == before.dropped);  // a 16 ms tick never skips a 64 ms frame
   CHECK(seen.size() >= 4);  // the ring sweeps over the probe, in several shades
-  CHECK(pointers.size() >= 50 / after.frame_divisor);  // every frame of the cycle was shown
+  CHECK(pointers.size() >= 48 / after.frame_divisor);  // every frame of the cycle was shown
   CHECK(after.tile_bytes > 0);
 }
 
@@ -1141,7 +1150,7 @@ TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") 
                           nullptr);
   rig.display.render();
   g_invalidated = 0;
-  for (std::uint32_t t = 0; t <= 3200; t += 16) {
+  for (std::uint32_t t = 0; t <= 2 * 1584; t += 16) {
     rig.display.set_time_ms(t);
     rig.display.run_timers();
   }
@@ -1349,7 +1358,7 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
 
 // One of small_config()'s top rooms' outline sprites fits, two do not (8 bytes a pixel of strips
 // about 20 px wide along 2 x (432 + 360) px, aligned).
-constexpr std::size_t kOneRoomBudget = 1024U * 1024U;
+constexpr std::size_t kOneRoomBudget = 800U * 1024U;
 
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
@@ -1435,6 +1444,92 @@ TEST_CASE("a press on a pin is acknowledged before release; elsewhere nothing sh
   rig.display.press(40 + 700, 76 + 600);
   CHECK(hidden(marker()));
   rig.display.release();
+}
+
+namespace {
+
+// Reads every pixel of every tile it is handed (so a sanitiser sees a freed frame), refuses every
+// third one (so the fallback path runs too), and counts pixels of frames not yet composed.
+struct ReadingPresenter final : Presenter {
+  std::uint64_t calls = 0, uncomposed = 0, sum = 0;
+  bool present(int, int, const View565& tile) override {
+    ++calls;
+    for (int y = 0; y < tile.h; ++y) {
+      for (int x = 0; x < tile.w; ++x) {
+        const std::uint16_t v = tile.px[static_cast<std::size_t>(y * tile.stride + x)];
+        sum += v;
+        uncomposed += v == static_cast<std::uint16_t>(0xF81F) ? 1U : 0U;
+      }
+    }
+    return calls % 3U != 0U;
+  }
+};
+
+// Every tile, every shown frame, through cycles and the moments that rebuild or free frame sets.
+void walk_pulses(std::size_t memory, std::uint32_t divisor) {
+  CAPTURE(memory);
+  CAPTURE(divisor);
+  Rig rig(test::small_config(), memory, divisor);
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  vm.rooms[0].pulse = Severity::Danger;
+  vm.rooms[1].pulse = Severity::Danger;  // shares a wall with room 0
+  vm.rooms[2].pulse = Severity::Warn;
+  rig.show(vm);
+  rig.screen->set_frames_deferred(true);
+  ReadingPresenter presenter;
+  const char* why = "";
+  bool ok = true;
+  std::uint32_t t = 0;
+  const std::uint32_t steps[] = {16, 16, 7, 25, 16, 1, 31};
+  for (std::size_t k = 0; t < 20000; ++k) {
+    t += steps[k % 7];
+    rig.display.set_time_ms(t);
+    // Something changes mid-cycle every 800 ms: a new heat image under every tile, another
+    // layer's pulses, a ring starting and one stopping; preparation is sliced meanwhile.
+    if (k % 50 == 10) rig.screen->invalidate_heat();
+    if (k % 50 == 20) {
+      vm.rooms[1].pulse = vm.rooms[1].pulse == Severity::Ok ? Severity::Danger : Severity::Ok;
+      vm.rooms[2].pulse = vm.rooms[2].pulse == Severity::Ok ? Severity::Warn : Severity::Ok;
+      rig.screen->update(vm, rig.header, 1000);
+    }
+    if (k % 50 == 30) {
+      vm.pins[1].active_severity =
+          vm.pins[1].active_severity == Severity::Danger ? Severity::Ok : Severity::Danger;
+      rig.screen->update(vm, rig.header, 1000);
+    }
+    if (k % 50 == 40) {
+      vm.pins[0].active_severity =
+          vm.pins[0].active_severity == Severity::Danger ? Severity::Ok : Severity::Danger;
+      rig.screen->update(vm, rig.header, 1000);
+    }
+    rig.display.run_timers();
+    for (int i = 0; i < 40; ++i) (void)rig.screen->prepare_step();  // a device slice's worth
+    ok = ok && rig.screen->verify_pulse_frames(&why);
+    rig.screen->show_due_frames(presenter);
+    ok = ok && rig.screen->verify_pulse_frames(&why);
+    ok = ok && rig.screen->pulse_canary_failures() == 0;
+    if (k % 3 == 0) rig.display.render();  // LVGL reads the descriptors of fallen-back tiles
+    if (!ok) break;
+  }
+  INFO("first problem: " << std::string(why) << " at " << t << " ms");
+  CHECK(ok);
+  CHECK(presenter.calls > 100);
+  CHECK(presenter.uncomposed == 0);
+  const PulseCounters c = rig.screen->pulse_counters();
+  MESSAGE("divisor " << c.frame_divisor << ", " << presenter.calls << " frames handed over, "
+                     << c.not_ready << " not ready");
+  if (divisor > 1 || memory > 8U * 1024U * 1024U) CHECK(c.frame_divisor == divisor);
+  CHECK(c.not_ready == 0);  // every index the clock asks for exists in its set
+}
+
+}  // namespace
+
+TEST_CASE("every shown pulse frame is a whole composed frame, at every rate and through changes") {
+  for (std::uint32_t divisor : {1U, 2U, 4U, 8U}) walk_pulses(64U * 1024U * 1024U, divisor);
+  // Memory pressure: rings take memory from outlines, which wait and come back.
+  walk_pulses(1536U * 1024U, 1U);  // the divisor is memory's choice here
 }
 
 TEST_CASE("fallback invalidations stay under LVGL's area limit until a refresh") {
