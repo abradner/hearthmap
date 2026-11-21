@@ -824,3 +824,22 @@ def sync_tree(src_root: Path, files: dict[str, bytes], owned_dirs: set[str]) -> 
             elif f.is_dir() and not any(f.iterdir()):
                 f.rmdir()
     return written
+
+
+# esp-hosted's default for CONFIG_ESP_HOSTED_HOST_RPC_TIMEOUT_MS (3.1.0): how long one Wi-Fi call
+# from the main loop waits for an answer from the co-processor.
+HOSTED_RPC_TIMEOUT_DEFAULT_MS = 5000
+# Consecutive co-processor calls one main-loop pass can make while the link is failing: a failed
+# call makes ESPHome's wifi code return (wifi_component_esp_idf.cpp, wifi_mode_ and its callers),
+# so a pass meets a few at most; three is the margin chosen (D-061).
+HOSTED_RPCS_PER_PASS = 3
+
+
+def hosted_watchdog_floor_ms(full_config: dict) -> int | None:
+    """The smallest task-watchdog timeout (ms) that a silent Wi-Fi co-processor cannot trip, or
+    None when the device has no esp32_hosted link. D-061."""
+    if "esp32_hosted" not in full_config:
+        return None
+    options = full_config.get("esp32", {}).get("framework", {}).get("sdkconfig_options", {}) or {}
+    rpc_ms = int(options.get("CONFIG_ESP_HOSTED_HOST_RPC_TIMEOUT_MS", HOSTED_RPC_TIMEOUT_DEFAULT_MS))
+    return HOSTED_RPCS_PER_PASS * rpc_ms + 1000

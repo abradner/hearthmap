@@ -245,6 +245,16 @@ add rather than rewrite.
   4 Mpx/s. Measured with `tools/bench` (D-060), which is why the unit is not enabled.
 - **The PPA's scaler interpolates.** A 2x `ppa_do_scale_rotate_mirror` is not pixel doubling (up to
   21 steps per channel away), so it cannot stand in for `Blitter::scale2x` (D-057).
+- **ESPHome prints other tasks' log lines from the main loop.** `ESP_LOGx` from any task but the
+  main one goes into a ring buffer that the logger's `loop()` drains, so a task reporting that the
+  main loop is stuck is never heard until it recovers. Write such lines with `esp_rom_printf`, as
+  `components/hearthmap/stall_monitor.cpp` does (D-062).
+- **With `esp32_hosted`, a Wi-Fi call can block the main loop for the whole RPC timeout.** It is
+  5 s by default, equal to ESPHome's default task watchdog, so a silent co-processor resets the
+  panel; the component requires `esp32: watchdog_timeout` of at least 16 s (D-061).
+- **`operator new` aborts on this target.** Exceptions are off, so a `std::vector` that cannot
+  allocate calls `abort()` on every boot that reaches it; the present self-check did this with
+  internal RAM full. Large pixel buffers go in PSRAM through `heap_caps_malloc`, checked.
 
 ## 7. CI & Deployment
 

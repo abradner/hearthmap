@@ -1,8 +1,10 @@
 #include "display_presenter.h"
 
 #include "esp_heap_caps.h"
+#include "esphome/core/hal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "loop_breadcrumb.h"
 #include "panel_rotation.h"
 
 namespace esphome::hearthmap_panel {
@@ -36,6 +38,11 @@ bool DisplayPresenter::present(int x, int y, const ui::View565& tile) {
                     : rotation_ == display::DISPLAY_ROTATION_270_DEGREES ? 3
                                                                          : 0;
   const NativeBlock b = to_native(buf_, tile.px, tile.stride, x, y, w, h, turns, nw, nh);
+  if (b.w <= 0 || b.h <= 0 || b.x < 0 || b.y < 0 || b.x + b.w > nw || b.y + b.h > nh) {
+    refused_++;
+    return false;
+  }
+  const CrumbScope crumb(Crumb::Present, millis());
   display_->draw_pixels_at(b.x, b.y, b.w, b.h, reinterpret_cast<const uint8_t*>(buf_),
                            display::COLOR_BITNESS_565, false);
   presented_++;

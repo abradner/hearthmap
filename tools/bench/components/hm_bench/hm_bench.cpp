@@ -31,6 +31,7 @@
 #include "hearthmap/ui/blitter.h"
 #include "hm_blit/ppa_blitter.h"
 #include "kernels.h"
+#include "selfcheck.h"
 
 // Benchmark only: the frame-buffer measurements need the DSI panel handle, which MipiDsi keeps
 // protected (and the class is final). Everything that header includes is included above, so
@@ -122,6 +123,7 @@ void report(const char* name, int w, int h, Mem src, Mem dst, const Res& r, cons
 ppa_client_handle_t g_srm{nullptr}, g_blend{nullptr}, g_fill{nullptr};
 async_memcpy_handle_t g_mcp{nullptr};
 SemaphoreHandle_t g_mcp_sem{nullptr};
+bool g_mcp_lost{false};  // a GDMA copy timed out; its buffers must not be freed
 
 bool mcp_done_cb(async_memcpy_handle_t, async_memcpy_event_t*, void* arg) {
   BaseType_t woken = pdFALSE;
@@ -501,7 +503,13 @@ std::vector<Op> make_ops() {
                    if (esp_async_memcpy(g_mcp, c.dst, c.src, px(c) * 2, mcp_done_cb, g_mcp_sem) !=
                        ESP_OK)
                      return false;
-                   return xSemaphoreTake(g_mcp_sem, pdMS_TO_TICKS(1000)) == pdTRUE;
+                   if (xSemaphoreTake(g_mcp_sem, pdMS_TO_TICKS(1000)) == pdTRUE) return true;
+                   // The copy may still be running: its buffers are deliberately leaked by the
+                   // caller (g_mcp_lost) and the GDMA is not used again, so a late completion
+                   // can neither write freed memory nor satisfy a later wait.
+                   g_mcp = nullptr;
+                   g_mcp_lost = true;
+                   return false;
                  },
                  same_copy});
   return ops;
@@ -605,6 +613,7 @@ void HmBench::build_scene_() {
     g_tile_obj[i] = lv_image_create(scr);
     lv_image_set_src(g_tile_obj[i], &g_tile_dsc[i]);
     lv_obj_set_pos(g_tile_obj[i], 60 + (i % 3) * 150, 80 + (i / 3) * 200);
+    lv_obj_set_hidden(g_tile_obj[i], true);  // shown only during the tile measurements
   }
 
   g_card = lv_obj_create(scr);
@@ -651,6 +660,11 @@ void HmBench::build_steps_() {
   this->steps_.clear();
   auto& steps = this->steps_;
   HmBench* self = this;
+  if (this->selfcheck_only_) {
+    add_selfcheck_steps(steps, this->display_, this->lvgl_);
+    steps.push_back([]() { ESP_LOGI(TAG, "bench run done (selfcheck)"); });
+    return;
+  }
 
   steps.push_back([self]() {
     ESP_LOGI(
@@ -725,14 +739,25 @@ void HmBench::build_steps_() {
                 note =
                     bad == 0 ? "check ok" : ("check FAIL " + std::to_string(bad) + "/66 samples");
               }
-              Res r = ok ? time_op([&]() { return op.run(c); }, n) : Res{0, 0, 0, false};
+              // A call that drew the wrong pixels (or nothing) is reported, never timed: its time
+              // is not a rate, and at 2 x 2 it would pose as the operation's call overhead.
+              const bool checked_bad = note.rfind("check FAIL", 0) == 0;
+              Res r = ok && !checked_bad ? time_op([&]() { return op.run(c); }, n)
+                                         : Res{0, 0, 0, false};
               if (tiny && r.ok) g_overhead[op.name] = r.us_call;
               report(op.name, w, h, mm.first, mm.second, r, note.c_str());
             }
           }
-          heap_caps_free(src);
-          heap_caps_free(dst);
-          heap_caps_free(aux);
+          if (g_mcp_lost) {
+            g_mcp_lost =
+                false;  // leak this measurement's buffers: the lost copy may still use them
+            ESP_LOGI(TAG, "bench %s : a GDMA copy did not complete; buffers kept, GDMA disabled",
+                     op.name);
+          } else {
+            heap_caps_free(src);
+            heap_caps_free(dst);
+            heap_caps_free(aux);
+          }
           App.feed_wdt();
         });
       }
@@ -804,8 +829,11 @@ void HmBench::build_steps_() {
       esp_cache_msync(b, n * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
       for (size_t i = 0; i < n; ++i) b[i] = 0x2222;  // dirty in cache, not yet in PSRAM
       int lost = 0;
+      bool ran_on_ppa = false;
       if (with_writeback) {
+        const uint32_t before = hw.hw_calls();
         hw.copy(sb, 100, 50, ui::View565{src, 64, 64, W});
+        ran_on_ppa = hw.hw_calls() == before + 1;
       } else {
         ppa_srm_oper_config_t op{};
         op.in = ppa_in(src, 64, 64, PPA_SRM_COLOR_MODE_RGB565);
@@ -816,13 +844,19 @@ void HmBench::build_steps_() {
         op.out.block_offset_y = 50;
         op.scale_x = op.scale_y = 1.0f;
         op.mode = PPA_TRANS_MODE_BLOCKING;
-        ppa_do_scale_rotate_mirror(g_srm, &op);
+        ran_on_ppa = ppa_do_scale_rotate_mirror(g_srm, &op) == ESP_OK;
       }
       for (int y = 50; y < 114; ++y)
         for (int x = 0; x < W; ++x)
           if ((x < 100 || x >= 164) && b[y * W + x] != 0x2222) lost++;
-      ESP_LOGI(TAG, "bench cache_trap srm %s : %d CPU-written px outside the block lost (of %d)",
-               with_writeback ? "via PpaBlitter (writes rows back first)" : "raw, no write-back",
+      if (!ran_on_ppa) {
+        ESP_LOGI(TAG, "bench cache_trap %s : INVALID, the PPA did not run the copy",
+                 with_writeback ? "PpaBlitter copy (blend engine)" : "raw SRM");
+        continue;
+      }
+      ESP_LOGI(TAG, "bench cache_trap %s : %d CPU-written px outside the block lost (of %d)",
+               with_writeback ? "PpaBlitter copy (blend engine, writes rows back first)"
+                              : "raw SRM, no write-back",
                lost, 64 * (W - 64));
     }
     heap_caps_free(a);
@@ -858,8 +892,11 @@ void HmBench::build_steps_() {
           for (int impl = 0; impl < 2; ++impl) {
             ui::Blitter& bl =
                 impl == 0 ? static_cast<ui::Blitter&>(sw) : static_cast<ui::Blitter&>(hw);
-            // Offset into the surface, as a sprite on the map would be.
+            // Offset into the surface, as a sprite on the map would be. Same background for each
+            // implementation, written before timing.
             const int x = bs.w >= W ? 0 : 16, y = bs.h >= H ? 0 : 8;
+            for (int i = 0; i < W * H; ++i) d[i] = static_cast<uint16_t>(0x8410 ^ i);
+            const uint32_t hw0 = hw.hw_calls(), sw0 = hw.sw_calls();
             Res r = time_op(
                 [&]() {
                   if (opn[0] == 'c')
@@ -874,7 +911,13 @@ void HmBench::build_steps_() {
                 },
                 static_cast<uint64_t>(bs.w) * bs.h);
             char name[32];
-            snprintf(name, sizeof name, "blit_%s_%s", impl == 0 ? "sw" : "ppa", opn);
+            // The PPA row says which engine ran: all PPA, all software fallback, or mixed.
+            const char* engine = "sw";
+            if (impl == 1) {
+              const uint32_t on_hw = hw.hw_calls() - hw0, on_sw = hw.sw_calls() - sw0;
+              engine = on_sw == 0 ? "ppa" : on_hw == 0 ? "ppa-fallback-sw" : "ppa-mixed";
+            }
+            snprintf(name, sizeof name, "blit_%s_%s", engine, opn);
             ESP_LOGI(TAG,
                      "bench %s size=%dx%d src=psram dst=psram : %s Mpx/s, %s us/call, n=%u, into a "
                      "1280x800 surface",
@@ -888,12 +931,23 @@ void HmBench::build_steps_() {
     }
   }
 
+  // The frame-buffer measurements assume this board's 800 x 1280 panel (a display_model override
+  // could name another): skip them on anything else rather than write past the frame buffer.
+  const bool fb_geometry_ok =
+      this->display_->get_native_width() == 800 && this->display_->get_native_height() == 1280;
+  if (!fb_geometry_ok) {
+    steps.push_back([self]() {
+      ESP_LOGI(TAG, "bench frame-buffer tests : skipped, the panel is %dx%d, not 800x1280",
+               self->display_->get_native_width(), self->display_->get_native_height());
+    });
+  }
   // ---- D: straight to the DSI frame buffer ----
   struct Fb {
     int w, h;
   };
   static const Fb kFb[] = {{2, 2}, {64, 64}, {128, 128}, {240, 320}, {736, 920}, {800, 1280}};
   for (const Fb& f : kFb) {
+    if (!fb_geometry_ok) break;
     for (Mem m : {PS, IN}) {
       if (m == IN && f.w * f.h > 128 * 128) continue;
       steps.push_back([self, f, m]() {
@@ -920,6 +974,7 @@ void HmBench::build_steps_() {
   // PPA SRM straight into the frame buffer: 1:1, and the 90-degree rotation the landscape UI needs.
   static const Fb kLand[] = {{2, 2}, {64, 64}, {128, 128}, {320, 240}, {920, 736}, {1280, 800}};
   for (const Fb& f : kLand) {
+    if (!fb_geometry_ok) break;
     steps.push_back([self, f]() {
       void* fb = nullptr;
       if (esp_lcd_dpi_panel_get_frame_buffer(self->display_->handle_, 1, &fb) != ESP_OK ||
@@ -981,8 +1036,14 @@ void HmBench::build_steps_() {
   static const BufCfg kTileBufs[] = {{"esphome_default", PS, 0}, {"iram_256000", IN, 256000}};
   for (const BufCfg& bc : kTileBufs) {
     steps.push_back([self, bc]() {
+      if (g_tile_px == nullptr) {
+        ESP_LOGI(TAG, "bench tile * buf=%s : skipped (tile pixels could not be allocated)",
+                 bc.name);
+        return;
+      }
       lv_display_t* disp = self->lvgl_->get_disp();
       lv_obj_t* scr = lv_display_get_screen_active(disp);
+      for (int i = 0; i < kTiles; ++i) lv_obj_set_hidden(g_tile_obj[i], false);
       lv_draw_buf_t* orig = lv_display_get_buf_active(disp);
       void* orig_data = orig != nullptr ? orig->data : nullptr;
       const uint32_t orig_size = orig != nullptr ? orig->data_size : 0;
@@ -1053,6 +1114,7 @@ void HmBench::build_steps_() {
         g_tile_dsc[i].data_size = 64 * 64 * 2;
         lv_image_set_src(g_tile_obj[i], &g_tile_dsc[i]);
         lv_obj_set_size(g_tile_obj[i], 64, 64);
+        lv_obj_set_hidden(g_tile_obj[i], true);  // out of the scene measurements
       }
       if (bc.bytes != 0) {
         lv_display_set_buffers(disp, orig_data, nullptr, orig_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -1064,63 +1126,65 @@ void HmBench::build_steps_() {
   }
   // Direct present: rotate the landscape tile on the CPU, then put it on the panel either through
   // the display's public draw_pixels_at (DMA2D) or by writing the frame buffer rows directly.
-  steps.push_back([self]() {
-    void* fbv = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(self->display_->handle_, 1, &fbv) != ESP_OK ||
-        fbv == nullptr)
-      return;
-    auto* fb = static_cast<uint16_t*>(fbv);
-    const int fbw = 800;
-    auto* rot = static_cast<uint16_t*>(alloc_buf(kTileMax * kTileMax * 2, IN));
-    auto* rot_ps = static_cast<uint16_t*>(alloc_buf(kTileMax * kTileMax * 2, PS));
-    if (rot == nullptr || rot_ps == nullptr || g_tile_px == nullptr) return;
-    for (int sz : kTileSizes) {
-      const uint16_t* src = g_tile_px;  // tile 0, landscape sz x sz, PSRAM
-      // Landscape (lx, ly) -> native (799 - ly, lx) for the 90-degree panel rotation: a tile at
-      // landscape (x, y) lands at native x = 800 - y - sz, native y = x.
-      const int lx = 60, ly = 80;
-      const int nx = fbw - ly - sz, ny = lx;
-      for (int mode = 0; mode < 4; ++mode) {
-        const char* name = mode == 0   ? "present_rot_iram_draw_pixels"
-                           : mode == 1 ? "present_rot_psram_draw_pixels"
-                           : mode == 2 ? "present_rot_direct_fb"
-                                       : "present_rot_only";
-        Res r = time_op(
-            [&]() {
-              if (mode == 2) {
-                // Rotate straight into the frame buffer rows, keeping the cache coherent with
-                // DMA2D's writes: invalidate the rows' lines first, write, write them back.
-                for (int y = 0; y < sz; ++y) {
-                  uint16_t* row = fb + static_cast<size_t>(ny + y) * fbw + nx;
-                  uintptr_t a0 = reinterpret_cast<uintptr_t>(row) & ~uintptr_t{63};
-                  uintptr_t a1 = (reinterpret_cast<uintptr_t>(row + sz) + 63) & ~uintptr_t{63};
-                  esp_cache_msync(reinterpret_cast<void*>(a0), a1 - a0,
-                                  ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                  // native row y holds landscape column (ny + y - lx) = y, read bottom-up
-                  for (int x = 0; x < sz; ++x)
-                    row[x] = src[static_cast<size_t>(sz - 1 - x) * sz + y];
-                  esp_cache_msync(reinterpret_cast<void*>(a0), a1 - a0,
-                                  ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+  if (fb_geometry_ok)
+    steps.push_back([self]() {
+      void* fbv = nullptr;
+      if (esp_lcd_dpi_panel_get_frame_buffer(self->display_->handle_, 1, &fbv) != ESP_OK ||
+          fbv == nullptr)
+        return;
+      auto* fb = static_cast<uint16_t*>(fbv);
+      const int fbw = 800;
+      auto* rot = static_cast<uint16_t*>(alloc_buf(kTileMax * kTileMax * 2, IN));
+      auto* rot_ps = static_cast<uint16_t*>(alloc_buf(kTileMax * kTileMax * 2, PS));
+      if (rot == nullptr || rot_ps == nullptr || g_tile_px == nullptr) return;
+      for (int sz : kTileSizes) {
+        const uint16_t* src = g_tile_px;  // tile 0, landscape sz x sz, PSRAM
+        // Landscape (lx, ly) -> native (799 - ly, lx) for the 90-degree panel rotation: a tile at
+        // landscape (x, y) lands at native x = 800 - y - sz, native y = x.
+        const int lx = 60, ly = 80;
+        const int nx = fbw - ly - sz, ny = lx;
+        for (int mode = 0; mode < 4; ++mode) {
+          const char* name = mode == 0   ? "present_rot_iram_draw_pixels"
+                             : mode == 1 ? "present_rot_psram_draw_pixels"
+                             : mode == 2 ? "present_rot_direct_fb"
+                                         : "present_rot_only";
+          Res r = time_op(
+              [&]() {
+                if (mode == 2) {
+                  // Rotate straight into the frame buffer rows, keeping the cache coherent with
+                  // DMA2D's writes: invalidate the rows' lines first, write, write them back.
+                  for (int y = 0; y < sz; ++y) {
+                    uint16_t* row = fb + static_cast<size_t>(ny + y) * fbw + nx;
+                    uintptr_t a0 = reinterpret_cast<uintptr_t>(row) & ~uintptr_t{63};
+                    uintptr_t a1 = (reinterpret_cast<uintptr_t>(row + sz) + 63) & ~uintptr_t{63};
+                    esp_cache_msync(reinterpret_cast<void*>(a0), a1 - a0,
+                                    ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                    // native row y holds landscape column (ny + y - lx) = y, read bottom-up
+                    for (int x = 0; x < sz; ++x)
+                      row[x] = src[static_cast<size_t>(sz - 1 - x) * sz + y];
+                    esp_cache_msync(reinterpret_cast<void*>(a0), a1 - a0,
+                                    ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                  }
+                  return true;
                 }
+                uint16_t* dst = mode == 1 ? rot_ps : rot;
+                ::hm_kernels::rot90_c(dst, src, sz, sz);
+                if (mode == 3) return true;
+                self->display_->draw_pixels_at(nx, ny, sz, sz,
+                                               reinterpret_cast<const uint8_t*>(dst),
+                                               display::COLOR_BITNESS_565, false);
                 return true;
-              }
-              uint16_t* dst = mode == 1 ? rot_ps : rot;
-              ::hm_kernels::rot90_c(dst, src, sz, sz);
-              if (mode == 3) return true;
-              self->display_->draw_pixels_at(nx, ny, sz, sz, reinterpret_cast<const uint8_t*>(dst),
-                                             display::COLOR_BITNESS_565, false);
-              return true;
-            },
-            static_cast<uint64_t>(sz) * sz, 20000);
-        ESP_LOGI(TAG, "bench tile %s size=%dx%d : %s us per tile, %s Mpx/s, n=%u", name, sz, sz,
-                 f2(r.us_call).c_str(), f2(r.mpx).c_str(), (unsigned)r.n);
+              },
+              static_cast<uint64_t>(sz) * sz, 20000);
+          ESP_LOGI(TAG, "bench tile %s size=%dx%d : %s us per tile, %s Mpx/s, n=%u", name, sz, sz,
+                   f2(r.us_call).c_str(), f2(r.mpx).c_str(), (unsigned)r.n);
+        }
+        App.feed_wdt();
       }
-      App.feed_wdt();
-    }
-    heap_caps_free(rot);
-    heap_caps_free(rot_ps);
-    lv_obj_invalidate(lv_display_get_screen_active(self->lvgl_->get_disp()));
-  });
+      heap_caps_free(rot);
+      heap_caps_free(rot_ps);
+      lv_obj_invalidate(lv_display_get_screen_active(self->lvgl_->get_disp()));
+    });
 
   // ---- B/C: scene repaints under several draw-buffer placements ----
   static const BufCfg kBufs[] = {{"esphome_default", PS, 0},  {"psram_256000", PS, 256000},
@@ -1175,10 +1239,16 @@ void HmBench::build_steps_() {
           total += esp_timer_get_time() - t0;
           App.feed_wdt();
         }
+        // Snapshot before the card's teardown refresh, which is not one of the timed five.
+        const int64_t flush_us = g_flush_us;
+        const uint32_t flush_n = g_flush_n, flush_px = g_flush_px;
         if (cs.card) {
           lv_obj_add_flag(g_card, LV_OBJ_FLAG_HIDDEN);
           lv_refr_now(disp);
         }
+        g_flush_us = flush_us;
+        g_flush_n = flush_n;
+        g_flush_px = flush_px;
         const double ms = total / 1000.0 / reps, fl = g_flush_us / 1000.0 / reps;
         const double px_per = static_cast<double>(lv_area_get_size(&cs.area));
         ESP_LOGI(TAG,

@@ -29,6 +29,18 @@ The repository root is mounted (not this directory) because the bench compiles t
 `ui_lvgl` Blitter and the component's `PpaBlitter` into itself (`components/hm_bench/__init__.py`).
 Flash `firmware.factory.bin` and capture UART0 at 115200 from boot to `bench run 0 done`.
 
+## Present self-check
+
+`-s selfcheck_only true -s period 600s` builds a firmware that runs only the present self-check:
+the same tiles drawn by LVGL and by the shipped present path (`hm::ui::show_tile_frame` and
+`DisplayPresenter`), compared byte for byte in the DSI frame buffer (single tiles of mixed sizes at
+the screen's corners and odd coordinates, one deliberately covered by a later tile, then 60 bursts
+of every tile at once), and a side-by-side screen (left LVGL, right present) held for a photo. A
+case that crashed the previous boot is reported and skipped (`bench selfcheck case N : SKIPPED`),
+so a failure cannot crash-loop the panel. Pass: every uncovered tile `presented` with 0 px
+differing, the covered one `INVALIDATED (why 11)` with 0 px differing, and the burst line with no
+failed checks.
+
 ## Line formats
 
 - `bench <op> size=WxH src=<psram|iram> dst=<psram|iram> : X Mpx/s, call overhead Y us, n=N, Z us/call[, check ok|check FAIL k/66 samples]`.
@@ -135,6 +147,13 @@ The lvgl component's flush is PPA rotate into a PSRAM buffer (22 Mpx/s) then the
 | plain image 400x300 | 24.3 (15.1/9.2) | 11.7 (4.2/7.5) | 20.2 (10.9/9.3) | 12.4 (7.4/5.0) | 7.1 (3.4/3.7) | 17.2 (10.5/6.7) | 14.3 (7.6/6.7) | 24.1 (15.0/9.2) |
 | overlay card 600x400 at 60 % | 64.5 (44.7/19.8) | 48.8 (29.1/19.7) | 57.9 (37.6/20.2) | 42.6 (30.1/12.5) | 27.6 (18.2/9.4) | 54.0 (37.4/16.6) | 51.8 (32.9/18.9) | 76.8 (53.6/23.2) |
 | ring 100x100 | 3.3 (2.1/1.2) | 3.3 (2.3/1.0) | 3.7 (2.5/1.2) | 2.3 (1.7/0.6) | 2.0 (1.5/0.5) | 2.3 (1.7/0.6) | 2.2 (1.6/0.6) | 3.2 (2.0/1.2) |
+
+Caution: these placements were measured with no network. On the panel with Wi-Fi, a 256 kB
+internal draw buffer broke the hosted Wi-Fi co-processor link (D-059).
+
+Correction (found in review after the runs): the overlay card's flush figure includes the card's
+teardown refresh, spread over the five timed refreshes, so its flush share is overstated and its
+render share understated; its total is right. The bench no longer counts that refresh.
 
 ### Tiles (firmware 4): one small opaque image tile
 

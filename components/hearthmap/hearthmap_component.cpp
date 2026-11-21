@@ -1,5 +1,7 @@
 #include "hearthmap_component.h"
 
+#include "stall_monitor.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -125,6 +127,9 @@ void HearthmapComponent::setup() {
   this->boot_started_ms_ = millis();
   this->stage_started_ms_ = this->boot_started_ms_;
   this->blitter_ = make_blitter(this->blitter_kind_, &this->blitter_name_);
+  // Names the main loop's wait if it ever stops turning (D-062).
+  breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
+  this->stall_monitor_ = start_stall_monitor(this->watchdog_ms_);
   this->presenter_ = std::make_unique<hm::ui::NoPresenter>();
   if (this->present_display_ != nullptr && this->lvgl_ != nullptr) {
     auto direct =
@@ -173,6 +178,9 @@ void HearthmapComponent::subscribe_() {
 }
 
 void HearthmapComponent::loop() {
+  // The stall monitor's view (D-062): the loop turned, and is in hearthmap until this returns.
+  breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
+  const CrumbScope crumb(Crumb::Hearthmap, millis());
   this->perf_.loop_start(micros());
   this->check_sprite_canaries_();
   this->log_perf_();
@@ -211,7 +219,10 @@ void HearthmapComponent::boot_slice_() {
   do {
     const Stage before = this->pipeline_->stage();
     const uint32_t step_start = micros();
-    const Stage after = this->pipeline_->boot_step(kBootRowsPerStep);
+    const Stage after = [&] {
+      const CrumbScope crumb(Crumb::HmBoot, millis());
+      return this->pipeline_->boot_step(kBootRowsPerStep);
+    }();
     const uint32_t step_us = micros() - step_start;
     if (step_us > this->stage_worst_us_) this->stage_worst_us_ = step_us;
     if (after != before) {
@@ -401,7 +412,10 @@ void HearthmapComponent::show_view_() {
 
 void HearthmapComponent::frame_slice_() {
   // Pulse frames LVGL's timer chose since the last pass: presented, or invalidated (D-058).
-  this->screen_->show_due_frames(*this->presenter_, &this->shown_frames_);
+  {
+    const CrumbScope crumb(Crumb::HmFrames, millis());
+    this->screen_->show_due_frames(*this->presenter_, &this->shown_frames_);
+  }
   const uint32_t view_t0 = micros();
   this->invalidate_band_();
   const uint32_t start = millis();
@@ -419,6 +433,7 @@ void HearthmapComponent::frame_slice_() {
                    (this->dirty_ && since >= this->min_redraw_interval_ms_);
   const std::size_t writes_before = this->screen_->writes();
   if (due) {
+    const CrumbScope crumb(Crumb::HmView, millis());
     this->refresh_view_(start, connected);
     this->show_view_();
     this->handle_publish_();  // a tab change to a kept image is shown in this same call
@@ -446,14 +461,20 @@ void HearthmapComponent::frame_slice_() {
   // image is redrawn with the walls and labels in it.
   // One unit per slice, then heat work in what is left: a queue that keeps refilling (a value
   // near a pulse changing every pass) must not hold the heat image back.
-  this->screen_->prepare_step();
+  {
+    const CrumbScope crumb(Crumb::HmPrepare, millis());
+    this->screen_->prepare_step();
+  }
   if (!this->rebake_requested_ && this->screen_->bake_ready()) {
     this->rebake_requested_ = true;
     this->pipeline_->request_rebuild_all();
   }
   bool idle = false;
   do {
-    idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
+    {
+      const CrumbScope crumb(Crumb::HmHeat, millis());
+      idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
+    }
     if (!idle && !this->heat_active_) {
       this->heat_active_ = true;
       this->heat_started_ms_ = millis();
@@ -530,10 +551,20 @@ void HearthmapComponent::on_display_event_(lv_event_t* e) {
       if (area != nullptr) self->perf_.invalidated(lv_area_get_size(area));
       break;
     }
-    case LV_EVENT_REFR_START: self->perf_.refresh_start(now_us); break;
-    case LV_EVENT_REFR_READY: self->perf_.refresh_ready(now_us, millis()); break;
-    case LV_EVENT_FLUSH_START: self->perf_.flush_start(now_us); break;
+    case LV_EVENT_REFR_START:
+      self->crumb_before_refresh_ = mark_crumb(Crumb::LvglRefresh, millis());
+      self->perf_.refresh_start(now_us);
+      break;
+    case LV_EVENT_REFR_READY:
+      mark_crumb(self->crumb_before_refresh_, millis());
+      self->perf_.refresh_ready(now_us, millis());
+      break;
+    case LV_EVENT_FLUSH_START:
+      mark_crumb(Crumb::LvglFlush, millis());
+      self->perf_.flush_start(now_us);
+      break;
     case LV_EVENT_FLUSH_FINISH: {
+      mark_crumb(Crumb::LvglRefresh, millis());
       const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
       self->perf_.flush_finish(now_us, area != nullptr ? lv_area_get_size(area) : 0);
       break;

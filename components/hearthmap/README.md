@@ -232,9 +232,10 @@ once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshe
 
 Measured on the panel with `tools/bench` (its README has every number):
 
-- **`lvgl: buffer_size: 12%`** in the device YAML (the example sets it): a 256,000 B draw buffer
-  that ESPHome tries in internal RAM first. Partial repaints 1.3-2x faster than the default 2 MB
-  PSRAM buffer, a full repaint 1.2x; it costs 256,000 B of internal RAM (D-059).
+- **Not recommended with Wi-Fi: `lvgl: buffer_size: 12%`**, a 256,000 B draw buffer that ESPHome
+  tries in internal RAM first. On the bench (no network) partial repaints were 1.3-2x faster than
+  with the default 2 MB PSRAM buffer; on the panel with Wi-Fi it broke the hosted co-processor
+  link, which needs that internal RAM. The example leaves it unset (D-059).
 - **`blitter: ppa`**: `hm::ui::Blitter` on the PPA (`ppa_blitter.h`), used above per-operation
   sizes where it wins: fills 6x and translucent blends 7x faster than the CPU on large areas,
   large copies 2x; smaller calls, flash sources and unaligned buffers stay in software. Any other
@@ -246,7 +247,27 @@ Measured on the panel with `tools/bench` (its README has every number):
   pulse frame goes this way when it is on: ring tiles and the outline grid's cells (D-053).
 - Not used, with reasons: LVGL's own PPA draw unit and ESP-IDF 6 (D-060), PIE SIMD (D-057).
 
-`dump_config` logs `hearthmap blitter: <kind>, present: <state>`.
+`dump_config` logs `hearthmap blitter: <kind>, present: <state>, stall monitor: <state>`.
+
+## Stalls and the task watchdog
+
+- **Stall monitor** (always on, D-062): if the main loop has not turned for 2 s, a line like
+  `[W][hearthmap.stall]: main loop has not turned for 2000 ms; in: <where> (for N ms)` goes straight
+  to the UART console, an `[E]` line follows 0.5 s before the task watchdog is due, and a `[W]`
+  line when the loop turns again. `<where>` is hearthmap's loop, LVGL rendering, LVGL's flush, a
+  present, a PPA call, or elsewhere (another component, such as Wi-Fi).
+- **Watchdog versus Wi-Fi** (D-061): with `esp32_hosted`, every Wi-Fi call from the main loop can
+  wait up to the co-processor's RPC timeout (5 s by default), so the component refuses an
+  `esp32: watchdog_timeout` below 16 s (three such waits and a second); set it in the device YAML:
+
+  ```yaml
+  esp32:
+    watchdog_timeout: 16s
+  ```
+
+- ESPHome's own flush waits for the display copy with no timeout; the draft upstream report is
+  `docs/upstream/mipi-dsi-unbounded-wait.md`. hearthmap's own display and PPA calls check their
+  preconditions so they cannot be refused once started.
 
 ## Measuring
 

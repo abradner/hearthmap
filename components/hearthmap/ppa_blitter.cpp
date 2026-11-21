@@ -4,6 +4,8 @@
 
 #include "esp_cache.h"
 #include "esp_memory_utils.h"
+#include "esphome/core/hal.h"
+#include "loop_breadcrumb.h"
 
 namespace esphome::hearthmap_panel {
 
@@ -95,6 +97,7 @@ void PpaBlitter::copy(const ui::Surface565& dst, int x, int y, const ui::View565
     op.fg_alpha_fix_val = 0;
     op.mode = PPA_TRANS_MODE_BLOCKING;
     writeback_rows_(dst, c.y, c.h);
+    const CrumbScope crumb(Crumb::PpaCopy, millis());
     if (ppa_do_blend(blend_, &op) == ESP_OK) {
       hw_calls_++;
       return;
@@ -117,6 +120,7 @@ void PpaBlitter::fill(const ui::Surface565& dst, int x, int y, int w, int h, std
     op.fill_argb_color.val = 0xFF000000U | (((r5 << 3U) | (r5 >> 2U)) << 16U) |
                              (((g6 << 2U) | (g6 >> 4U)) << 8U) | ((b5 << 3U) | (b5 >> 2U));
     op.mode = PPA_TRANS_MODE_BLOCKING;
+    const CrumbScope crumb(Crumb::PpaFill, millis());
     if (ppa_do_fill(fill_, &op) == ESP_OK) {
       hw_calls_++;
       return;
@@ -146,6 +150,7 @@ void PpaBlitter::blend(const ui::Surface565& dst, int x, int y, const ui::View56
     op.fg_alpha_update_mode = PPA_ALPHA_FIX_VALUE;
     op.fg_alpha_fix_val = alpha;
     op.mode = PPA_TRANS_MODE_BLOCKING;
+    const CrumbScope crumb(Crumb::PpaBlend, millis());
     if (ppa_do_blend(blend_, &op) == ESP_OK) {
       hw_calls_++;
       return;
