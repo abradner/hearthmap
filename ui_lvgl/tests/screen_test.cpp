@@ -1339,3 +1339,32 @@ TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   CHECK_FALSE(shown(0));
   CHECK(shown(1));  // the freed memory went to the waiting room, with no change of its own
 }
+
+TEST_CASE("a press on a pin is acknowledged before release; elsewhere nothing shows") {
+  Rig rig;
+  rig.show(test::temperature_vm(rig.config));
+  // Pin 0 (temperature) at map (0.25, 0.25) of 864 x 720 at (40, 76).
+  const std::int32_t x = 40 + 216, y = 76 + 180;
+  auto marker = [&]() -> lv_obj_t* {
+    // The last child of the map is the press ring.
+    lv_obj_t* map = rig.w().map;
+    return lv_obj_get_child(map, static_cast<std::int32_t>(lv_obj_get_child_count(map)) - 1);
+  };
+  REQUIRE(marker() != nullptr);
+  CHECK(hidden(marker()));
+  rig.display.press(x, y);
+  CHECK_FALSE(hidden(marker()));
+  lv_obj_update_layout(rig.display.screen());
+  lv_area_t a;
+  lv_obj_get_coords(marker(), &a);
+  CHECK(a.x1 < x);
+  CHECK(a.x2 > x);
+  CHECK(rig.sink.events.empty());  // nothing sent yet: the tap is not complete
+  rig.display.release();
+  CHECK(hidden(marker()));
+  CHECK(rig.sink.events.size() == 1);  // and the tap itself still goes through core (R12)
+  // A press on empty map shows nothing.
+  rig.display.press(40 + 700, 76 + 600);
+  CHECK(hidden(marker()));
+  rig.display.release();
+}
