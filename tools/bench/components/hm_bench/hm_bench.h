@@ -24,6 +24,7 @@ class HmBench : public Component {
   void set_period_ms(uint32_t ms) { period_ms_ = ms; }
   void set_start_delay_ms(uint32_t ms) { start_delay_ms_ = ms; }
   void set_quick(bool quick) { quick_ = quick; }
+  void set_selfcheck_only(bool only) { selfcheck_only_ = only; }
 
   void setup() override;
   void loop() override;
@@ -38,6 +39,7 @@ class HmBench : public Component {
   uint32_t period_ms_{30000};
   uint32_t start_delay_ms_{8000};
   bool quick_{false};
+  bool selfcheck_only_{false};
   uint32_t next_run_ms_{0};
   uint32_t run_{0};
   size_t step_{0};

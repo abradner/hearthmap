@@ -36,11 +36,17 @@ BLITTER_FILES = {
     "hm_blit/blitter.cpp": REPO_ROOT / "ui_lvgl/src/blitter.cpp",
     "hm_blit/ppa_blitter.h": REPO_ROOT / "components/hearthmap/ppa_blitter.h",
     "hm_blit/ppa_blitter.cpp": REPO_ROOT / "components/hearthmap/ppa_blitter.cpp",
+    "hearthmap/ui/present.h": REPO_ROOT / "ui_lvgl/include/hearthmap/ui/present.h",
+    "hm_blit/present.cpp": REPO_ROOT / "ui_lvgl/src/present.cpp",
+    "hm_blit/display_presenter.h": REPO_ROOT / "components/hearthmap/display_presenter.h",
+    "hm_blit/display_presenter.cpp": REPO_ROOT / "components/hearthmap/display_presenter.cpp",
+    "hm_blit/panel_rotation.h": REPO_ROOT / "components/hearthmap/panel_rotation.h",
 }
 
 CONF_PERIOD = "period"
 CONF_START_DELAY = "start_delay"
 CONF_LVGL_PPA_UNIT = "lvgl_ppa_unit"
+CONF_SELFCHECK_ONLY = "selfcheck_only"
 
 hm_bench_ns = cg.esphome_ns.namespace("hm_bench")
 HmBench = hm_bench_ns.class_("HmBench", cg.Component)
@@ -53,6 +59,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_PERIOD, default="30s"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_START_DELAY, default="8s"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_LVGL_PPA_UNIT, default=False): cv.boolean,
+        # Only the present self-check (side-by-side photo and frame-buffer compare).
+        cv.Optional(CONF_SELFCHECK_ONLY, default=False): cv.boolean,
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -102,5 +110,6 @@ async def to_code(config: dict) -> None:
     cg.add(var.set_display(await cg.get_variable(config[CONF_DISPLAY_ID])))
     cg.add(var.set_period_ms(config[CONF_PERIOD].total_milliseconds))
     cg.add(var.set_start_delay_ms(config[CONF_START_DELAY].total_milliseconds))
+    cg.add(var.set_selfcheck_only(config[CONF_SELFCHECK_ONLY]))
     for rel, path in BLITTER_FILES.items():
         write_file_if_changed(Path(CORE.relative_src_path(rel)), path.read_text(encoding="utf-8"))

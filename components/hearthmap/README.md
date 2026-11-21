@@ -232,9 +232,10 @@ once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshe
 
 Measured on the panel with `tools/bench` (its README has every number):
 
-- **`lvgl: buffer_size: 12%`** in the device YAML (the example sets it): a 256,000 B draw buffer
-  that ESPHome tries in internal RAM first. Partial repaints 1.3-2x faster than the default 2 MB
-  PSRAM buffer, a full repaint 1.2x; it costs 256,000 B of internal RAM (D-059).
+- **Not recommended with Wi-Fi: `lvgl: buffer_size: 12%`**, a 256,000 B draw buffer that ESPHome
+  tries in internal RAM first. On the bench (no network) partial repaints were 1.3-2x faster than
+  with the default 2 MB PSRAM buffer; on the panel with Wi-Fi it broke the hosted co-processor
+  link, which needs that internal RAM. The example leaves it unset (D-059).
 - **`blitter: ppa`**: `hm::ui::Blitter` on the PPA (`ppa_blitter.h`), used above per-operation
   sizes where it wins: fills 6x and translucent blends 7x faster than the CPU on large areas,
   large copies 2x; smaller calls, flash sources and unaligned buffers stay in software. Any other

@@ -136,6 +136,9 @@ The lvgl component's flush is PPA rotate into a PSRAM buffer (22 Mpx/s) then the
 | overlay card 600x400 at 60 % | 64.5 (44.7/19.8) | 48.8 (29.1/19.7) | 57.9 (37.6/20.2) | 42.6 (30.1/12.5) | 27.6 (18.2/9.4) | 54.0 (37.4/16.6) | 51.8 (32.9/18.9) | 76.8 (53.6/23.2) |
 | ring 100x100 | 3.3 (2.1/1.2) | 3.3 (2.3/1.0) | 3.7 (2.5/1.2) | 2.3 (1.7/0.6) | 2.0 (1.5/0.5) | 2.3 (1.7/0.6) | 2.2 (1.6/0.6) | 3.2 (2.0/1.2) |
 
+Caution: these placements were measured with no network. On the panel with Wi-Fi, a 256 kB
+internal draw buffer broke the hosted Wi-Fi co-processor link (D-059).
+
 ### Tiles (firmware 4): one small opaque image tile
 
 An LVGL refresh with nothing invalid costs 14 us; with one 2 x 2 area, 660 us (flush 170 us).
