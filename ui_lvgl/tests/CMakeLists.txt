@@ -9,6 +9,7 @@ add_executable(hearthmap_ui_tests
   heat_image_test.cpp
   screen_test.cpp
   map_bake_test.cpp
+  memory_test.cpp
 )
 target_link_libraries(hearthmap_ui_tests PRIVATE
   hearthmap::ui_lvgl hearthmap_lvgl_headless hearthmap_doctest)
