@@ -41,6 +41,8 @@ class MapBake {
 
   /// Show or hide the baked objects (hidden while the shown image carries them).
   void set_objects_hidden(bool hidden);
+  /// `o` is hidden while bands are rendered, like the objects given at construction.
+  void hide_too(lv_obj_t* o) { hide_.push_back(o); }
   void forget_objects();
 
  private:

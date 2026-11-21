@@ -615,6 +615,9 @@ struct Screen::Impl {
     lv_obj_set_style_border_color(press_marker, hex(theme::kTextPrimary), 0);
     lv_obj_set_style_border_opa(press_marker, LV_OPA_COVER, 0);
     lv_obj_set_hidden(press_marker, true);
+    // A press held while sprites are captured or the walls baked must not end up in either.
+    if (pulses) pulses->hide_in_captures(press_marker);
+    if (bake) bake->hide_too(press_marker);
   }
 
   /// The overlay disc's photo cut round over the card colour, once per photo (D-056), so the

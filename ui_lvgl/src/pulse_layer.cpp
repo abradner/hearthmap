@@ -571,6 +571,9 @@ bool PulseLayer::capture(Tile& t, bool with_pins) {
     if (!lv_obj_is_hidden(r.t.img) && intersects(r.t.area, t.area)) hidden.push_back(r.t.img);
   }
   if (outline_box_ != nullptr && !lv_obj_is_hidden(outline_box_)) hidden.push_back(outline_box_);
+  for (lv_obj_t* o : never_captured_) {
+    if (!lv_obj_is_hidden(o)) hidden.push_back(o);
+  }
   if (!with_pins) {
     for (lv_obj_t* p : pins_) {
       if (!lv_obj_is_hidden(p) && intersects(pin_extent(p), t.area)) hidden.push_back(p);

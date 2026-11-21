@@ -1436,6 +1436,34 @@ TEST_CASE("a press on a pin is acknowledged before release; elsewhere nothing sh
   rig.display.release();
 }
 
+TEST_CASE("a held press is never captured into a pulse sprite") {
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;  // pin 0's ring tile holds the press ring's area
+  rig.show(vm);
+  const std::int32_t x = 40 + 216, y = 76 + 180;  // pin 0
+  rig.display.render();
+  const std::vector<std::uint16_t> before = rig.display.framebuffer();
+  // Pressed and held while the sprites are recaptured (a new heat image under them).
+  rig.display.press(x, y);
+  rig.screen->invalidate_heat();
+  while (rig.screen->prepare_step()) {
+  }
+  rig.display.release();
+  rig.display.render();
+  // Released: the ring tile shows no trace of the press ring (same frame time as before).
+  const std::vector<std::uint16_t>& after = rig.display.framebuffer();
+  int differ = 0;
+  for (std::int32_t yy = y - 40; yy <= y + 40; ++yy) {
+    for (std::int32_t xx = x - 40; xx <= x + 40; ++xx) {
+      const auto i = static_cast<std::size_t>(yy) * 1280U + static_cast<std::size_t>(xx);
+      differ += before[i] != after[i] ? 1 : 0;
+    }
+  }
+  CHECK(differ == 0);
+}
+
 namespace {
 
 struct CountingPresenter final : Presenter {

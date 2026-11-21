@@ -94,6 +94,8 @@ class PulseLayer {
   /// tiles step aside until then; without (a refresh of the same layer's image) the old frames
   /// keep playing until the new ones are ready.
   void mark_all_dirty(bool hide);
+  /// `o` (drawn in the map, above the pulses) is hidden whenever a tile's background is captured.
+  void hide_in_captures(lv_obj_t* o) { never_captured_.push_back(o); }
   /// While veiled every tile is hidden (the map under them is not the one they captured).
   void set_veiled(bool veiled);
 
@@ -246,6 +248,7 @@ class PulseLayer {
   lv_area_t map_area_{};
   lv_area_t tile_area_{};  ///< map_area_ shrunk to whole kTileAlign blocks
   std::vector<lv_obj_t*> pins_;
+  std::vector<lv_obj_t*> never_captured_;
   std::vector<Ring> rings_;
   std::vector<Room> rooms_;
   std::vector<Cell> cells_;
