@@ -881,10 +881,13 @@ a `Presenter` port (`NoPresenter` on the host and by default) and `show_tile_fra
 points the tile image's descriptor at the new frame without invalidating, then presents it only
 when `present_check()` passes and otherwise invalidates. `present_check()` enforces in code: an
 lv_image whose source is that descriptor, tightly packed RGB565, not inside an LVGL refresh, on
-the active screen, nothing hidden, full opacity with no recolour or blend mode along its ancestry,
-no image or style transform, object area exactly the image (no padding, border, other size), wholly
-inside the display and every clipping ancestor, no children, and no object drawn after it (with
-its extra draw size; the top and system layers included) reaching into its area. Because the
+the active screen with no screen-load animation running, nothing hidden, full opacity with no
+recolour, and no layered opacity, blend mode or bitmap mask along its ancestry, no image or style
+transform, object area exactly the image (no padding, border, other size), wholly inside the
+display and every clipping ancestor, no rounded ancestor clipping its corners, no children, and no
+object drawn after it reaching into its area (with its extra draw size; any transformed later
+object counts as reaching it; the top and system layers count by their children, and by
+themselves when styled to draw). Because the
 descriptor always points at the current frame, any repaint LVGL does for other reasons draws the
 same pixels, so a stale frame never returns. The component's `DisplayPresenter` (YAML
 `present: true` + `display_id`, default off) also refuses calls from any task but the one that ran

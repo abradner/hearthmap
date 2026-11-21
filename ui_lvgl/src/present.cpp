@@ -25,6 +25,27 @@ bool transformed_style(const lv_obj_t* o) {
          lv_obj_get_style_transform_skew_y(o, LV_PART_MAIN) != 0;
 }
 
+// Whether `o` itself puts pixels on the screen (a background, border, outline, shadow or
+// background image), for the layer objects, which are transparent only by default.
+bool draws_itself(const lv_obj_t* o) {
+  return lv_obj_get_style_bg_opa(o, LV_PART_MAIN) > LV_OPA_TRANSP ||
+         lv_obj_get_style_bg_image_src(o, LV_PART_MAIN) != nullptr ||
+         (lv_obj_get_style_border_width(o, LV_PART_MAIN) > 0 &&
+          lv_obj_get_style_border_opa(o, LV_PART_MAIN) > LV_OPA_TRANSP) ||
+         (lv_obj_get_style_outline_width(o, LV_PART_MAIN) > 0 &&
+          lv_obj_get_style_outline_opa(o, LV_PART_MAIN) > LV_OPA_TRANSP) ||
+         (lv_obj_get_style_shadow_width(o, LV_PART_MAIN) > 0 &&
+          lv_obj_get_style_shadow_opa(o, LV_PART_MAIN) > LV_OPA_TRANSP);
+}
+
+// Styles that make LVGL draw a subtree into a layer and composite it (translucent, masked or
+// blended), so the tile's pixels on the panel are not the tile's own.
+bool layered(const lv_obj_t* o) {
+  return lv_obj_get_style_opa_layered(o, LV_PART_MAIN) < LV_OPA_COVER ||
+         lv_obj_get_style_blend_mode(o, LV_PART_MAIN) != LV_BLEND_MODE_NORMAL ||
+         lv_obj_get_style_bitmap_mask_src(o, LV_PART_MAIN) != nullptr;
+}
+
 // Draw order walk: an object draws, then its children in order. `after` turns true once the
 // tile has been passed; any visible object after that reaching into `area` covers it.
 struct CoverWalk {
@@ -38,6 +59,11 @@ struct CoverWalk {
     if (o == tile) {
       after = true;
       return;  // its own children are refused separately (HasChildren)
+    }
+    // A transformed object's untransformed area says nothing about where it draws: refuse.
+    if (after && transformed_style(o)) {
+      covered = true;
+      return;
     }
     if (after && check_self) {
       lv_area_t a;
@@ -73,7 +99,9 @@ PresentBlock present_check(lv_obj_t* image, const lv_image_dsc_t& dsc) {
   lv_display_t* disp = lv_obj_get_display(image);
   if (disp != nullptr && disp->rendering_in_progress) return PresentBlock::Refreshing;
   lv_obj_t* screen = lv_obj_get_screen(image);
-  if (disp == nullptr || screen != lv_display_get_screen_active(disp)) {
+  // During a screen-load animation the outgoing screen may be drawn over the new one.
+  if (disp == nullptr || screen != lv_display_get_screen_active(disp) ||
+      disp->prev_scr != nullptr || disp->scr_to_load != nullptr) {
     return PresentBlock::NotOnActiveScreen;
   }
   lv_obj_update_layout(image);
@@ -86,6 +114,9 @@ PresentBlock present_check(lv_obj_t* image, const lv_image_dsc_t& dsc) {
       lv_obj_get_style_image_recolor_opa(image, LV_PART_MAIN) > LV_OPA_TRANSP ||
       lv_obj_get_style_blend_mode(image, LV_PART_MAIN) != LV_BLEND_MODE_NORMAL) {
     return PresentBlock::NotOpaque;
+  }
+  for (const lv_obj_t* o = image; o != nullptr; o = lv_obj_get_parent(o)) {
+    if (layered(o)) return PresentBlock::NotOpaque;
   }
   if (lv_image_get_scale_x(image) != LV_SCALE_NONE ||
       lv_image_get_scale_y(image) != LV_SCALE_NONE || lv_image_get_rotation(image) != 0 ||
@@ -113,6 +144,11 @@ PresentBlock present_check(lv_obj_t* image, const lv_image_dsc_t& dsc) {
                               lv_display_get_vertical_resolution(disp) - 1};
   if (!inside(area, screen_area)) return PresentBlock::Clipped;
   for (const lv_obj_t* p = lv_obj_get_parent(image); p != nullptr; p = lv_obj_get_parent(p)) {
+    // A rounded parent that clips its corners masks children inside its bounding box too.
+    if (lv_obj_get_style_clip_corner(p, LV_PART_MAIN) &&
+        lv_obj_get_style_radius(p, LV_PART_MAIN) > 0) {
+      return PresentBlock::Clipped;
+    }
     if (lv_obj_is_overflow_visible(p)) continue;
     lv_area_t pa;
     lv_obj_get_coords(p, &pa);
@@ -120,13 +156,14 @@ PresentBlock present_check(lv_obj_t* image, const lv_image_dsc_t& dsc) {
   }
   CoverWalk walk{image, area};
   walk.visit(screen, false);
-  // The top and system layers draw over every screen. The layer objects themselves are
-  // transparent and screen-sized, so only what is in them counts.
+  // The top and system layers draw over every screen. The layer objects are screen-sized and
+  // transparent by default, so a layer counts by its children, and by itself only if it has
+  // been styled to draw.
   for (lv_obj_t* layer : {lv_display_get_layer_top(disp), lv_display_get_layer_sys(disp)}) {
     if (layer == nullptr) continue;
     lv_obj_update_layout(layer);
     walk.after = true;
-    walk.visit(layer, false);
+    walk.visit(layer, draws_itself(layer));
   }
   if (walk.covered) return PresentBlock::Covered;
   return PresentBlock::Ok;

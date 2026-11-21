@@ -221,3 +221,69 @@ TEST_CASE("present: a tile on a screen that is not shown is not presented") {
   CHECK(present_check(t.obj, t.dsc) == PresentBlock::NotOnActiveScreen);
   lv_obj_delete(other);
 }
+
+TEST_CASE("present: a later object transformed into the tile blocks, whatever its plain area") {
+  host::HeadlessDisplay d(200, 120);
+  clean(d);
+  Tile t(d.screen(), 30, 20);
+  lv_obj_t* later = box(d.screen(), 100, 20, 10, 10);  // clear of the tile untransformed
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);
+  lv_obj_set_style_transform_scale(later, 2048, 0);  // 8x around its centre reaches the tile
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Covered);
+}
+
+TEST_CASE("present: layered opacity, a blend mode or a mask on an ancestor blocks") {
+  host::HeadlessDisplay d(200, 120);
+  clean(d);
+  lv_obj_t* parent = box(d.screen(), 10, 10, 100, 80);
+  Tile t(parent, 20, 10);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);
+  lv_obj_set_style_opa_layered(parent, LV_OPA_50, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::NotOpaque);
+  lv_obj_set_style_opa_layered(parent, LV_OPA_COVER, 0);
+  lv_obj_set_style_blend_mode(parent, LV_BLEND_MODE_ADDITIVE, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::NotOpaque);
+  lv_obj_set_style_blend_mode(parent, LV_BLEND_MODE_NORMAL, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);
+}
+
+TEST_CASE("present: a rounded parent that clips its corners blocks") {
+  host::HeadlessDisplay d(200, 120);
+  clean(d);
+  lv_obj_t* parent = box(d.screen(), 10, 10, 100, 80);
+  Tile t(parent, 0, 0);  // in the parent's top-left corner
+  lv_obj_set_style_radius(parent, 20, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);  // radius alone does not clip children
+  lv_obj_set_style_clip_corner(parent, true, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Clipped);
+}
+
+TEST_CASE("present: a top layer styled to draw blocks, though it has no children") {
+  host::HeadlessDisplay d(200, 120);
+  clean(d);
+  Tile t(d.screen(), 30, 20);
+  lv_obj_t* top = lv_display_get_layer_top(d.display());
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);
+  lv_obj_set_style_bg_opa(top, LV_OPA_50, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Covered);
+  lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);
+}
+
+TEST_CASE("present: not while a screen-load animation is running") {
+  host::HeadlessDisplay d(200, 120);
+  clean(d);
+  lv_obj_t* next = lv_obj_create(nullptr);
+  Tile t(next, 30, 20);
+  d.set_time_ms(1000);
+  lv_screen_load_anim(next, LV_SCREEN_LOAD_ANIM_OVER_LEFT, 200, 0, false);
+  d.set_time_ms(1050);
+  d.run_timers();
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::NotOnActiveScreen);
+  d.set_time_ms(1500);
+  d.run_timers();
+  d.set_time_ms(1600);
+  d.run_timers();
+  CHECK(lv_display_get_screen_active(d.display()) == next);
+  CHECK(present_check(t.obj, t.dsc) == PresentBlock::Ok);
+}
