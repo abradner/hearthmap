@@ -953,19 +953,24 @@ because of per-row cache maintenance, and it needs the panel's private handle); 
 refresh for many areas (needs LVGL's direct mode and a different ESPHome flush). **Would change
 if:** ESPHome exposes the frame buffer or a cheaper per-area flush.
 
-### D-059 LVGL's draw buffer goes in internal RAM (provisional)
+### D-059 LVGL's draw buffer stays in PSRAM while the hosted Wi-Fi link runs (provisional, amended)
 
 **Question:** does the draw buffer's placement matter? **Measured** (tools/bench/README.md,
-Scenes): a 256,000 B internal buffer against ESPHome's default 2 MB PSRAM buffer: full screen
-126 ms against 152, a 400 x 300 image 12.4 against 24.3, a 600 x 400 translucent card 42.6
-against 64.5, a 100 x 100 ring 2.3 against 3.3; a PSRAM buffer of the same small size is the
-worst of all (223 ms full screen). Smaller internal buffers (128 kB, 64 kB) lose some of the gain
-to more flush calls. **Default:** the example sets `lvgl: buffer_size: 12%`, which ESPHome turns
-into a 1/8-screen buffer (256,000 B) tried in internal RAM first and in PSRAM if that fails
-(`lvgl_esphome.cpp`, setup). It costs 256,000 B of the P4's 576 KiB internal RAM; the bench
-firmware had 565 KB free with no network, and the real firmware's headroom with Wi-Fi running
-has not been measured. **Would change if:** the panel's log shows the buffer fell back to PSRAM
-("Failed to allocate ... internal draw buffer"), or Wi-Fi runs short of internal RAM.
+Scenes; bench firmware with **no network**): a 256,000 B internal buffer against ESPHome's
+default 2 MB PSRAM buffer: full screen 126 ms against 152, a 400 x 300 image 12.4 against 24.3, a
+600 x 400 translucent card 42.6 against 64.5, a 100 x 100 ring 2.3 against 3.3; a PSRAM buffer of
+the same small size is the worst of all (223 ms full screen). **First default (withdrawn):** the
+example set `lvgl: buffer_size: 12%`, which ESPHome turns into a 1/8-screen buffer tried in
+internal RAM first (`lvgl_esphome.cpp`, setup). **Found on the panel (2026-11-21):** with Wi-Fi
+running, that one line broke the hosted ESP32-C6 link (`esp_wifi_get_mode failed: ESP_FAIL`,
+scan timeouts, connect failures, the fallback access point); removing it on the same commit
+restored Wi-Fi. The hosted transport's buffers need DMA-capable internal RAM, and the draw buffer
+takes 256,000 B of the 576 KiB. **Default now:** the example leaves `buffer_size` unset (2 MB in
+PSRAM). ESPHome's option offers only 100, 50, 25 and 12 % (1, 1/2, 1/4, 1/8 of the screen), so no
+smaller internal buffer can be tried through YAML; raising `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL`
+(32,768 by default) is not expected to help, since it shapes `malloc()`'s choice and LVGL's buffer
+is an explicit `heap_caps` allocation (read, not tested). **Would change if:** ESPHome lets a
+smaller internal buffer be chosen, or the board runs without the hosted link.
 
 ### D-060 Neither LVGL's PPA unit nor ESP-IDF 6 is adopted now (provisional)
 
@@ -981,8 +986,7 @@ and images 3-5 times slower (the PPA's fixed cost), draws flash images (the plan
 4 Mpx/s instead of 160, and draws **nothing** for any buffer that is not cache-line aligned, with
 no software fallback. Under IDF 6 stock (`LV_USE_PPA_IMG` 0) only fills are accelerated, and with
 an internal draw buffer the scenes gained nothing. **Default:** neither. The gains it offers are
-had more safely by D-059 (internal buffer), D-057 (the Blitter where it wins) and D-058
-(present). **Risks recorded:** the shim depends on a monkeypatch of ESPHome internals; IDF 6
+had more safely by D-057 (the Blitter where it wins) and D-058 (present). **Risks recorded:** the shim depends on a monkeypatch of ESPHome internals; IDF 6
 under the Wi-Fi co-processor path has never run with a network (the bench had none). **Would
 change if:** LVGL's PPA unit gains a size threshold, a flash check and a software fallback, and
 ESPHome makes IDF 6 its recommended version.

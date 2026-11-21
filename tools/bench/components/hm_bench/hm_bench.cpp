@@ -31,6 +31,7 @@
 #include "hearthmap/ui/blitter.h"
 #include "hm_blit/ppa_blitter.h"
 #include "kernels.h"
+#include "selfcheck.h"
 
 // Benchmark only: the frame-buffer measurements need the DSI panel handle, which MipiDsi keeps
 // protected (and the class is final). Everything that header includes is included above, so
@@ -651,6 +652,11 @@ void HmBench::build_steps_() {
   this->steps_.clear();
   auto& steps = this->steps_;
   HmBench* self = this;
+  if (this->selfcheck_only_) {
+    add_selfcheck_steps(steps, this->display_, this->lvgl_);
+    steps.push_back([]() { ESP_LOGI(TAG, "bench run done (selfcheck)"); });
+    return;
+  }
 
   steps.push_back([self]() {
     ESP_LOGI(

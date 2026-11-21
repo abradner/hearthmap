@@ -52,10 +52,10 @@ lvgl:
     - main_touch
   rotation: ${lvgl_rotation}
   byte_order: little_endian
-  # 12% of the screen (256,000 B) is the size ESPHome tries in internal RAM first (it falls back
-  # to PSRAM if that fails). Measured on the panel: partial repaints 1.3-2x faster than the
-  # default full-screen PSRAM buffer, a full repaint 1.2x (tools/bench/README.md, D-059).
-  buffer_size: 12%
+  # Not set on purpose: `buffer_size: 12%` (a 256,000 B buffer ESPHome tries in internal RAM
+  # first) repainted 1.3-2x faster on the bench, which had no network, but on the panel with
+  # Wi-Fi it broke the hosted co-processor link (esp_wifi_get_mode failed, scan timeouts): the
+  # buffer takes the internal RAM the link needs. ESPHome offers only 100/50/25/12% (D-059).
   default_font: montserrat_24
   # hearthmap draws on the active screen itself; an empty widget list stops LVGL adding its
   # default "hello world" page underneath.
