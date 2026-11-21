@@ -1061,6 +1061,61 @@ TEST_CASE("pulses are sprites: smooth frames from the tick, no LVGL animation") 
   CHECK(after.tile_bytes > 0);
 }
 
+TEST_CASE("bisect modes: still pulses keep one frame; off pulses capture and compose nothing") {
+  ViewModel vm;
+  auto pulsing = [&vm](const Config& c) {
+    vm = test::temperature_vm(c);
+    vm.pins[0].active_value = 33.0;
+    vm.pins[0].active_severity = Severity::Danger;
+    vm.rooms[0].pulse = Severity::Warn;
+  };
+  SUBCASE("still") {
+    Rig rig;
+    rig.screen->set_pulse_mode(PulseMode::Still);
+    pulsing(rig.config);
+    rig.show(vm);
+    const auto* dsc = static_cast<const lv_image_dsc_t*>(lv_image_get_src(rig.w().pin_pulse[0]));
+    REQUIRE(dsc != nullptr);
+    std::set<const std::uint8_t*> pointers;
+    for (std::uint32_t t = 0; t <= 2 * 1584; t += 16) {
+      rig.display.set_time_ms(t);
+      rig.display.run_timers();
+      pointers.insert(dsc->data);
+    }
+    const PulseCounters c = rig.screen->pulse_counters();
+    CHECK(c.captures > 0);        // the sprites were captured and composed as usual
+    CHECK(c.tile_bytes > 0);      // and hold their frames
+    CHECK(pointers.size() == 1);  // but the ring never moved on from one frame
+    CHECK(rig.screen->verify_pulse_frames());
+  }
+  SUBCASE("off") {
+    Rig rig;
+    rig.screen->set_pulse_mode(PulseMode::Off);
+    pulsing(rig.config);
+    rig.show(vm);
+    for (std::uint32_t t = 0; t <= 2 * 1584; t += 16) {
+      rig.display.set_time_ms(t);
+      rig.display.run_timers();
+    }
+    const PulseCounters c = rig.screen->pulse_counters();
+    CHECK(c.captures == 0);
+    CHECK(c.frames == 0);
+    CHECK(rig.screen->bake_ready());  // the map bake is not a pulse: it still runs
+    CHECK(rig.screen->verify_pulse_frames());
+  }
+  SUBCASE("animated, the control") {
+    Rig rig;
+    pulsing(rig.config);
+    rig.show(vm);
+    for (std::uint32_t t = 0; t <= 1584; t += 16) {
+      rig.display.set_time_ms(t);
+      rig.display.run_timers();
+    }
+    CHECK(rig.screen->pulse_counters().captures > 0);
+    CHECK(rig.screen->pulse_counters().frames > 10);
+  }
+}
+
 namespace {
 
 // The outline tiles showing now (screen px), in the outline container's order.

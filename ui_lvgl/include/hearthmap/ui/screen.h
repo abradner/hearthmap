@@ -80,6 +80,9 @@ struct ScreenDeps {
   std::uint32_t pulse_min_divisor = 1;
 };
 
+/// How pulse sprites run (Screen::set_pulse_mode()).
+enum class PulseMode : std::uint8_t { Animated, Still, Off };
+
 /// The pulse sprites' counters (D-053), for an embedder's performance log.
 struct PulseCounters {
   std::uint32_t frames = 0;    ///< ring frames and room steps shown since construction
@@ -178,6 +181,11 @@ class Screen {
   /// them (D-058): call it from the main loop, outside LVGL callbacks. Without (the default),
   /// each frame is shown by invalidating its tile at once.
   void set_frames_deferred(bool deferred);
+  /// For bisecting a fault on the panel, not for normal use (D-063). Animated (the default) is
+  /// the normal behaviour. Still composes and keeps every frame as usual but never advances them:
+  /// each tile shows one fixed frame. Off never captures or composes a sprite (the map bake still
+  /// runs), so pulses hold no frame memory and show nothing. Set it before the first update().
+  void set_pulse_mode(PulseMode mode);
   /// Shows every pulse frame chosen since the last call through `presenter` (present_check() and
   /// show_tile_frame(); an invalidation where it cannot present). Adds to `tally` when given.
   void show_due_frames(Presenter& presenter, ShownFrames* tally = nullptr);
