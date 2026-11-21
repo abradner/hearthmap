@@ -234,6 +234,17 @@ add rather than rewrite.
   `point_in_polygon()` loop (double) ran inside `setup()` (D-038). Keep `double` out of per-pixel
   and per-cell loops, never do unbounded work in a component's `setup()`, and check new device
   paths with the pipeline benchmark in `components/hearthmap/tests/test_cpp.py`.
+- **The PIE (xesppie) assembler takes address operands only in x8-x15.** `esp.vld.128.ip q0, a6, 16`
+  fails with "illegal operands", and GCC 14 here has no `cr` constraint to ask for those registers;
+  pin the pointers with local register variables (`register T* p asm("a0")`), as
+  `tools/bench/components/hm_bench/kernels.cpp` does. `esp.vld.128` also ignores the low four
+  address bits, so an unaligned pointer reads the wrong pixels rather than faulting.
+- **LVGL 9.6's PPA draw unit draws nothing when it cannot use a buffer.** For a draw buffer whose
+  start or size is not whole 64-byte lines it logs `ppa_core: out.buffer addr or out.buffer_size
+  not aligned` and leaves the area untouched (no software fallback); it also reads flash images at
+  4 Mpx/s. Measured with `tools/bench` (D-060), which is why the unit is not enabled.
+- **The PPA's scaler interpolates.** A 2x `ppa_do_scale_rotate_mirror` is not pixel doubling (up to
+  21 steps per channel away), so it cannot stand in for `Blitter::scale2x` (D-057).
 
 ## 7. CI & Deployment
 
@@ -560,6 +571,17 @@ test lives** (if one exists).
    shared clock rather than per frame, and keep a host budget on what LVGL is asked to draw.
    Regression tests: `host/tests/perf_proxy_test.cpp` and the pulse cases in
    `ui_lvgl/tests/screen_test.cpp` (D-051).
+4. **A PPA call silently threw away pixels the CPU had just drawn.** The bench wrote a whole
+   buffer from the CPU, then had the PPA's scale-rotate engine copy a 64 x 64 block into it; of
+   the 16,384 CPU-written pixels in the same rows but outside the block, 15,840 to 16,228 were
+   gone. Root cause: ESP-IDF 5.5's PPA driver writes its *inputs* back from the cache, but for an
+   output it does not also read it only *invalidates* the output rows' cache lines, which
+   discards CPU writes not yet written back (`esp_driver_ppa/src/ppa_srm.c`; the blend engine's
+   output is the same when the destination is not also the background). General rule: before
+   handing memory the CPU has written to a DMA engine as an *output*, write the affected rows back
+   yourself; never rely on a driver's cache handling for bytes outside the block it was given.
+   Regression check: `tools/bench` (`bench cache_trap`, raw and through `PpaBlitter`, which
+   writes the rows back first); there is no host test because the host has no such cache (D-057).
 
 ## 10. Maintaining This Document
 

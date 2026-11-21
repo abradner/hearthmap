@@ -7,7 +7,8 @@ YAML:
       photos: photos           # directory holding <photo id>.png for plant pins
       time_id: ha_time         # an ESPHome time source; nothing is judged before it is valid
       # optional: lvgl_id, refresh_interval (30s), min_redraw_interval (500ms),
-      #           heat_refresh_interval (15s), touchscreen_id (touch latency in the perf log)
+      #           heat_refresh_interval (15s), touchscreen_id (touch latency in the perf log),
+      #           blitter (software | ppa; default software), present (false) with display_id
 
 Build-time work lives in hearthmap_codegen.py (pure Python, unit-tested); this file is only the
 ESPHome surface. See README.md for how core and ui_lvgl reach the build.
@@ -19,6 +20,7 @@ import json
 from pathlib import Path
 
 import esphome.codegen as cg
+from esphome.components import display
 from esphome.components import time as time_
 from esphome.components.touchscreen import Touchscreen
 from esphome.components.lvgl.defines import CONF_LVGL_ID, add_lv_use, get_lv_fonts_used
@@ -39,6 +41,9 @@ CONF_REFRESH_INTERVAL = "refresh_interval"
 CONF_MIN_REDRAW_INTERVAL = "min_redraw_interval"
 CONF_HEAT_REFRESH_INTERVAL = "heat_refresh_interval"
 CONF_TOUCHSCREEN_ID = "touchscreen_id"
+CONF_BLITTER = "blitter"
+CONF_PRESENT = "present"
+CONF_DISPLAY_ID = "display_id"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -48,6 +53,10 @@ SCHEMA_PATH = REPO_ROOT / "schema" / "hearthmap.schema.json"
 
 hearthmap_panel_ns = cg.esphome_ns.namespace("hearthmap_panel")
 HearthmapComponent = hearthmap_panel_ns.class_("HearthmapComponent", cg.Component)
+BlitterKind = hearthmap_panel_ns.enum("BlitterKind", is_class=True)
+# `blitter: ppa` routes large pixel moves to the ESP32-P4's PPA (ppa_blitter.h, D-057); any other
+# target, or a refused driver, falls back to plain C++ at runtime, so it only ever costs speed.
+BLITTER_KINDS = {"software": BlitterKind.Software, "ppa": BlitterKind.Ppa}
 
 
 def _load_schema() -> dict:
@@ -90,6 +99,12 @@ def _validate_document(config: dict) -> dict:
     return config
 
 
+def _validate_present(config: dict) -> dict:
+    if config[CONF_PRESENT] and CONF_DISPLAY_ID not in config:
+        raise cv.Invalid("present: true needs display_id (the display LVGL draws to)", [CONF_PRESENT])
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -114,9 +129,15 @@ CONFIG_SCHEMA = cv.All(
             ),
             # Optional: lets the perf log time a touch from the touchscreen's read to LVGL's press.
             cv.Optional(CONF_TOUCHSCREEN_ID): cv.use_id(Touchscreen),
+            cv.Optional(CONF_BLITTER, default="software"): cv.enum(BLITTER_KINDS, lower=True),
+            # `present: true` lets small animated tiles reach the panel without an LVGL refresh
+            # (display_presenter.h, D-058); needs the display LVGL draws to.
+            cv.Optional(CONF_PRESENT, default=False): cv.boolean,
+            cv.Optional(CONF_DISPLAY_ID): cv.use_id(display.Display),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_document,
+    _validate_present,
 )
 
 
@@ -177,6 +198,9 @@ async def to_code(config: dict) -> None:
     cg.add(var.set_refresh_interval_ms(config[CONF_REFRESH_INTERVAL].total_milliseconds))
     cg.add(var.set_min_redraw_interval_ms(config[CONF_MIN_REDRAW_INTERVAL].total_milliseconds))
     cg.add(var.set_heat_refresh_interval_ms(config[CONF_HEAT_REFRESH_INTERVAL].total_milliseconds))
+    cg.add(var.set_blitter_kind(config[CONF_BLITTER]))
+    if config[CONF_PRESENT]:
+        cg.add(var.set_present_display(await cg.get_variable(config[CONF_DISPLAY_ID])))
     if CONF_TOUCHSCREEN_ID in config:
         cg.add(var.set_touchscreen(await cg.get_variable(config[CONF_TOUCHSCREEN_ID])))
     # Subscribing to HA states from C++ needs the API's state-subscription code compiled in.

@@ -863,3 +863,90 @@ the screen is running (20 ms for boot), so a pulse frame waits at most that long
 pre-cut circle, the same look); a rebuild takes about twice as long in wall time. **Would change
 if:** the owner wants the rounded card back (a pre-rendered card background would bring it at
 little cost once the overlay is slow nowhere else), or the press ring is unwelcome.
+
+### D-057 The P4's hardware is used through the Blitter, only where the bench shows it wins (provisional)
+
+**Question:** can the ESP32-P4's PPA, 2D-DMA, GDMA and PIE SIMD speed up rendering, and how
+should the code use them? **Measured** (tools/bench/README.md, four firmwares on the panel):
+big copies are memory-bound at about 21 Mpx/s PSRAM to PSRAM whatever the CPU does (memcpy,
+word loop and PIE alike; PIE is 3x memcpy only on cache-resident blocks); the PPA has 46-95 us of
+fixed cost per call; its fill reaches 178 Mpx/s (CPU 25-31), its blend 44 (C 6.3, PIE 14), its
+blend engine copies at 45-49 when used as a copy, but its scale-rotate engine manages only 22
+(no better than the CPU) and its 2x scale interpolates rather than doubling pixels. **Default:**
+`components/hearthmap/ppa_blitter.h` implements `hearthmap::ui::Blitter` (D-054) on the PPA with
+thresholds from those numbers (fill from 16,384 px, blend from 4,096, copy from 65,536 through the
+blend engine, scale never), destination checks (64-byte aligned buffer start and size, no flash
+sources) and a software fallback for everything else. YAML `blitter: software | ppa`, default
+`software`; `make_blitter()` gives the software one on any other target or if the driver refuses
+its clients. PIE is not used: its blend wins (80 Mpx/s against the PPA's 21-28) only for
+cache-resident blocks of 16-byte-aligned rows, and sprites sit at arbitrary x; an S3 port has
+different SIMD anyway. **Why:** the gains are real for large fills (layer change background, 6x)
+and translucent backdrops (7x), small for big copies (2x), and negative for anything sprite-sized,
+so a per-operation threshold, not a blanket switch. **Would change if:** a second bench pass at
+the real UI's sizes moves a threshold; or the UI starts blending large aligned blocks, where a
+PIE path could be revisited.
+
+### D-058 Small animated tiles may skip LVGL's refresh through a Presenter (provisional)
+
+**Question:** pulses are pre-rendered opaque tiles (D-053), and an LVGL refresh of one small area
+costs about 0.66 ms before any pixel (0.49 ms of LVGL's per-area work, 0.17 ms of flush set-up),
+so nine rings at 30 fps would spend about a fifth of the loop on overhead. Can a tile frame reach
+the panel without an LVGL refresh? **Measured:** rotating a 64 x 64 tile on the CPU into internal
+RAM and handing it to `Display::draw_pixels_at` costs 0.17 ms in all (0.08 ms at 32 px, 0.50 ms
+at 128), against 0.84-1.23 ms through LVGL. **Default:** `ui_lvgl/include/hearthmap/ui/present.h`:
+a `Presenter` port (`NoPresenter` on the host and by default) and `show_tile_frame()`, which
+points the tile image's descriptor at the new frame without invalidating, then presents it only
+when `present_check()` passes and otherwise invalidates. `present_check()` enforces in code: an
+lv_image whose source is that descriptor, tightly packed RGB565, not inside an LVGL refresh, on
+the active screen with no screen-load animation running, nothing hidden, full opacity with no
+recolour, and no layered opacity, blend mode or bitmap mask along its ancestry, no image or style
+transform, object area exactly the image (no padding, border, other size), wholly inside the
+display and every clipping ancestor, no rounded ancestor clipping its corners, no children, and no
+object drawn after it reaching into its area (with its extra draw size; any transformed later
+object counts as reaching it; the top and system layers count by their children, and by
+themselves when styled to draw). Because the
+descriptor always points at the current frame, any repaint LVGL does for other reasons draws the
+same pixels, so a stale frame never returns. The component's `DisplayPresenter` (YAML
+`present: true` + `display_id`, default off) also refuses calls from any task but the one that ran
+`setup()` (ESPHome's main loop), tiles over 128 x 128, and a 180-degree rotation. **Tearing:** one
+frame buffer, scanned continuously: a 64-px tile write overlaps the scan on about 6 % of updates,
+showing one half-old half-new frame for one refresh; LVGL's own flushes carry the same risk.
+**Not checked:** an ancestor's post-draw parts (scrollbars, outlines drawn after children).
+**Rejected:** rotating straight into the DSI frame buffer (measured slower, 0.83 ms at 64 px,
+because of per-row cache maintenance, and it needs the panel's private handle); one flush per
+refresh for many areas (needs LVGL's direct mode and a different ESPHome flush). **Would change
+if:** ESPHome exposes the frame buffer or a cheaper per-area flush.
+
+### D-059 LVGL's draw buffer goes in internal RAM (provisional)
+
+**Question:** does the draw buffer's placement matter? **Measured** (tools/bench/README.md,
+Scenes): a 256,000 B internal buffer against ESPHome's default 2 MB PSRAM buffer: full screen
+126 ms against 152, a 400 x 300 image 12.4 against 24.3, a 600 x 400 translucent card 42.6
+against 64.5, a 100 x 100 ring 2.3 against 3.3; a PSRAM buffer of the same small size is the
+worst of all (223 ms full screen). Smaller internal buffers (128 kB, 64 kB) lose some of the gain
+to more flush calls. **Default:** the example sets `lvgl: buffer_size: 12%`, which ESPHome turns
+into a 1/8-screen buffer (256,000 B) tried in internal RAM first and in PSRAM if that fails
+(`lvgl_esphome.cpp`, setup). It costs 256,000 B of the P4's 576 KiB internal RAM; the bench
+firmware had 565 KB free with no network, and the real firmware's headroom with Wi-Fi running
+has not been measured. **Would change if:** the panel's log shows the buffer fell back to PSRAM
+("Failed to allocate ... internal draw buffer"), or Wi-Fi runs short of internal RAM.
+
+### D-060 Neither LVGL's PPA unit nor ESP-IDF 6 is adopted now (provisional)
+
+**Question:** should the project force LVGL 9.6's PPA draw unit on (`LV_USE_PPA`) under ESP-IDF
+5.5.6, or move to ESP-IDF 6 where ESPHome enables it? **Found:** under 5.5.6 the only missing
+piece is `esp_cache_get_line_size_by_addr()`, which a one-line macro in `lv_conf.h` supplies; it
+builds and runs (tools/bench, `lvgl_ppa_unit: true`, which also has to monkeypatch the lvgl
+component's define). ESPHome 2026.11.0 accepts `framework: version: 6.0.1`; the full example
+(Wi-Fi co-processor, API, display, touch, PSRAM, hearthmap) compiled on it unchanged, and the
+bench ran on it. **Measured:** the unit doubles large opaque fills and image blits (fills 31 to
+177 Mpx/s, PSRAM images 21 to 49) and cuts the scene repaints by a third, but makes small fills
+and images 3-5 times slower (the PPA's fixed cost), draws flash images (the plant photos) at
+4 Mpx/s instead of 160, and draws **nothing** for any buffer that is not cache-line aligned, with
+no software fallback. Under IDF 6 stock (`LV_USE_PPA_IMG` 0) only fills are accelerated, and with
+an internal draw buffer the scenes gained nothing. **Default:** neither. The gains it offers are
+had more safely by D-059 (internal buffer), D-057 (the Blitter where it wins) and D-058
+(present). **Risks recorded:** the shim depends on a monkeypatch of ESPHome internals; IDF 6
+under the Wi-Fi co-processor path has never run with a network (the bench had none). **Would
+change if:** LVGL's PPA unit gains a size threshold, a flash check and a software fallback, and
+ESPHome makes IDF 6 its recommended version.

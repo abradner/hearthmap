@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "blitter_select.h"
+#include "display_presenter.h"
 #include "esphome/components/lvgl/lvgl_esphome.h"
 #include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
@@ -56,6 +58,15 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_refresh_interval_ms(uint32_t ms) { refresh_interval_ms_ = ms; }
   void set_min_redraw_interval_ms(uint32_t ms) { min_redraw_interval_ms_ = ms; }
   void set_heat_refresh_interval_ms(uint32_t ms) { heat_refresh_interval_ms_ = ms; }
+  void set_blitter_kind(BlitterKind kind) { blitter_kind_ = kind; }
+  /// `present: true` with this display: small animated tiles skip LVGL's refresh (D-058).
+  void set_present_display(display::Display* display) { present_display_ = display; }
+
+  /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
+  /// setup().
+  hm::ui::Blitter& blitter() { return *blitter_; }
+  /// Pass to hm::ui::show_tile_frame(). A NoPresenter unless `present: true`. Valid after setup().
+  hm::ui::Presenter& presenter() { return *presenter_; }
 
   // After LVGL (PROCESSOR) and the YAML-built widgets (PROCESSOR - 5).
   float get_setup_priority() const override { return setup_priority::PROCESSOR - 10.0f; }
@@ -89,6 +100,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t refresh_interval_ms_ = 30000;
   uint32_t min_redraw_interval_ms_ = 500;
   uint32_t heat_refresh_interval_ms_ = 15000;
+  BlitterKind blitter_kind_ = BlitterKind::Software;
+  std::unique_ptr<hm::ui::Blitter> blitter_;
+  const char* blitter_name_ = "software";
+  display::Display* present_display_ = nullptr;
+  std::unique_ptr<hm::ui::Presenter> presenter_;
+  const char* presenter_name_ = "off";
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline

@@ -25,6 +25,9 @@ hearthmap:
   # min_redraw_interval: 500ms  coalesce bursts of state updates (50ms..10s)
   # heat_refresh_interval: 15s  how often changed readings may rebuild the heat image (1s..10min)
   # touchscreen_id: ...     the touchscreen, so the perf log can time touches (optional)
+  # blitter: software       or ppa: large fills, blends and copies on the ESP32-P4's PPA (D-057)
+  # present: false          true (with display_id): animated tiles skip LVGL's refresh (D-058)
+  # display_id: ...         the display LVGL draws to (needed by present)
 ```
 
 A full example device is `examples/flat/esphome/flat-panel.yaml`.
@@ -224,6 +227,25 @@ slices), steady frames 15-21 ms. `LVGL warnings 0, errors 0` throughout. ESPHome
 once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshes (224 ms and
 139 ms).
 
+
+## Accelerations (all optional, off by default)
+
+Measured on the panel with `tools/bench` (its README has every number):
+
+- **`lvgl: buffer_size: 12%`** in the device YAML (the example sets it): a 256,000 B draw buffer
+  that ESPHome tries in internal RAM first. Partial repaints 1.3-2x faster than the default 2 MB
+  PSRAM buffer, a full repaint 1.2x; it costs 256,000 B of internal RAM (D-059).
+- **`blitter: ppa`**: `hm::ui::Blitter` on the PPA (`ppa_blitter.h`), used above per-operation
+  sizes where it wins: fills 6x and translucent blends 7x faster than the CPU on large areas,
+  large copies 2x; smaller calls, flash sources and unaligned buffers stay in software. Any other
+  target, or a refused driver, gets `SoftwareBlitter` (`blitter_select.h`, D-057).
+- **`present: true`** with `display_id`: `presenter()` returns a `DisplayPresenter`
+  (`display_presenter.h`): an animated tile shown with `hm::ui::show_tile_frame()` is rotated on
+  the CPU and handed to the display, 0.17 ms for 64 x 64 against about 1 ms for an LVGL refresh,
+  whenever `present_check()` allows; otherwise the tile is invalidated as before (D-058).
+- Not used, with reasons: LVGL's own PPA draw unit and ESP-IDF 6 (D-060), PIE SIMD (D-057).
+
+`dump_config` logs `hearthmap blitter: <kind>, present: <state>`.
 
 ## Measuring
 
