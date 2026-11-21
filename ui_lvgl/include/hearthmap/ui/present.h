@@ -43,15 +43,18 @@ enum class PresentBlock : std::uint8_t {
   NotImage,           ///< null, not an lv_image, or its source is not `dsc`
   NotRgb565,          ///< the descriptor is not tightly packed RGB565
   Refreshing,         ///< called from inside an LVGL refresh
-  NotOnActiveScreen,  ///< its screen is not the display's active screen
+  NotOnActiveScreen,  ///< not the active screen, or a screen-load animation is running
   Hidden,             ///< it or an ancestor is hidden
-  NotOpaque,          ///< any opacity, image opacity or recolour below full along its ancestry
+  NotOpaque,          ///< opacity, image opacity or recolour short of full, or layered
+                      ///< opacity, a blend mode or a mask along its ancestry
   Transformed,        ///< scaled, rotated, or offset by an image or style transform
   SizeMismatch,       ///< the object's area is not exactly the image (padding, border, size)
-  Clipped,            ///< part of it is outside an ancestor or the display
+  Clipped,            ///< part of it is outside an ancestor or the display, or an
+                      ///< ancestor clips rounded corners
   HasChildren,        ///< something is drawn inside it
   Covered,            ///< an object drawn after it (including the top and system layers)
-                      ///< reaches into its area, with that object's extra draw size
+                      ///< reaches into its area, with that object's extra draw size, or is
+                      ///< transformed
 };
 
 /// The LVGL-side conditions for presenting `image`, whose source must be `dsc`. Updates the
