@@ -4,6 +4,7 @@
 add_executable(hearthmap_ui_tests
   main.cpp
   blitter_test.cpp
+  present_test.cpp
   format_test.cpp
   heat_image_test.cpp
   screen_test.cpp

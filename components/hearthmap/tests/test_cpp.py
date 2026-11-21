@@ -1077,3 +1077,69 @@ def test_blitter_select_falls_back_to_software_off_the_p4(tmp_path):
         [COMPONENT, REPO / "ui_lvgl" / "include"],
     )
     assert "0 failures" in out
+
+
+PANEL_ROTATION_TEST = r"""
+#include <cstdio>
+#include <cstdint>
+#include <vector>
+#include "panel_rotation.h"
+using namespace esphome::hearthmap_panel;
+
+// The lvgl component's software rotation (ESPHome 2026.11.0, lvgl_esphome.cpp, draw_buffer_),
+// copied as written, with draw_rounding 1. `width_`/`height_` are the native panel size.
+static NativeBlock esphome_way(std::vector<uint16_t>& dst, const uint16_t* ptr, int x1, int y1, int width,
+                               int height, int rotation, int width_, int height_) {
+  const int height_rounded = height;
+  const int ax1 = x1, ay1 = y1;
+  if (rotation == 90) {
+    for (int x = height; x-- != 0;)
+      for (int y = 0; y != width; y++) dst[y * height_rounded + x] = *ptr++;
+    y1 = ax1;
+    x1 = width_ - ay1 - height;
+    height = width;
+    width = height_rounded;
+  } else {  // 270
+    for (int x = 0; x != height; x++)
+      for (int y = width; y-- != 0;) dst[y * height_rounded + x] = *ptr++;
+    x1 = ay1;
+    y1 = height_ - ax1 - width;
+    height = width;
+    width = height_rounded;
+  }
+  return {x1, y1, width, height};
+}
+
+int main() {
+  int failures = 0;
+  const int nw = 800, nh = 1280, w = 13, h = 7, x = 101, y = 57;
+  std::vector<uint16_t> src(w * h);
+  for (int i = 0; i < w * h; ++i) src[i] = static_cast<uint16_t>(i * 37 + 5);
+  for (int rot : {90, 270}) {
+    std::vector<uint16_t> a(w * h), b(w * h);
+    NativeBlock ea = esphome_way(a, src.data(), x, y, w, h, rot, nw, nh);
+    NativeBlock eb = to_native(b.data(), src.data(), w, x, y, w, h, rot == 90 ? 1 : 3, nw, nh);
+    if (ea.x != eb.x || ea.y != eb.y || ea.w != eb.w || ea.h != eb.h) {
+      std::printf("FAIL rot %d block %d,%d %dx%d vs %d,%d %dx%d\n", rot, ea.x, ea.y, ea.w, ea.h, eb.x, eb.y, eb.w, eb.h);
+      ++failures;
+    }
+    if (a != b) { std::printf("FAIL rot %d pixels differ\n", rot); ++failures; }
+  }
+  // A source stride wider than the tile is honoured.
+  std::vector<uint16_t> wide(20 * h, 0xFFFF), out(w * h), ref(w * h);
+  for (int r = 0; r < h; ++r)
+    for (int c = 0; c < w; ++c) wide[r * 20 + c] = src[r * w + c];
+  to_native(out.data(), wide.data(), 20, x, y, w, h, 1, nw, nh);
+  to_native(ref.data(), src.data(), w, x, y, w, h, 1, nw, nh);
+  if (out != ref) { std::printf("FAIL stride\n"); ++failures; }
+  if (to_native(out.data(), src.data(), w, x, y, w, h, 2, nw, nh).w != 0) { std::printf("FAIL 180\n"); ++failures; }
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_panel_rotation_matches_the_lvgl_component(tmp_path):
+    (tmp_path / "rot_test.cpp").write_text(PANEL_ROTATION_TEST)
+    out = _build_and_run(tmp_path, [str(tmp_path / "rot_test.cpp")], [COMPONENT])
+    assert "0 failures" in out
