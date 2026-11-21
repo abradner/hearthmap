@@ -2,7 +2,7 @@
 //
 // Target-specific: compiled only for the P4 (USE_ESP32_VARIANT_ESP32P4); every other target, and
 // the host, uses ui_lvgl's SoftwareBlitter. Selected by the YAML option `blitter: ppa`; the
-// default is `software` (docs/decisions.md D-053).
+// default is `software` (docs/decisions.md D-057).
 //
 // Each operation goes to the PPA only when the bench showed it wins and when it is allowed, else
 // to SoftwareBlitter (examples/bench/README.md has the numbers behind each threshold):

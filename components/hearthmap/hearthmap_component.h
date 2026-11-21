@@ -59,10 +59,10 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_min_redraw_interval_ms(uint32_t ms) { min_redraw_interval_ms_ = ms; }
   void set_heat_refresh_interval_ms(uint32_t ms) { heat_refresh_interval_ms_ = ms; }
   void set_blitter_kind(BlitterKind kind) { blitter_kind_ = kind; }
-  /// `present: true` with this display: small animated tiles skip LVGL's refresh (D-054).
+  /// `present: true` with this display: small animated tiles skip LVGL's refresh (D-058).
   void set_present_display(display::Display* display) { present_display_ = display; }
 
-  /// Every large pixel move goes through this (docs/decisions.md D-053). Valid after setup().
+  /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after setup().
   hm::ui::Blitter& blitter() { return *blitter_; }
   /// Pass to hm::ui::show_tile_frame(). A NoPresenter unless `present: true`. Valid after setup().
   hm::ui::Presenter& presenter() { return *presenter_; }

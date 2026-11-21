@@ -5,7 +5,7 @@
 // and handing it to the display costs 0.17 ms in all (examples/bench/README.md, "Tiles"). A
 // Presenter does the latter. It is only correct when the panel's pixels for the tile can come
 // from the tile alone, so show_tile_frame() checks that first and otherwise falls back to an
-// ordinary invalidation (docs/decisions.md D-054). The host and any target without a presenter
+// ordinary invalidation (docs/decisions.md D-058). The host and any target without a presenter
 // use NoPresenter: always the fallback, so nothing changes but speed.
 #pragma once
 

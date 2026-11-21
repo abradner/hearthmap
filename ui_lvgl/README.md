@@ -18,6 +18,8 @@ Its visual contract is the approved UI spec (mockup A); the sample render in
 | `hearthmap/ui/fonts.h` | `Fonts`: the only place font choice lives |
 | `hearthmap/ui/format.h` | Value text, moisture percent, ring length, verdicts, status colours, the house summary's words |
 | `hearthmap/ui/theme.h` | The spec's colours and fixed geometry |
+| `hearthmap/ui/blitter.h` | `Blitter` (RGB565 copy, fill, constant-alpha blend, 2x scale; clipped) and `SoftwareBlitter`, the portable default (D-054, D-057) |
+| `hearthmap/ui/present.h` | `Presenter` (an opaque tile straight to the panel), `NoPresenter` (the host's), `present_check()` and `show_tile_frame()`: an animated tile's next frame without an LVGL refresh when that is safe, an invalidation when not (D-058) |
 
 The embedder owns the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 pixels) and its
 `lv_image_dsc_t`, the UI state (core's `UiState`), and the clock. A frame is:

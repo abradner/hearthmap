@@ -1,4 +1,4 @@
-// display_presenter.h — hm::ui::Presenter on an ESPHome display (docs/decisions.md D-054).
+// display_presenter.h — hm::ui::Presenter on an ESPHome display (docs/decisions.md D-058).
 //
 // Undoes LVGL's software rotation of the tile on the CPU into a small internal-RAM buffer, then
 // hands it to Display::draw_pixels_at(), the call the lvgl component's own flush ends in. On the

@@ -1,4 +1,4 @@
-// blitter_select.h — builds the Blitter the YAML option `blitter:` names (docs/decisions.md D-053).
+// blitter_select.h — builds the Blitter the YAML option `blitter:` names (docs/decisions.md D-057).
 #pragma once
 
 #include <memory>

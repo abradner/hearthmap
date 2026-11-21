@@ -54,7 +54,7 @@ SCHEMA_PATH = REPO_ROOT / "schema" / "hearthmap.schema.json"
 hearthmap_panel_ns = cg.esphome_ns.namespace("hearthmap_panel")
 HearthmapComponent = hearthmap_panel_ns.class_("HearthmapComponent", cg.Component)
 BlitterKind = hearthmap_panel_ns.enum("BlitterKind", is_class=True)
-# `blitter: ppa` routes large pixel moves to the ESP32-P4's PPA (ppa_blitter.h, D-053); any other
+# `blitter: ppa` routes large pixel moves to the ESP32-P4's PPA (ppa_blitter.h, D-057); any other
 # target, or a refused driver, falls back to plain C++ at runtime, so it only ever costs speed.
 BLITTER_KINDS = {"software": BlitterKind.Software, "ppa": BlitterKind.Ppa}
 
@@ -131,7 +131,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_TOUCHSCREEN_ID): cv.use_id(Touchscreen),
             cv.Optional(CONF_BLITTER, default="software"): cv.enum(BLITTER_KINDS, lower=True),
             # `present: true` lets small animated tiles reach the panel without an LVGL refresh
-            # (display_presenter.h, D-054); needs the display LVGL draws to.
+            # (display_presenter.h, D-058); needs the display LVGL draws to.
             cv.Optional(CONF_PRESENT, default=False): cv.boolean,
             cv.Optional(CONF_DISPLAY_ID): cv.use_id(display.Display),
         }

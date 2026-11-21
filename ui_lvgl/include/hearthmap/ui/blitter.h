@@ -4,7 +4,7 @@
 // RGB565 only, little-endian, as LVGL draws for the panel. No LVGL, no allocation, no clock: a
 // surface is caller-owned memory. SoftwareBlitter is the default and what the host uses; a target
 // supplies a faster implementation at build time and loses only speed without one
-// (docs/decisions.md D-053).
+// (docs/decisions.md D-054, D-057).
 #pragma once
 
 #include <cstdint>
