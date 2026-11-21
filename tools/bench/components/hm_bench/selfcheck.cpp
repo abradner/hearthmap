@@ -10,11 +10,13 @@
 #include <utility>
 #include <vector>
 
+#include "esp_attr.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_system.h"
 #include "esphome/components/display/display.h"
 #include "esphome/components/display/display_color_utils.h"
 #include "esphome/core/application.h"
@@ -38,6 +40,46 @@ static const char* const TAG = "bench";
 namespace {
 
 namespace ui = ::hearthmap::ui;
+
+// Pixel buffers live in PSRAM: the first version kept them in internal RAM through std::vector,
+// ran out on the 112 x 112 case at the right edge, and aborted in operator new (no exceptions
+// here), on every boot.
+template <class T>
+struct PsAlloc {
+  using value_type = T;
+  PsAlloc() = default;
+  template <class U>
+  PsAlloc(const PsAlloc<U>&) {}
+  T* allocate(size_t n) {
+    void* p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p == nullptr) p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_8BIT);
+    return static_cast<T*>(p);  // a null here faults at once, which the crash-skip below reports
+  }
+  void deallocate(T* p, size_t) { heap_caps_free(p); }
+  bool operator==(const PsAlloc&) const { return true; }
+  bool operator!=(const PsAlloc&) const { return false; }
+};
+using PsVec = std::vector<uint16_t, PsAlloc<uint16_t>>;
+
+// Which case was running, kept across a software reset: a case that crashed the last boot is
+// reported and skipped instead of crash-looping.
+constexpr uint32_t kCaseMagic = 0x5E1FC4E5;
+__NOINIT_ATTR uint32_t g_case_magic;
+__NOINIT_ATTR int32_t g_case_running;
+int32_t g_case_crashed = -1;
+
+bool begin_case(int32_t id) {
+  if (id == g_case_crashed) {
+    ESP_LOGI(TAG, "bench selfcheck case %d : SKIPPED, it crashed the previous boot", (int)id);
+    return false;
+  }
+  g_case_magic = kCaseMagic;
+  g_case_running = id;
+  return true;
+}
+void end_case() {
+  g_case_running = -1;
+}
 using esphome::hearthmap_panel::DisplayPresenter;
 using esphome::hearthmap_panel::NativeBlock;
 using esphome::hearthmap_panel::to_native;
@@ -47,8 +89,8 @@ constexpr uint16_t kRed = 0xF800, kGreen = 0x07E0, kBlue = 0x001F, kWhite = 0xFF
 
 // Quadrant colours, a 1-px yellow border, a black diagonal, and a tint per variant so two
 // frames of the same tile differ everywhere.
-std::vector<uint16_t> pattern(int w, int h, int variant) {
-  std::vector<uint16_t> p(static_cast<size_t>(w) * h);
+PsVec pattern(int w, int h, int variant) {
+  PsVec p(static_cast<size_t>(w) * h);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
       uint16_t c = (y < h / 2) ? (x < w / 2 ? kRed : kGreen) : (x < w / 2 ? kBlue : kWhite);
@@ -67,11 +109,11 @@ struct Case {
 
 struct Tile {
   Case c;
-  std::vector<uint16_t> frame[2];
-  std::vector<uint16_t> blank;
+  PsVec frame[2];
+  PsVec blank;
   lv_image_dsc_t dsc{};
   lv_obj_t* obj = nullptr;
-  std::vector<uint16_t> lvgl_native[2];  // what LVGL put in the frame buffer for each variant
+  PsVec lvgl_native[2];  // what LVGL put in the frame buffer for each variant
 };
 
 struct Ctx {
@@ -92,13 +134,13 @@ void set_frame(Tile& t, const uint16_t* px) {
 }
 
 NativeBlock native_of(const Case& c) {
-  std::vector<uint16_t> scratch(static_cast<size_t>(c.w) * c.h);
-  std::vector<uint16_t> src(static_cast<size_t>(c.w) * c.h);
+  PsVec scratch(static_cast<size_t>(c.w) * c.h);
+  PsVec src(static_cast<size_t>(c.w) * c.h);
   return to_native(scratch.data(), src.data(), c.w, c.x, c.y, c.w, c.h, 1, g->nw, g->nh);
 }
 
-std::vector<uint16_t> read_fb(const NativeBlock& b) {
-  std::vector<uint16_t> out(static_cast<size_t>(b.w) * b.h);
+PsVec read_fb(const NativeBlock& b) {
+  PsVec out(static_cast<size_t>(b.w) * b.h);
   for (int r = 0; r < b.h; ++r) {
     uint16_t* row = g->fb + static_cast<size_t>(b.y + r) * g->nw + b.x;
     const uintptr_t a0 = reinterpret_cast<uintptr_t>(row) & ~uintptr_t{63};
@@ -109,8 +151,8 @@ std::vector<uint16_t> read_fb(const NativeBlock& b) {
   return out;
 }
 
-int mismatches(const std::vector<uint16_t>& a, const std::vector<uint16_t>& b,
-               const NativeBlock& nb, int* first_x, int* first_y, uint16_t* got, uint16_t* want) {
+int mismatches(const PsVec& a, const PsVec& b, const NativeBlock& nb, int* first_x, int* first_y,
+               uint16_t* got, uint16_t* want) {
   int bad = 0;
   for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
     if (a[i] != b[i]) {
@@ -137,6 +179,16 @@ void lvgl_show(Tile& t, const uint16_t* px) {
 void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::MipiDsi* display,
                          lvgl::LvglComponent* lvgl) {
   steps.push_back([display, lvgl]() {
+    g_case_crashed = -1;
+    if (g_case_magic == kCaseMagic && g_case_running >= 0 &&
+        esp_reset_reason() != ESP_RST_POWERON) {
+      g_case_crashed = g_case_running;
+      ESP_LOGI(TAG,
+               "bench selfcheck : the previous boot crashed in case %d (reset reason %d); it will "
+               "be skipped",
+               (int)g_case_crashed, (int)esp_reset_reason());
+    }
+    end_case();
     delete g;
     g = new Ctx();
     g->display = display;
@@ -193,8 +245,10 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
       g->tiles.push_back(std::move(t));
     }
     lv_refr_now(g->lvgl->get_disp());
+    int32_t case_id = 0;
     for (auto& tp : g->tiles) {
       Tile& t = *tp;
+      if (!begin_case(case_id++)) continue;
       const NativeBlock nb = native_of(t.c);
       for (int v = 0; v < 2; ++v) {
         lvgl_show(t, t.frame[v].data());
@@ -207,7 +261,7 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
         ui::PresentBlock why = ui::PresentBlock::Ok;
         const ui::TileShown shown =
             ui::show_tile_frame(t.obj, t.dsc, t.frame[v].data(), *g->presenter, &why);
-        const std::vector<uint16_t> got = read_fb(nb);
+        const PsVec got = read_fb(nb);
         int fx = -1, fy = -1;
         uint16_t gv = 0, wv = 0;
         const int bad = mismatches(got, t.lvgl_native[v], nb, &fx, &fy, &gv, &wv);
@@ -215,13 +269,16 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
         ESP_LOGI(TAG,
                  "bench selfcheck tile %dx%d at %d,%d variant %d : %s (why %d), native %d,%d "
                  "%dx%d, %d of %u px "
-                 "differ from LVGL%s",
+                 "differ from LVGL%s%s",
                  t.c.w, t.c.h, t.c.x, t.c.y, v,
                  shown == ui::TileShown::Presented ? "presented" : "INVALIDATED", (int)why, nb.x,
                  nb.y, nb.w, nb.h, bad, (unsigned)got.size(),
                  bad ? (std::string(", first at ") + std::to_string(fx) + "," + std::to_string(fy) +
                         " got " + std::to_string(gv) + " want " + std::to_string(wv))
                            .c_str()
+                     : "",
+                 why == ui::PresentBlock::Covered
+                     ? " (a later test tile overlaps it: refusal expected)"
                      : "");
       }
       App.feed_wdt();
@@ -232,6 +289,7 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
   // Bursts: every tile flips frame in the same pass, 60 passes, then each is compared.
   steps.push_back([]() {
     if (g == nullptr || g->fb == nullptr || g->tiles.empty()) return;
+    if (!begin_case(100)) return;
     int presented = 0, refused = 0, bad_tiles = 0, bad_px = 0;
     for (int pass = 0; pass < 60; ++pass) {
       const int v = pass & 1;
@@ -247,7 +305,7 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
       }
       for (auto& tp : g->tiles) {
         const NativeBlock nb = native_of(tp->c);
-        const std::vector<uint16_t> got = read_fb(nb);
+        const PsVec got = read_fb(nb);
         int fx, fy;
         uint16_t gv, wv;
         const int bad = mismatches(got, tp->lvgl_native[v], nb, &fx, &fy, &gv, &wv);
@@ -268,6 +326,7 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
   // Side by side for a photo: left column drawn by LVGL, right column presented, same frames.
   steps.push_back([]() {
     if (g == nullptr || g->fb == nullptr) return;
+    if (!begin_case(200)) return;
     for (auto& tp : g->tiles) lv_obj_delete(tp->obj);
     g->tiles.clear();
     lv_obj_t* l1 = lv_label_create(g->screen);
@@ -315,6 +374,7 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
              "bench selfcheck sidebyside : %d of %u right-hand tiles presented; photograph now "
              "(held until the next run)",
              presented, (unsigned)(g->tiles.size() / 2));
+    end_case();
   });
 }
 

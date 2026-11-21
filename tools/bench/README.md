@@ -29,6 +29,18 @@ The repository root is mounted (not this directory) because the bench compiles t
 `ui_lvgl` Blitter and the component's `PpaBlitter` into itself (`components/hm_bench/__init__.py`).
 Flash `firmware.factory.bin` and capture UART0 at 115200 from boot to `bench run 0 done`.
 
+## Present self-check
+
+`-s selfcheck_only true -s period 600s` builds a firmware that runs only the present self-check:
+the same tiles drawn by LVGL and by the shipped present path (`hm::ui::show_tile_frame` and
+`DisplayPresenter`), compared byte for byte in the DSI frame buffer (single tiles of mixed sizes at
+the screen's corners and odd coordinates, one deliberately covered by a later tile, then 60 bursts
+of every tile at once), and a side-by-side screen (left LVGL, right present) held for a photo. A
+case that crashed the previous boot is reported and skipped (`bench selfcheck case N : SKIPPED`),
+so a failure cannot crash-loop the panel. Pass: every uncovered tile `presented` with 0 px
+differing, the covered one `INVALIDATED (why 11)` with 0 px differing, and the burst line with no
+failed checks.
+
 ## Line formats
 
 - `bench <op> size=WxH src=<psram|iram> dst=<psram|iram> : X Mpx/s, call overhead Y us, n=N, Z us/call[, check ok|check FAIL k/66 samples]`.

@@ -41,6 +41,8 @@ BLITTER_FILES = {
     "hm_blit/display_presenter.h": REPO_ROOT / "components/hearthmap/display_presenter.h",
     "hm_blit/display_presenter.cpp": REPO_ROOT / "components/hearthmap/display_presenter.cpp",
     "hm_blit/panel_rotation.h": REPO_ROOT / "components/hearthmap/panel_rotation.h",
+    "hm_blit/loop_breadcrumb.h": REPO_ROOT / "components/hearthmap/loop_breadcrumb.h",
+    "hm_blit/loop_breadcrumb.cpp": REPO_ROOT / "components/hearthmap/loop_breadcrumb.cpp",
 }
 
 CONF_PERIOD = "period"
