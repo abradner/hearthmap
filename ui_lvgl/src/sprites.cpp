@@ -160,7 +160,8 @@ void opaque_image_cover_cb(lv_event_t* e) {
 
 void distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
                     float cy, std::vector<std::uint16_t>& out) {
-  out.resize(static_cast<std::size_t>(std::max(0, w)) * static_cast<std::size_t>(std::max(0, h)));
+  out.resize(static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
+             static_cast<std::size_t>(std::max<std::int32_t>(0, h)));
   std::size_t i = 0;
   for (std::int32_t y = 0; y < h; ++y) {
     const float dy = static_cast<float>(y0 + y) + 0.5f - cy;
@@ -190,8 +191,8 @@ void ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
 void add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h,
                           float ax, float ay, float bx, float by, float width,
                           std::vector<std::uint8_t>& cov) {
-  const std::size_t n =
-      static_cast<std::size_t>(std::max(0, w)) * static_cast<std::size_t>(std::max(0, h));
+  const std::size_t n = static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
+                        static_cast<std::size_t>(std::max<std::int32_t>(0, h));
   if (cov.size() != n) cov.assign(n, 0);
   const float vx = bx - ax;
   const float vy = by - ay;
