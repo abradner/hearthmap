@@ -25,10 +25,12 @@ void monitor_task(void* arg) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(kPeriodMs));
     LoopBreadcrumb& b = breadcrumb();
+    // The heartbeat first, then the clock: the other way round, a loop turn between the two
+    // reads would look like a heartbeat from the future.
+    const std::uint32_t turn = b.turn_ms.load(std::memory_order_relaxed);
     const std::uint32_t now = millis();
     std::uint32_t stalled = 0;
-    const StallJudge::Verdict v =
-        judge.step(now, b.turn_ms.load(std::memory_order_relaxed), &stalled);
+    const StallJudge::Verdict v = judge.step(now, turn, &stalled);
     if (v == StallJudge::Verdict::None) continue;
     const auto crumb = static_cast<Crumb>(b.crumb.load(std::memory_order_relaxed));
     const std::uint32_t held = now - b.since_ms.load(std::memory_order_relaxed);

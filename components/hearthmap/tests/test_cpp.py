@@ -1196,6 +1196,11 @@ int main() {
   StallJudge w(2000, 15500);
   CHECK(w.step(0xFFFFFF00u, 0xFFFFFF00u, &s) == V::None);
   CHECK(w.step(0x00000800u, 0xFFFFFF00u, &s) == V::Warn);  // 2304 ms across the wrap
+  // A heartbeat sampled after the clock (ahead of it) is no stall.
+  StallJudge f(2000, 15500);
+  CHECK(f.step(1000, 1000, &s) == V::None);
+  CHECK(f.step(1000, 1001, &s) == V::None);
+  CHECK(s == 0);
   // Crumbs nest and restore.
   CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Elsewhere));
   {

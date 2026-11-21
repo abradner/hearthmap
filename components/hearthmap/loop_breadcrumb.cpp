@@ -49,7 +49,10 @@ StallJudge::Verdict StallJudge::step(std::uint32_t now_ms, std::uint32_t turn_ms
       return Verdict::Recovered;
     }
   }
-  const std::uint32_t stalled = now_ms - turn_ms;  // unsigned: wrap-safe
+  // Unsigned, so wrap-safe; a difference past half the range means the heartbeat is ahead of
+  // `now_ms` (sampled in the wrong order), which is no stall rather than a 49-day one.
+  std::uint32_t stalled = now_ms - turn_ms;
+  if (stalled > 0x80000000u) stalled = 0;
   if (stalled > longest_) longest_ = stalled;
   if (stalled_ms != nullptr) *stalled_ms = stalled;
   if (!errored_ && stalled >= error_ms_) {

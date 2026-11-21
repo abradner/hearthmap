@@ -114,6 +114,7 @@ struct Tile {
   lv_image_dsc_t dsc{};
   lv_obj_t* obj = nullptr;
   PsVec lvgl_native[2];  // what LVGL put in the frame buffer for each variant
+  PsVec burst_ref[2];    // the same, with every tile on that variant
 };
 
 struct Ctx {
@@ -189,6 +190,13 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
                (int)g_case_crashed, (int)esp_reset_reason());
     }
     end_case();
+    if (g != nullptr && g->screen != nullptr) {
+      // A repeated run: leave and delete the previous run's screen while its buffers still exist.
+      if (g->old_screen != nullptr) lv_screen_load(g->old_screen);
+      lv_obj_delete(g->screen);
+      g->screen = nullptr;
+      g->tiles.clear();
+    }
     delete g;
     g = new Ctx();
     g->display = display;
@@ -261,6 +269,8 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
         ui::PresentBlock why = ui::PresentBlock::Ok;
         const ui::TileShown shown =
             ui::show_tile_frame(t.obj, t.dsc, t.frame[v].data(), *g->presenter, &why);
+        if (shown != ui::TileShown::Presented)
+          lv_refr_now(g->lvgl->get_disp());  // the fallback's repaint
         const PsVec got = read_fb(nb);
         int fx = -1, fy = -1;
         uint16_t gv = 0, wv = 0;
@@ -290,6 +300,17 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
   steps.push_back([]() {
     if (g == nullptr || g->fb == nullptr || g->tiles.empty()) return;
     if (!begin_case(100)) return;
+    // References for the burst: the whole scene drawn by LVGL with every tile on variant v, so
+    // tiles that overlap (the deliberately covered ones) are compared with what LVGL draws when
+    // their neighbours are on the same variant too.
+    for (int v = 0; v < 2; ++v) {
+      for (auto& tp : g->tiles) {
+        set_frame(*tp, tp->frame[v].data());
+        lv_obj_invalidate(tp->obj);
+      }
+      lv_refr_now(g->lvgl->get_disp());
+      for (auto& tp : g->tiles) tp->burst_ref[v] = read_fb(native_of(tp->c));
+    }
     int presented = 0, refused = 0, bad_tiles = 0, bad_px = 0;
     for (int pass = 0; pass < 60; ++pass) {
       const int v = pass & 1;
@@ -308,7 +329,7 @@ void add_selfcheck_steps(std::vector<std::function<void()>>& steps, mipi_dsi::Mi
         const PsVec got = read_fb(nb);
         int fx, fy;
         uint16_t gv, wv;
-        const int bad = mismatches(got, tp->lvgl_native[v], nb, &fx, &fy, &gv, &wv);
+        const int bad = mismatches(got, tp->burst_ref[v], nb, &fx, &fy, &gv, &wv);
         if (bad) {
           bad_tiles++;
           bad_px += bad;
