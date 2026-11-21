@@ -76,6 +76,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void refresh_view_(uint32_t start_ms, bool connected);
   void show_view_();
   void invalidate_band_();
+  void handle_publish_();
   void show_status_(const char* text);
   void hide_status_();
   void hook_perf_();
@@ -110,6 +111,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t last_view_ms_ = 0;
   uint32_t last_sprite_frames_ = 0;
   uint32_t last_sprite_dropped_ = 0;
+  bool rebake_requested_ = false;
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).
   uint32_t last_press_ms_ = 0;
 

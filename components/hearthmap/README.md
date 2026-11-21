@@ -175,7 +175,9 @@ worded by ui_lvgl's `summary_text()`, the same path as the host (D-049).
 
 | Item | Size | Where |
 |---|---|---|
-| Heat image, map area 864 x 720 RGB565, two buffers (front and back) | 2 x 1,244,160 B | PSRAM (`RAMAllocator`) |
+| Heat image, map area 864 x 720 RGB565: one buffer per enabled layer plus one to draw into, while 6 MiB of PSRAM stays free (D-055); at least two | up to 5 x 1,244,160 B | PSRAM (`RAMAllocator`) |
+| Map bake (walls and labels, 3 B per map pixel, D-055) | about 1,870,000 B | PSRAM via malloc |
+| Pulse sprites (D-053): an eighth of free PSRAM, 256 KiB to 4 MiB | as used | PSRAM via malloc |
 | `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM via malloc (D-037) |
 | Photos: 5 photos x (128, 52, 44 px) RGB565 | 210,240 B | flash (rodata) |
 | `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, cell colours, 4 colour tables | about 37,000 B | heap |

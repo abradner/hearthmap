@@ -37,6 +37,8 @@ constexpr uint32_t kBandIntervalMs = 25;
 // within a few loop passes).
 constexpr uint32_t kHeatHoldAfterPressMs = 300;
 constexpr std::int32_t kBootRowsPerStep = 4;
+// PSRAM left free when allocating extra heat-image buffers (for LVGL, sprites, the bake, Wi-Fi).
+constexpr std::size_t kPsramReserve = 6U * 1024U * 1024U;
 constexpr std::int32_t kFieldRowsPerStep = 1;
 
 // Issues shown on screen when the config is refused; the rest go to the log only.
@@ -254,7 +256,23 @@ bool HearthmapComponent::start_screen_() {
     return false;
   }
   std::fill_n(this->heat_back_, raster.pixel_count(), hm::Rgb565{0});
-  this->pipeline_->set_heat_buffers(this->heat_pixels_, this->heat_back_);
+  // More buffers, one per enabled layer plus one to draw into, while PSRAM stays comfortable:
+  // then every layer keeps its image and a tab change shows it at once (D-055). Fewer is fine,
+  // only slower on a tab change.
+  std::vector<hm::Rgb565*> buffers{this->heat_pixels_, this->heat_back_};
+  std::size_t enabled = 0;
+  for (const auto& layer : this->pipeline_->config().layers) enabled += layer.enabled ? 1U : 0U;
+  const std::size_t bytes = raster.pixel_count() * sizeof(hm::Rgb565);
+  while (buffers.size() < enabled + 1 &&
+         heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > bytes + kPsramReserve) {
+    hm::Rgb565* extra = allocator.allocate(raster.pixel_count());
+    if (extra == nullptr) break;
+    std::fill_n(extra, raster.pixel_count(), hm::Rgb565{0});
+    buffers.push_back(extra);
+  }
+  this->pipeline_->set_heat_buffers(buffers);
+  ESP_LOGI(TAG, "boot: %u heat image buffers for %u layers", static_cast<unsigned>(buffers.size()),
+           static_cast<unsigned>(enabled));
   this->heat_dsc_ =
       rgb565_dsc(reinterpret_cast<const uint8_t*>(this->heat_pixels_),
                  static_cast<uint32_t>(raster.width()), static_cast<uint32_t>(raster.height()));
@@ -270,6 +288,11 @@ bool HearthmapComponent::start_screen_() {
       256U * 1024U, std::min<std::size_t>(4U * 1024U * 1024U, free_psram / 8U));
   this->screen_ = std::make_unique<hm::ui::Screen>(
       this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
+  // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
+  this->pipeline_->set_row_hook(
+      [this](hm::Rgb565* image, std::int32_t stride, std::int32_t begin, std::int32_t end) {
+        return this->screen_ != nullptr && this->screen_->bake_rows(image, stride, begin, end);
+      });
   ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, 2 x %u bytes; rasterizer %u bytes)",
            static_cast<unsigned>(millis() - start), static_cast<int>(raster.width()),
            static_cast<int>(raster.height()), static_cast<unsigned>(raster.pixel_count() * 2U),
@@ -318,6 +341,7 @@ void HearthmapComponent::show_view_() {
   status.offline = !this->connected_;
   status.restamped = this->connected_;  // restamp() runs exactly while connected (D-046)
   status.heat_behind = this->pipeline_->heat_behind();
+  status.heat_baked = this->pipeline_->front_baked();
   this->dimmed_ = status.heat_behind;
   this->screen_->update(this->pipeline_->view(), header, this->clock_->timestamp_now(), status);
 }
@@ -342,6 +366,7 @@ void HearthmapComponent::frame_slice_() {
   if (due) {
     this->refresh_view_(start, connected);
     this->show_view_();
+    this->handle_publish_();  // a tab change to a kept image is shown in this same call
   }
   if (touched) {
     this->perf_.events_applied(millis(), this->screen_->writes() != writes_before);
@@ -360,9 +385,14 @@ void HearthmapComponent::frame_slice_() {
   // just after a press.
   if (this->pressed_ && millis() - this->last_press_ms_ < kHeatHoldAfterPressMs) return;
   this->pressed_ = false;
-  // Pulse sprites first (one tile per step, a small software render each): a pulse appears, or
-  // catches up with a change under it, before the next heat work (D-053).
+  // The map bake and the pulse sprites first (one band or tile per step, a small software render
+  // each), before the next heat work (D-053, D-055). When the bake becomes ready every kept
+  // image is redrawn with the walls and labels in it.
   if (this->screen_->prepare_step()) return;
+  if (!this->rebake_requested_ && this->screen_->bake_ready()) {
+    this->rebake_requested_ = true;
+    this->pipeline_->request_rebuild_all();
+  }
   bool idle = false;
   do {
     idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
@@ -373,20 +403,28 @@ void HearthmapComponent::frame_slice_() {
   } while (!idle && millis() - start < kSliceBudgetMs);
   if (!idle) return;
   this->heat_active_ = false;
-  if (!this->pipeline_->take_published()) return;
+  this->handle_publish_();
+}
 
-  // The finished back buffer is now the front: point the screen's image at it. If the image was
-  // hidden as behind (a layer change, or the first image), the Screen reveals it a strip at a
-  // time (D-052); otherwise it is repainted in bands here (invalidate_band_).
+void HearthmapComponent::handle_publish_() {
+  if (!this->pipeline_->take_published()) return;
+  // The new front image: point the screen's image at it. A layer change to a kept image is
+  // repainted whole at once (D-055: one opaque blit of the map); an image that was hidden as
+  // behind (the first, or a layer never kept) is revealed by the Screen a strip at a time
+  // (D-052); a fresh image of the shown layer is repainted in bands here (invalidate_band_).
   const bool was_dimmed = this->dimmed_;
   this->heat_dsc_.data = reinterpret_cast<const uint8_t*>(this->pipeline_->front());
-  if (was_dimmed) {
+  if (this->pipeline_->published_switch()) {
+    this->band_row_ = 1 << 30;
+    this->screen_->invalidate_heat();
+  } else if (was_dimmed) {
     this->band_row_ = 1 << 30;
   } else {
     this->band_row_ = 0;
     this->last_band_ms_ = 0;
   }
   this->show_view_();
+  if (this->pipeline_->published_switch()) return;  // no new image was drawn
   const uint32_t took = millis() - this->heat_started_ms_;
   if (!this->first_heat_logged_) {
     ESP_LOGI(TAG, "first heat image done in %u ms", static_cast<unsigned>(took));

@@ -81,13 +81,30 @@ class PanelPipeline {
   const hearthmap::RoomMask& mask() const { return mask_; }
   const hearthmap::ui::HeatRasterizer& rasterizer() const { return *raster_; }
 
-  /// Two heat-image buffers of rasterizer().pixel_count() pixels each, owned by the caller
-  /// (PSRAM on the device). front() is the one to show; frames render into the other.
+  /// Heat-image buffers of rasterizer().pixel_count() pixels each, owned by the caller (PSRAM
+  /// on the device), at least two. front() is the one to show; rebuilds draw into another. With
+  /// at least one more buffer than enabled layers, every layer keeps its own image, rebuilt in
+  /// the background, and a layer change shows it at once (D-055); with fewer, recently shown
+  /// layers stay until their buffer is needed.
+  void set_heat_buffers(const std::vector<hearthmap::Rgb565*>& buffers);
   void set_heat_buffers(hearthmap::Rgb565* a, hearthmap::Rgb565* b) {
-    front_ = a;
-    back_ = b;
+    set_heat_buffers(std::vector<hearthmap::Rgb565*>{a, b});
   }
-  hearthmap::Rgb565* front() const { return front_; }
+  hearthmap::Rgb565* front() const { return slots_.empty() ? nullptr : slots_[front_slot_].px; }
+  /// The shown image carries the walls and labels (every row went through the row hook with
+  /// success).
+  bool front_baked() const { return heat_valid_ && !slots_.empty() && slots_[front_slot_].baked; }
+  /// Images currently kept (valid buffers).
+  std::size_t cached_layers() const;
+
+  /// Called on rows [begin, end) of an image just rasterised into `image` (stride in pixels);
+  /// returns whether it laid the walls and labels over them (D-055).
+  using RowHook = std::function<bool(hearthmap::Rgb565* image, std::int32_t stride,
+                                     std::int32_t begin, std::int32_t end)>;
+  void set_row_hook(RowHook hook) { row_hook_ = std::move(hook); }
+  /// Redraw every kept image (the walls and labels became available): the shown one at once,
+  /// the others in the background.
+  void request_rebuild_all();
 
   /// Minimum time between the starts of two heat rebuilds that only follow changed samples
   /// (the YAML's heat_refresh_interval). The first image and layer changes are never held back.
@@ -106,6 +123,9 @@ class PanelPipeline {
     published_ = false;
     return p;
   }
+  /// The last publish was a layer change to an image already kept (repaint it at once), not a
+  /// fresh image of the shown layer (repaint it in bands).
+  bool published_switch() const { return published_switch_; }
   /// The front image does not show the view model's layer (no image yet, or a rebuild for a
   /// newly selected layer is in flight): the screen dims the map meanwhile (D-047).
   bool heat_behind() const { return !heat_valid_ || shown_layer_ != view_.active_layer; }
@@ -127,14 +147,33 @@ class PanelPipeline {
   std::unique_ptr<hearthmap::ui::HeatRasterizer> raster_;
   std::array<hearthmap::ColourLut, hearthmap::kLayerCount> luts_;
 
-  hearthmap::Rgb565* front_ = nullptr;
-  hearthmap::Rgb565* back_ = nullptr;
-  void start_rebuild(std::uint32_t mono_ms);
+  struct Slot {
+    hearthmap::Rgb565* px = nullptr;
+    bool valid = false;
+    bool baked = false;
+    hearthmap::Layer layer = hearthmap::Layer::Temperature;
+    std::vector<hearthmap::HeatSample> samples;  ///< What this image was drawn from.
+    std::uint64_t shown_at = 0;
+  };
+  static constexpr std::size_t kNoSlot = static_cast<std::size_t>(-1);
+  std::vector<Slot> slots_;
+  std::size_t front_slot_ = 0;
+  std::size_t job_slot_ = 0;
+  std::uint64_t show_counter_ = 0;
+  RowHook row_hook_;
+  bool job_baked_ = false;
+  bool force_ = false;
+  bool published_switch_ = false;
+  void start_rebuild(hearthmap::Layer layer, std::uint32_t mono_ms);
+  std::size_t slot_for(hearthmap::Layer layer) const;
+  std::size_t pick_target(hearthmap::Layer layer) const;
+  bool background_enabled() const;
+  void show_slot(std::size_t i, bool layer_switch);
 
   hearthmap::ViewModel view_;
-  std::vector<hearthmap::HeatSample> latest_;         ///< Samples for view_'s layer, from update().
-  std::vector<hearthmap::HeatSample> job_samples_;    ///< What the rebuild in flight draws.
-  std::vector<hearthmap::HeatSample> shown_samples_;  ///< What the front image was drawn from.
+  /// Samples per layer, from update() (the shown layer always; others when images are kept).
+  std::array<std::vector<hearthmap::HeatSample>, hearthmap::kLayerCount> latest_by_layer_;
+  std::vector<hearthmap::HeatSample> job_samples_;  ///< What the rebuild in flight draws.
   hearthmap::HeatField field_;
   bool heat_valid_ = false;  ///< A front image exists.
   hearthmap::Layer shown_layer_ = hearthmap::Layer::Temperature;

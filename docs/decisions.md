@@ -773,3 +773,40 @@ sprite or bake path assumes software rotation or the P4's orientation: tiles are
 logical coordinates, and rotation stays the display driver's business; (5) the proxy's cost
 model takes its rates from a table per target (`TargetRates`). **Would change if:** the port
 shows a constraint missing here, in which case it is added to this list.
+
+### D-055 Walls and labels are baked into the heat image; every layer's image is kept (provisional)
+
+**Question:** after D-053 the map's remaining per-refresh cost was LVGL redrawing the walls (one
+`lv_line` per room) and room labels over the heat image in every refreshed area, and a tab change
+still meant a rebuild of about a second behind a hidden map. **Default:** (1) **bake**: at boot,
+in `Screen::prepare_step()` slices of 32 rows, LVGL renders the wall and label objects alone into
+memory twice, over black and over white (`render_area()` with the map given a white background
+for the moment); the render over black is the drawing premultiplied by its coverage, and the
+difference gives how much of the image beneath shows. `Screen::bake_rows()` lays that over rows
+of a freshly rasterised heat image (one integer blend per pixel), which the device does in its
+sliced heat work through `PanelPipeline`'s row hook; when the shown image carries it
+(`SourceStatus::heat_baked`), the wall and label objects are hidden and LVGL never draws them
+again. Rendering through LVGL was chosen over drawing glyphs and lines ourselves: it is the same
+code that drew them before (fonts, kerning, ellipsis, anti-aliasing), so the baked map matches
+pixel for pixel within a step of RGB565 rounding (a screen test holds every map pixel within one
+step of LVGL's own drawing), and nothing about fonts is duplicated. Memory: 3 bytes per map pixel
+(about 2 MB for 920 x 736), within `ScreenDeps::bake_memory_bytes`; without it the objects stay.
+(2) **Kept layer images**: `PanelPipeline` takes any number of buffers; the component allocates
+one per enabled layer plus one to draw into while 6 MiB of PSRAM stays free. The shown layer is
+rebuilt as before; when nothing is pending, a layer not shown whose image is missing or behind
+its samples is rebuilt in the background, at most once per `heat_refresh_interval`. A tab change
+to a kept image shows it in the same `loop()` call as one repaint of the map (an opaque blit;
+the cost model gives about 115 ms with the pins), with no hidden interval; a layer not yet kept
+behaves as before (hidden, then revealed in bands). When the bake becomes ready, every kept image
+is redrawn once. Pins, value pills and plant discs are not baked: their content follows every
+reading, so a baked copy would force a map rebuild per reading; the pulse sprites already copy
+them where pulses run. **Trades:** walls that lie on the map's edge lose their outer pixel (the
+bake covers the map area only; the golden images differ there and nowhere else by more than a
+rounding step); a refresh of the shown layer's image leaves pulse sprites on their old background
+for the few slices until they are recaptured, while a layer change hides them until then.
+**Guard:** `components/hearthmap/tests/test_cpp.py::test_layer_images_are_kept_and_shown_at_once`
+(background builds, instant switches with no rebuild, the bake reaching every kept image;
+removing the instant switch or the background build each fails it), the adapted heat-policy
+test, and the bake fidelity screen test (skipping the blend fails it). Goldens all change for the
+edge-wall pixels. **Would change if:** PSRAM gets tight (fewer kept layers is the first thing to
+give), or the owner wants the edge walls whole (bake a 2 px margin).

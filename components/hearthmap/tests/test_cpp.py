@@ -698,32 +698,49 @@ int main() {
   CHECK(drain(p, 56500) == 1);
   CHECK(!p.heat_behind());
 
+  // Back to a layer whose image is still kept (temperature, in the other buffer): shown at once
+  // as a layer switch, with no rebuild (D-055).
+  {
+    const std::uint32_t n = p.heat_rebuilds();
+    UiState back = st2;
+    back.active_layer = Layer::Temperature;
+    p.update(rs, 1000, back, 56900);
+    CHECK(!p.heat_behind());
+    CHECK(p.take_published());
+    CHECK(p.published_switch());
+    CHECK(drain(p, 56900) == 0);
+    CHECK(p.heat_rebuilds() == n);
+  }
+
   // A tap during a rebuild is in the very next view model, without waiting for the image.
   UiState st3 = st2;
-  st3.active_layer = Layer::Temperature;
+  st3.active_layer = others[1];  // never drawn
   p.update(rs, 1000, st3, 57000);
   for (int k = 0; k < 3; ++k) CHECK(!p.heat_step(1, 57000));  // rebuild in flight
   UiState st4 = apply(p.config(), st3, UiEvent::tap_hud_item(p.config().pins[0].id));
   CHECK(st4.overlay_pin.has_value());
   p.update(rs, 1000, st4, 57010);
   CHECK(p.view().overlay.has_value());
-  CHECK(p.view().active_layer == Layer::Temperature);
-  CHECK(p.heat_behind());               // still the other layer's image: dimmed
+  CHECK(p.view().active_layer == others[1]);
+  CHECK(p.heat_behind());               // still another layer's image: veiled
   CHECK(!p.heat_step(1, 57010));        // the rebuild is still going
   CHECK(!p.take_published());
 
-  // A layer change during a rebuild restarts it for the new layer, and that is what lands.
+  // A layer change during a rebuild restarts it for the new layer (others[0], whose buffer the
+  // rebuild in flight took), and that is what lands.
   UiState st5 = st4;
-  st5.active_layer = others[1];
+  st5.active_layer = others[0];
   p.update(rs, 1000, st5, 57020);
+  CHECK(p.heat_behind());
   CHECK(drain(p, 57020) == 1);
+  CHECK(!p.published_switch());
   CHECK(!p.heat_behind());
-  CHECK(p.view().active_layer == others[1]);
+  CHECK(p.view().active_layer == others[0]);
 
   // Tabbing away and straight back cancels the rebuild: the shown image is current again.
   const std::uint32_t before = p.heat_rebuilds();
   UiState st6 = st5;
-  st6.active_layer = others[0];
+  st6.active_layer = others[1];
   p.update(rs, 1000, st6, 57100);
   CHECK(!p.heat_step(1, 57100));
   p.update(rs, 1000, st5, 57110);
@@ -744,6 +761,128 @@ def test_heat_rebuild_policy_and_immediate_taps(gen, schema, example, tmp_path):
     (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
     (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
     (tmp_path / "t.cpp").write_text(HEAT_POLICY_TEST)
+    text = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core],
+        [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
+    )
+    assert "0 failures" in text, text
+
+
+POOL_TEST = r"""
+#include <cstdio>
+#include <vector>
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+static int drain(Pipeline& p, std::uint32_t mono) {
+  int guard = 0;
+  while (!p.heat_step(1, mono) && ++guard < 1000000) {}
+  return p.take_published() ? 1 : 0;
+}
+
+int main() {
+  hearthmap_gen::GeneratedConfigSource source;
+  Pipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  Pipeline p(builder, Palette{});
+  while (p.stage() != Pipeline::Stage::Ready && p.stage() != Pipeline::Stage::Refused) p.boot_step(4);
+  if (p.stage() != Pipeline::Stage::Ready) return 2;
+  const std::size_t n = p.rasterizer().pixel_count();
+  std::vector<std::vector<Rgb565>> bufs(5, std::vector<Rgb565>(n));
+  std::vector<Rgb565*> ptrs;
+  for (auto& b : bufs) ptrs.push_back(b.data());
+  p.set_heat_buffers(ptrs);
+  p.set_heat_refresh_interval_ms(1000);
+  // The row hook: everything after `bake_from` is baked.
+  std::uint32_t bake_from = 1u << 30;
+  std::uint32_t hook_calls = 0;
+  std::uint32_t now_ms = 0;
+  p.set_row_hook([&](Rgb565*, std::int32_t, std::int32_t, std::int32_t) {
+    ++hook_calls;
+    return now_ms >= bake_from;
+  });
+
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 20.0 + double(i % 5) * 0.4; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  UiState st = initial_ui_state(p.config());
+  st.active_layer = Layer::Temperature;
+  const std::size_t layers = p.config().layers.size();
+  p.update(rs, 1000, st, now_ms);
+  const std::size_t tabs = p.view().tabs.size();
+  if (tabs + 1 > 5) { std::printf("TOO MANY LAYERS\n"); return 2; }
+
+  // The shown layer first, then every other layer in the background, one per interval.
+  CHECK(drain(p, now_ms) == 1);
+  CHECK(!p.front_baked());
+  CHECK(hook_calls > 0);
+  for (int k = 0; k < 10; ++k) {
+    now_ms += 1000;
+    p.update(rs, 1000, st, now_ms);
+    CHECK(drain(p, now_ms) == 0);  // background images are not shown
+  }
+  CHECK(p.cached_layers() == tabs);
+  const std::uint32_t built = p.heat_rebuilds();
+  CHECK(built == tabs);
+
+  // Every other tab is shown at once, as a layer switch, with no rebuild.
+  for (Layer l : p.view().tabs) {
+    UiState s2 = st;
+    s2.active_layer = l;
+    p.update(rs, 1000, s2, now_ms);
+    CHECK(!p.heat_behind());
+    if (l != Layer::Temperature) {
+      CHECK(p.take_published());
+      CHECK(p.published_switch());
+    }
+    CHECK(drain(p, now_ms) == 0);
+  }
+  CHECK(p.heat_rebuilds() == built);
+  p.update(rs, 1000, st, now_ms);
+  (void)p.take_published();
+
+  // The walls become available: every image is redrawn, the shown one at once.
+  bake_from = now_ms;
+  p.request_rebuild_all();
+  CHECK(drain(p, now_ms) == 1);
+  CHECK(p.front_baked());
+  CHECK(!p.published_switch());
+  for (int k = 0; k < 10; ++k) {
+    now_ms += 1000;
+    p.update(rs, 1000, st, now_ms);
+    drain(p, now_ms);
+  }
+  CHECK(p.cached_layers() == tabs);
+  for (Layer l : p.view().tabs) {
+    UiState s2 = st;
+    s2.active_layer = l;
+    p.update(rs, 1000, s2, now_ms);
+    CHECK(p.front_baked());  // the background copies were redrawn with the walls too
+    drain(p, now_ms);
+  }
+  (void)layers;
+  std::printf("pool checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_layer_images_are_kept_and_shown_at_once(gen, schema, example, tmp_path):
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(POOL_TEST)
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
