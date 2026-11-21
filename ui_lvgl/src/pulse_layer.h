@@ -113,6 +113,9 @@ class PulseLayer {
   /// frame and the tile invalidated at once.
   void tick(std::uint32_t now_ms);
   void set_defer(bool defer) { defer_ = defer; }
+  /// Frozen: tick() chooses every tile's frame for time 0, so each shows one fixed frame
+  /// (Screen::set_pulse_mode, PulseMode::Still).
+  void set_frozen(bool frozen) { frozen_ = frozen; }
   struct Due {
     lv_obj_t* image;
     lv_image_dsc_t* dsc;
@@ -292,6 +295,7 @@ class PulseLayer {
   std::vector<Due> due_out_;
   std::vector<std::uint16_t> reference_;  ///< verify_shown()'s scratch frame
   bool defer_ = false;
+  bool frozen_ = false;
   lv_timer_t* timer_ = nullptr;
   bool veiled_ = false;
   bool alive_ = true;

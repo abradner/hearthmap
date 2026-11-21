@@ -1064,3 +1064,39 @@ is stuck; the WARN lines also go through ESPHome's logger for API subscribers on
 The judging is pure and host-tested (`StallJudge`). **Why:** the next hang names its wait, whether
 it is a Wi-Fi call (D-061), ESPHome's flush (docs/upstream/mipi-dsi-unbounded-wait.md) or a PPA
 call. **Would change if:** ESPHome prints other tasks' logs directly, or gains such a monitor.
+
+### D-063 The hosted Wi-Fi link gets a diagnostic build and bisecting switches (provisional)
+
+**Question:** since the sprite builds, the panel's Wi-Fi link through the ESP32-C6 dies a few
+minutes after boot and never comes back, with nothing in the log: the main loop keeps running, no
+watchdog fires, ESPHome still believes it is connected, and later Wi-Fi calls time out (D-061).
+What can say why? **Found** (esp-hosted 3.1.0 host source, ESPHome 2026.11.0): with
+`esp32_hosted`'s defaults (`use_psram: false`, `CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL` off) every
+SDIO frame the P4 sends, and every frame it reads back out of an RX aggregate, is a fresh
+`heap_caps_malloc(1536, MALLOC_CAP_DMA)` (`sdio_buffer_alloc`); when that fails the frame is
+dropped and a WARN (DEBUG on one RX path) is logged once per episode. Remote Wi-Fi calls ride the
+same TX path, so they time out too. ESPHome compiles ESP-IDF's log at ERROR, so none of it is
+printed. `use_psram: true` moves only the staging and aggregate buffers, not those per-frame ones
+(`eh_host_port_dma_alloc` ignores `CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM`). On our side,
+`CONFIG_SPIRAM_USE_MALLOC` (since the first component build) sends every allocation under 16 KiB
+to internal RAM first, and the sprite code holds many such `std::vector`s (captures, coverage and
+keyline tables of 64 px outline cells, 4-12 KiB each), recomposed whenever a heat image changes;
+the present buffer (32 KiB) is internal and DMA-capable by design. ESP-IDF 5.5.6 registers the
+P4's PSRAM heap without `MALLOC_CAP_DMA` (`esp_psram.c`), so those frames can only come from
+internal RAM, the same RAM the small vectors fill (which is also why `use_psram`'s
+`MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA` request cannot succeed here and falls back to internal:
+read, not tested). That exhaustion is reachable is shown; that it happens is not.
+**Default:** two switches, both off, for flashing one change at a time. `diagnostics: true`
+(`hosted_diag.h`) prints every 10 s: internal, DMA-capable and PSRAM heap with the lowest internal
+ever, every failed allocation (ESP-IDF's hook), esp-hosted's SDIO packet counters
+(`CONFIG_ESP_HOSTED_HOST_PKT_STATS`) and how long each has stood still, one timed Wi-Fi call, a
+gateway ping through lwIP, and every 60 s each task's CPU share and stack headroom; it also opens
+ESP-IDF's warnings. `pulse_sprites: still | off` keeps the sprites' memory without their
+animation, or removes them. **Reading it:** failed DMA allocations and `tx drop` rising with
+internal free near its floor is heap exhaustion; `rx in` frozen with no failures is the
+co-processor or the SDIO bus; `rx in` moving while `rx out` is frozen is the P4 dropping frames;
+pings answered while the Wi-Fi call times out is the RPC path alone. **Not chosen yet:** a fix.
+The candidates are esp-hosted's preallocated packet pool (`CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL`,
+about 47 KiB taken once at boot), keeping sprite vectors out of internal RAM, and a link watchdog
+that reinitialises the transport; each waits on what the report shows. **Would change if:** the
+report points elsewhere, or a co-processor firmware update changes the transport's behaviour.

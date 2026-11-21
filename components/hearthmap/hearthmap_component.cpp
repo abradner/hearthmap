@@ -130,6 +130,7 @@ void HearthmapComponent::setup() {
   // Names the main loop's wait if it ever stops turning (D-062).
   breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
   this->stall_monitor_ = start_stall_monitor(this->watchdog_ms_);
+  start_hosted_diagnostics();  // only with `diagnostics: true` (D-063)
   this->presenter_ = std::make_unique<hm::ui::NoPresenter>();
   if (this->present_display_ != nullptr && this->lvgl_ != nullptr) {
     auto direct =
@@ -352,6 +353,7 @@ bool HearthmapComponent::start_screen_() {
   // With a presenter, pulse frames are shown from loop(), straight to the panel where they can be
   // (D-058); otherwise LVGL's timer invalidates them as before.
   this->screen_->set_frames_deferred(this->presenting_);
+  this->screen_->set_pulse_mode(this->pulse_mode_);
   // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
   this->pipeline_->set_row_hook(
       [this](hm::Rgb565* image, std::int32_t stride, std::int32_t begin, std::int32_t end) {
@@ -427,6 +429,7 @@ void HearthmapComponent::frame_slice_() {
   }
   this->pending_.clear();
   const bool connected = api::global_api_server->is_connected_with_state_subscription();
+  diag_note_api(connected);
   const uint32_t since = start - this->last_view_ms_;
   const bool due = !this->viewed_ || touched || connected != this->connected_ ||
                    since >= this->refresh_interval_ms_ ||
@@ -665,6 +668,13 @@ void HearthmapComponent::hide_status_() {
 void HearthmapComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "hearthmap blitter: %s, present: %s", this->blitter_name_,
                 this->presenter_name_);
+  if (this->pulse_mode_ != hm::ui::PulseMode::Animated) {
+    ESP_LOGCONFIG(TAG, "  Pulse sprites: %s (bisecting aid, D-063)",
+                  this->pulse_mode_ == hm::ui::PulseMode::Still ? "still" : "off");
+  }
+#ifdef HEARTHMAP_DIAGNOSTICS
+  ESP_LOGCONFIG(TAG, "  Diagnostics: hosted link report every 10 s on the UART (D-063)");
+#endif
   ESP_LOGCONFIG(TAG,
                 "hearthmap:\n"
                 "  Config: %s\n"

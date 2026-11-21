@@ -1,0 +1,16 @@
+# The example panel with the hosted Wi-Fi link diagnostics on (docs/decisions.md D-063). Not for
+# normal use: it prints a heap / SDIO / Wi-Fi / lwIP report on the UART every 10 s and pings the
+# gateway. Build it like the plain example:
+#   esphome compile examples/flat/esphome/flat-panel-diag.yaml
+# For bisecting, flip one line per flash: `pulse_sprites: still` (frames built, never animated),
+# `pulse_sprites: off` (no sprites at all); `present` is already off in the example.
+
+packages:
+  panel: !include flat-panel.yaml
+
+esphome:
+  name: hearthmap-flat-diag
+
+hearthmap:
+  diagnostics: true
+  pulse_sprites: animated

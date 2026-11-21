@@ -922,7 +922,7 @@ void PulseLayer::finish_job() {
   std::vector<std::uint16_t>().swap(job_.next.px);
   job_ = Job{};
   t.hidden = false;
-  int index = frame_index(t, lv_tick_get());
+  int index = frame_index(t, frozen_ ? 0U : lv_tick_get());
   if (index < 0) {
     ++stats_.not_ready;
     index = 0;  // the set is complete, so frame 0 exists
@@ -1019,6 +1019,7 @@ bool PulseLayer::prepare_step() {
 
 void PulseLayer::tick(std::uint32_t now_ms) {
   if (!alive_ || veiled_) return;
+  if (frozen_) now_ms = 0;
   struct Timed {
     PulseLayer& self;
     std::uint32_t t0;

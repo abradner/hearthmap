@@ -284,6 +284,7 @@ struct Screen::Impl {
 
   std::vector<std::vector<lv_point_precise_t>> room_points;
   std::unique_ptr<detail::PulseLayer> pulses;
+  PulseMode pulse_mode = PulseMode::Animated;
   lv_obj_t* press_marker = nullptr;
   struct RoundPhoto {
     std::vector<std::uint16_t> px;
@@ -1590,7 +1591,13 @@ bool Screen::prepare_step() {
   if (impl_->w.root == nullptr) return false;
   // The bake first: sprites captured afterwards see the final map.
   if (impl_->bake && impl_->bake->prepare_step()) return true;
+  if (impl_->pulse_mode == PulseMode::Off) return false;
   return impl_->pulses && impl_->pulses->prepare_step();
+}
+
+void Screen::set_pulse_mode(PulseMode mode) {
+  impl_->pulse_mode = mode;
+  if (impl_->pulses) impl_->pulses->set_frozen(mode == PulseMode::Still);
 }
 
 bool Screen::bake_ready() const {
