@@ -1,8 +1,8 @@
-// pixel_ops.h — the one interface every large pixel operation in ui_lvgl goes through
-// (docs/decisions.md D-054): composing a pulse sprite, copying rows of a baked image, filling a
-// band. The default is plain C++ (cpu_pixel_ops()); an embedder with a 2D accelerator (the
-// ESP32-P4's PPA) or SIMD for another CPU can pass its own through ScreenDeps without any caller
-// changing. Pixels are RGB565, row-major, `stride` in pixels.
+// sprite_composer.h — composing a pulse sprite's frame (docs/decisions.md D-053, D-054): a
+// per-pixel blend from look-up tables, kept separate from the Blitter (blitter.h), which carries
+// the plain moves (copy, fill, constant-alpha blend, scale). The default is plain C++
+// (cpu_sprite_composer()); a target with SIMD can pass its own through ScreenDeps. Pixels are
+// RGB565, row-major, `stride` in pixels.
 #pragma once
 
 #include <cstddef>
@@ -41,20 +41,14 @@ struct ComposeJob {
   std::uint16_t ring_colour = 0;
 };
 
-class PixelOps {
+class SpriteComposer {
  public:
-  virtual ~PixelOps() = default;
+  virtual ~SpriteComposer() = default;
   virtual void compose(const ComposeJob& job) const;
-  /// Copy a `w x h` block.
-  virtual void copy(const std::uint16_t* src, std::int32_t src_stride, std::uint16_t* dst,
-                    std::int32_t dst_stride, std::int32_t w, std::int32_t h) const;
-  /// Fill a `w x h` block with `colour`.
-  virtual void fill(std::uint16_t* dst, std::int32_t dst_stride, std::int32_t w, std::int32_t h,
-                    std::uint16_t colour) const;
 };
 
 /// The plain C++ implementation.
-const PixelOps& cpu_pixel_ops();
+const SpriteComposer& cpu_sprite_composer();
 
 /// `bg` with `fg` over it at alpha `a` (0..255), per 5/6/5 channel.
 inline std::uint16_t blend565(std::uint16_t bg, std::uint16_t fg, std::uint32_t a) {

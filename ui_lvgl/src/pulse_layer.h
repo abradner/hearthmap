@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "hearthmap/config.h"
-#include "hearthmap/ui/pixel_ops.h"
+#include "hearthmap/ui/sprite_composer.h"
 #include "hearthmap/ui/theme.h"
 #include "lvgl.h"
 #include "sprites.h"
@@ -65,7 +65,7 @@ class PulseLayer {
   PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size,
              const std::vector<std::vector<lv_point_precise_t>>& room_outlines,
              const std::vector<lv_point_t>& pin_centres, std::vector<lv_obj_t*> pins,
-             PulseBudget budget, const PixelOps& ops);
+             PulseBudget budget, const SpriteComposer& ops);
   ~PulseLayer();
   PulseLayer(const PulseLayer&) = delete;
   PulseLayer& operator=(const PulseLayer&) = delete;
@@ -157,7 +157,7 @@ class PulseLayer {
 
   lv_obj_t* map_;
   PulseBudget budget_;
-  const PixelOps* ops_;
+  const SpriteComposer* ops_;
   lv_point_t origin_;
   lv_area_t map_area_{};
   std::vector<lv_obj_t*> pins_;

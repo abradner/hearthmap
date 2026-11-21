@@ -218,7 +218,7 @@ void add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std:
 
 namespace hearthmap::ui {
 
-void PixelOps::compose(const ComposeJob& j) const {
+void SpriteComposer::compose(const ComposeJob& j) const {
   for (std::int32_t y = j.y0; y < j.y1; ++y) {
     const std::size_t row = static_cast<std::size_t>(y) * static_cast<std::size_t>(j.stride);
     for (std::int32_t x = j.x0; x < j.x1; ++x) {
@@ -246,26 +246,9 @@ void PixelOps::compose(const ComposeJob& j) const {
   }
 }
 
-void PixelOps::copy(const std::uint16_t* src, std::int32_t src_stride, std::uint16_t* dst,
-                    std::int32_t dst_stride, std::int32_t w, std::int32_t h) const {
-  for (std::int32_t y = 0; y < h; ++y) {
-    const std::uint16_t* s =
-        src + static_cast<std::size_t>(y) * static_cast<std::size_t>(src_stride);
-    std::copy(s, s + w, dst + static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_stride));
-  }
-}
-
-void PixelOps::fill(std::uint16_t* dst, std::int32_t dst_stride, std::int32_t w, std::int32_t h,
-                    std::uint16_t colour) const {
-  for (std::int32_t y = 0; y < h; ++y) {
-    std::uint16_t* d = dst + static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_stride);
-    std::fill(d, d + w, colour);
-  }
-}
-
-const PixelOps& cpu_pixel_ops() {
-  static const PixelOps ops;
-  return ops;
+const SpriteComposer& cpu_sprite_composer() {
+  static const SpriteComposer composer;
+  return composer;
 }
 
 }  // namespace hearthmap::ui

@@ -578,7 +578,8 @@ struct Screen::Impl {
     budget.max_animated_rooms = kMaxAnimatedRooms;
     pulses = std::make_unique<detail::PulseLayer>(
         w.map, lv_point_t{a.x, a.y}, lv_point_t{a.width, a.height}, room_points, centres, w.pin,
-        budget, deps.pixel_ops != nullptr ? *deps.pixel_ops : detail::cpu_pixel_ops());
+        budget,
+        deps.sprite_composer != nullptr ? *deps.sprite_composer : detail::cpu_sprite_composer());
     w.room_pulse = pulses->room_objects();
     w.pin_pulse = pulses->ring_objects();
   }

@@ -20,8 +20,8 @@
 
 #include "hearthmap/config.h"
 #include "hearthmap/ui/fonts.h"
-#include "hearthmap/ui/pixel_ops.h"
 #include "hearthmap/ui/ports.h"
+#include "hearthmap/ui/sprite_composer.h"
 #include "hearthmap/view_model.h"
 #include "lvgl.h"
 
@@ -59,8 +59,9 @@ struct ScreenDeps {
   Fonts fonts;
   EventSink* sink = nullptr;              ///< Required.
   const ImageProvider* photos = nullptr;  ///< Optional: nullptr draws every plant as a leaf.
-  /// Optional: the pixel operations for sprites (D-054). nullptr: plain C++ (cpu_pixel_ops()).
-  const PixelOps* pixel_ops = nullptr;
+  /// Optional: how sprite frames are composed (D-054). nullptr: plain C++
+  /// (cpu_sprite_composer()).
+  const SpriteComposer* sprite_composer = nullptr;
   /// Memory the pulse sprites may hold, bytes (D-053, D-054). 0: 2 MiB. Pulsing pins and rooms
   /// past it show their badge or a steady state instead of an animation.
   std::size_t pulse_memory_bytes = 0;

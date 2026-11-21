@@ -13,18 +13,18 @@
 #include <cstdint>
 #include <vector>
 
-#include "hearthmap/ui/pixel_ops.h"
+#include "hearthmap/ui/sprite_composer.h"
 #include "lvgl.h"
 
 namespace hearthmap::ui::detail {
 
 using ui::blend565;
 using ui::ComposeJob;
-using ui::cpu_pixel_ops;
+using ui::cpu_sprite_composer;
 using ui::Overlay;
-using ui::PixelOps;
 using ui::rgb565;
 using ui::RingLayer;
+using ui::SpriteComposer;
 
 /// Renders what `subtree` (an object and its children; nothing above or beside it) shows in `area`
 /// (screen coordinates) into `out`, `w x h` RGB565 pixels, row-major, where w and h are the

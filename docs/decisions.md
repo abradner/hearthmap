@@ -759,10 +759,12 @@ finds 12.5 frames/s per ring too slow.
 **Question:** a later follow-up ports the renderer to an ESP32-S3 with a 480 x 480 parallel-RGB
 panel, about 8 MB of PSRAM, no PPA, no rotation (issue 27). What must hold now so that port is a
 new table and an implementation, not a rewrite? **Default (owner's constraints, 2026-11-21):**
-(1) every large pixel move (composing a sprite, copying or filling blocks; later the baked map
-and its bands) goes through `hearthmap::ui::PixelOps` (`pixel_ops.h`), plain C++ by default
-(`cpu_pixel_ops()`), replaceable through `ScreenDeps::pixel_ops` by a hardware or SIMD one
-without touching callers; (2) memory budgets are parameters, not constants sized for 32 MB:
+(1) every large pixel move (copies, fills, constant-alpha blends, 2x scales of the baked map
+and its bands) goes through `hearthmap::ui::Blitter` (`blitter.h`, defined with the
+hardware-acceleration work and copied unchanged; `SoftwareBlitter` by default, a PPA one on the
+P4 later), and composing a sprite frame (a per-pixel blend from tables, which the Blitter's
+operations do not express) goes through `SpriteComposer` (`sprite_composer.h`, plain C++ by
+default); both are replaceable without touching callers; (2) memory budgets are parameters, not constants sized for 32 MB:
 `ScreenDeps::pulse_memory_bytes` (the component passes an eighth of free PSRAM, 256 KiB to 4
 MiB), with graceful degradation past them; later budgets (cached layer images, back buffers)
 follow the same rule; (3) screen regions and pulse geometry come from `theme.h` (`kMapRegion*`,

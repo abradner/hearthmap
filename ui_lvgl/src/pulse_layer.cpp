@@ -59,7 +59,7 @@ lv_area_t pin_extent(lv_obj_t* pin) {
 PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size,
                        const std::vector<std::vector<lv_point_precise_t>>& room_outlines,
                        const std::vector<lv_point_t>& pin_centres, std::vector<lv_obj_t*> pins,
-                       PulseBudget budget, const PixelOps& ops)
+                       PulseBudget budget, const SpriteComposer& ops)
     : map_(map), budget_(budget), ops_(&ops), origin_(map_origin), pins_(std::move(pins)) {
   map_area_ = {map_origin.x, map_origin.y, map_origin.x + map_size.x - 1,
                map_origin.y + map_size.y - 1};
