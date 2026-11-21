@@ -1321,11 +1321,18 @@ TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   HeatRasterizer raster{c};
   std::vector<Rgb565> heat(raster.pixel_count(), 0);
   lv_image_dsc_t dsc{};
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"  // lv_image_header_t's bit-fields
+#endif
   dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
   dsc.header.cf = LV_COLOR_FORMAT_RGB565;
   dsc.header.w = static_cast<std::uint32_t>(raster.width());
   dsc.header.h = static_cast<std::uint32_t>(raster.height());
   dsc.header.stride = static_cast<std::uint32_t>(raster.width() * 2);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
   dsc.data_size = static_cast<std::uint32_t>(heat.size() * 2);
   dsc.data = reinterpret_cast<const std::uint8_t*>(heat.data());
   ScreenDeps deps;
