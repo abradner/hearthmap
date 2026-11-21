@@ -18,7 +18,7 @@ namespace hearthmap::ui::detail {
 
 class MapBake {
  public:
-  static constexpr std::int32_t kBandRows = 32;
+  static constexpr std::int32_t kBandRows = 8;  // two renders of 8 x 920 px: well under 20 ms
 
   /// `map` is the map container at `area` (screen px). `draw` are the objects to bake (walls,
   /// labels); `hide` everything else that may draw over the map (the heat image, pins, pulse

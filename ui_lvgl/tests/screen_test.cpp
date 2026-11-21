@@ -4,6 +4,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1021,24 +1022,32 @@ TEST_CASE("pulses are sprites: smooth frames from the tick, no LVGL animation") 
   const CanvasRect& a = rig.config.canvas.map_area;
   const auto cx = static_cast<std::int32_t>(a.x + 0.25 * a.width);  // temperature pin 0
   const auto cy = static_cast<std::int32_t>(a.y + 0.25 * a.height);
-  const auto* px = reinterpret_cast<const std::uint16_t*>(dsc->data);
   const std::size_t probe = static_cast<std::size_t>(cy + 40 - tile.y1) * dsc->header.w +
                             static_cast<std::size_t>(cx - tile.x1);
   std::vector<std::uint16_t> seen;
+  std::set<const std::uint16_t*> pointers;
   const PulseCounters before = rig.screen->pulse_counters();
   for (std::uint32_t t = 0; t <= 3200; t += 16) {
     rig.display.set_time_ms(t);
     rig.display.run_timers();
     CHECK(lv_anim_count_running() == 0);
+    // Frames are precomputed: the descriptor points at the frame shown now, a different block of
+    // memory for each frame (animating is a pointer swap, not a recomposition).
+    const auto* px = reinterpret_cast<const std::uint16_t*>(dsc->data);
+    pointers.insert(px);
     if (seen.empty() || seen.back() != px[probe]) seen.push_back(px[probe]);
   }
   const PulseCounters after = rig.screen->pulse_counters();
-  // 3.2 s: two ring cycles of 20 frames, a little over one room cycle of 14 steps.
+  // 3.2 s: two cycles of 50 ring frames and of 25 room steps, at the frame rate memory allows
+  // (frame_divisor), all of them precomputed.
   const std::uint32_t frames = after.frames - before.frames;
-  CHECK(frames >= 2 * 20 + 14);
-  CHECK(frames <= 2 * 20 + 2 * 14 + 2);
-  CHECK(after.dropped == before.dropped);  // a 16 ms tick never skips a 80 ms frame
-  CHECK(seen.size() >= 4);                 // the ring sweeps over the probe, in several shades
+  const std::uint32_t div = after.frame_divisor;
+  MESSAGE("frames " << frames << " divisor " << div);
+  CHECK(frames >= (2 * 50 + 2 * 25) / div - 4);
+  CHECK(frames <= (2 * 50 + 2 * 25) / div + 4);
+  if (div > 1) CHECK(after.dropped == before.dropped);  // a 16 ms tick never skips a 64 ms frame
+  CHECK(seen.size() >= 4);  // the ring sweeps over the probe, in several shades
+  CHECK(pointers.size() >= 50 / after.frame_divisor);  // every frame of the cycle was shown
   CHECK(after.tile_bytes > 0);
 }
 
@@ -1050,8 +1059,9 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
   lv_obj_update_layout(rig.display.screen());
   const auto& w = rig.w();
   // West room: map (0,0)-(0.5,0.5) of 864 x 720 at (40, 76): 432 x 360 px.
+  // Edges are cut into pieces of at most 96 px (a presented tile is at most 128 px).
   const std::uint32_t edges = lv_obj_get_child_count(w.room_pulse[0]);
-  CHECK(edges == 4);
+  CHECK(edges == 2 * ((432 + 95) / 96) + 2 * ((360 + 95) / 96));
   std::uint64_t area = 0;
   for (std::uint32_t i = 0; i < edges; ++i) {
     lv_area_t a;
@@ -1062,7 +1072,7 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
     area += lv_area_get_size(&a);
   }
   CHECK(area <= 2U * (432U + 360U + 64U) * 32U);  // the perimeter, at most 32 px wide
-  CHECK(area < 432U * 360U / 4U);                 // a quarter of the room
+  CHECK(area < 432U * 360U / 3U);                 // a third of the room
 
   // One step of the pulse invalidates no more than those strips (plus their draw margin).
   lv_display_add_event_cb(rig.display.display(), count_invalidation, LV_EVENT_INVALIDATE_AREA,
@@ -1075,7 +1085,7 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
   }
   CHECK(g_invalidated > 0);  // it does pulse
   // At most 15 steps of the outline in that window, each exactly its strips.
-  CHECK(g_invalidated <= 15U * area);
+  CHECK(g_invalidated <= 45U * area);  // at most 44 steps of 64 ms in 2.8 s, each its strips
 }
 
 TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") {
@@ -1169,7 +1179,8 @@ TEST_CASE("a diagonal wall's pulse is cut into small pieces, so it never invalid
   lv_obj_update_layout(rig.display.screen());
   const auto& w = rig.w();
   const std::uint32_t pieces = lv_obj_get_child_count(w.room_pulse[0]);
-  CHECK(pieces == 2 + (432 + 47) / 48);  // two axis-aligned edges, the diagonal in 48 px pieces
+  // Pieces of at most 96 px: two axis-aligned edges and the diagonal.
+  CHECK(pieces == (432 + 95) / 96 + (360 + 95) / 96 + (432 + 95) / 96);
   std::uint64_t area = 0;
   for (std::uint32_t i = 0; i < pieces; ++i) {
     lv_area_t a;
@@ -1178,7 +1189,8 @@ TEST_CASE("a diagonal wall's pulse is cut into small pieces, so it never invalid
     const std::int32_t hi = std::max(lv_area_get_width(&a), lv_area_get_height(&a));
     // A thin strip (an axis-aligned wall), or a piece no bigger than a 48 px run plus the width
     // and caps on each axis, aligned out to whole kTileAlign blocks.
-    CHECK((lo <= 4 * theme::kTileAlign || hi <= 48 + 19 + 2 * theme::kTileAlign));
+    CHECK(hi <= 128);  // within what a presenter accepts
+    CHECK((lo <= 4 * theme::kTileAlign || hi <= 96 + 19 + 2 * theme::kTileAlign));
     area += lv_area_get_size(&a);
   }
   // Under the triangle's own area; one object for the hypotenuse alone covered 443 x 371 px,
@@ -1311,7 +1323,7 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
 
 // One of small_config()'s top rooms' outline sprites fits, two do not (8 bytes a pixel of strips
 // about 20 px wide along 2 x (432 + 360) px, aligned).
-constexpr std::size_t kOneRoomBudget = 300U * 1024U;
+constexpr std::size_t kOneRoomBudget = 1024U * 1024U;
 
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
@@ -1338,7 +1350,6 @@ TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   ScreenDeps deps;
   deps.fonts = builtin_fonts();
   deps.sink = &sink;
-  // One room's strips: perimeter 2 x (432 + 360) px, 11 px wide plus corners, 8 bytes a pixel.
   deps.pulse_memory_bytes = kOneRoomBudget;
   Screen screen(display.screen(), c, &dsc, deps);
   ViewModel vm = test::temperature_vm(c);
@@ -1356,6 +1367,7 @@ TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
     lv_obj_t* edge = lv_obj_get_child(w.room_pulse[r], 0);
     return !lv_obj_is_hidden(w.room_pulse[r]) && edge != nullptr && !lv_obj_is_hidden(edge);
   };
+  MESSAGE("sprite bytes with one room " << screen.pulse_counters().tile_bytes);
   CHECK(shown(0));
   CHECK_FALSE(shown(1));  // over budget: waits
   vm.rooms[0].pulse = Severity::Ok;

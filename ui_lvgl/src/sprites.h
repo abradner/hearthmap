@@ -39,6 +39,12 @@ bool render_area(lv_obj_t* subtree, const lv_area_t& area, std::uint16_t* out,
 /// background of its own, so without this LVGL draws everything under such an image first.
 void opaque_image_cover_cb(lv_event_t* e);
 
+/// LV_EVENT_COVER_CHECK handler for a container of opaque tiles (each child an image that
+/// opaque_image_cover_cb() would say covers its own area): it covers an area that its visible
+/// children cover together. LVGL joins neighbouring repaints into one rectangle before asking,
+/// and no single tile covers two neighbouring tiles' join.
+void opaque_tiles_cover_cb(lv_event_t* e);
+
 /// Distance from each pixel centre of a `w x h` block at (x0, y0) to the point (cx, cy), in
 /// 1/16 px, saturated at 65535.
 void distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,

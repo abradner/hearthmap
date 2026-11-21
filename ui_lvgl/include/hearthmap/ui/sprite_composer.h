@@ -10,31 +10,38 @@
 
 namespace hearthmap::ui {
 
-/// One colour laid over a tile with a coverage mask and an opacity (a room's outline).
-struct Overlay {
-  const std::uint8_t* coverage = nullptr;  ///< Per tile pixel, 0..255.
-  std::uint16_t colour = 0;                ///< RGB565.
-  std::uint8_t opa = 0;                    ///< 0..255; 0 draws nothing.
+/// A rectangle of tile pixels: columns [x0, x1), rows [y0, y1).
+struct TileBox {
+  std::int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
 
-/// One ring laid over a tile: the tile's distances to the ring's centre and the ring's current
-/// alpha by distance.
+/// One colour laid over a tile through a coverage mask (a room's outline): alpha = lut[coverage].
+struct Overlay {
+  const std::uint8_t* coverage = nullptr;  ///< Per tile pixel, 0..255.
+  const std::uint8_t* lut = nullptr;       ///< 256 entries: coverage -> alpha (opacity folded in).
+  std::uint16_t colour = 0;                ///< RGB565.
+  TileBox box;                             ///< Where the coverage can be non-zero.
+};
+
+/// One ring laid over a tile: the tile's distances to the ring's centre and the ring's alpha by
+/// distance.
 struct RingLayer {
   const std::uint16_t* distance = nullptr;  ///< Per tile pixel, 1/16 px.
   const std::uint8_t* alpha = nullptr;      ///< By distance; nullptr: nothing drawn.
   std::size_t size = 0;
   std::uint16_t colour = 0;  ///< RGB565.
+  TileBox box;               ///< Where the alpha can be non-zero.
 };
 
-/// Compose the rows [y0, y1) and columns [x0, x1) of a `stride`-wide tile: where `full` and
-/// `below` differ the pixel belongs to something drawn over the pulses (a pin) and is copied from
-/// `full`; elsewhere `below` gets each overlay in order, then each ring layer in its colour.
+/// Compose a whole `w x h` tile (`stride` pixels per row) into `out`: `below`, then each overlay
+/// in order, then each ring layer, each only inside its box; last, wherever `full` and `below`
+/// differ (something drawn over the pulses: a pin), the pixel from `full`. Integer only.
 struct ComposeJob {
   const std::uint16_t* below = nullptr;
   const std::uint16_t* full = nullptr;
   std::uint16_t* out = nullptr;
   std::int32_t stride = 0;
-  std::int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  std::int32_t w = 0, h = 0;
   const Overlay* overlays = nullptr;
   std::size_t overlay_count = 0;
   const RingLayer* rings = nullptr;

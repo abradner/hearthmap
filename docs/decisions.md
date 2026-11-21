@@ -772,6 +772,23 @@ wider than the stroke, at 200/255 of its opacity) under its colour, composed in 
 it reads on any fill; golden `pulse-ring-on-red` holds the case. Badges already have a dark rim.
 The perf line gains the time spent composing frames (inside LVGL's timer handler, outside the
 refresh count) and capturing tiles.
+**Amended again after 4d50e76 on the panel:** composing each frame at animation time cost about
+16 ms per frame (24 % of all time with only the outlines animating): every step recomposed a
+room's whole set of edge tiles with up to eight blended layers and an integer division per layer
+per pixel. Now every frame of every tile is composed once, in `prepare_step()` (one frame per
+step, after two separate capture steps), and kept; animating is pointing the descriptor at the
+next frame. The composer touches only each layer's box and looks alpha up in tables (no division).
+After a change under a tile its frames are recomposed while the old set plays, and the new set
+replaces it whole. Rings run 50 frames and room outlines 25 steps per 1.6 s cycle (room outlines
+now breathe on the rings' 1.6 s cycle, not 2.8 s, so every tile's cycle is the same and a ring
+tile's frames show the outline under it exactly; trade). Every phase is a whole number of the
+coarsest frames, so overlapping tiles agree. Memory: all frames are kept, within
+`ScreenDeps::pulse_memory_bytes` (the component now gives three quarters of the PSRAM left after
+a 6 MiB reserve and the bake); frames per cycle are divided by 2 or 4 until every pulsing object
+fits, then pulses are admitted in config order while they fit. Edges are cut into pieces of at most
+96 px so every tile fits the 128 x 128 a presenter accepts. At most 20 tiles are invalidated per
+tick (LVGL keeps 32 areas and repaints the whole screen past that); outline containers report
+that their tiles together cover a joined repaint.
 
 ### D-054 The renderer is built to port: one pixel interface, budgets from memory, regions from one table (provisional)
 

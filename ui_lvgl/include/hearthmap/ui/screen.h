@@ -84,8 +84,9 @@ struct PulseCounters {
   std::size_t tile_bytes = 0;  ///< memory the sprites hold now
   std::size_t rings_shown = 0;
   std::size_t rooms_animated = 0;
-  std::uint64_t frame_us = 0;    ///< composing frames, in LVGL's timer (with ScreenDeps::micros)
-  std::uint64_t prepare_us = 0;  ///< in prepare_step() (with ScreenDeps::micros)
+  std::uint64_t frame_us = 0;       ///< composing frames, in LVGL's timer (with ScreenDeps::micros)
+  std::uint64_t prepare_us = 0;     ///< in prepare_step() (with ScreenDeps::micros)
+  std::uint32_t frame_divisor = 1;  ///< 1: full frame rate; 2, 4: fewer frames to fit memory
 };
 
 /// Raw pointers to the widgets, for tests and for embedders that want to restyle. Owned by the

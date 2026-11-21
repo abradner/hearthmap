@@ -37,7 +37,6 @@ constexpr int kPlainDotBorder = 3;
 constexpr int kPlantRadius = 22;
 constexpr int kPinRingWidth = 6;
 // Pulses are pre-rendered sprites (D-053, pulse_layer.h).
-constexpr std::size_t kMaxAnimatedRooms = 4;
 constexpr std::size_t kDefaultBakeMemory = 4U * 1024U * 1024U;
 constexpr std::int32_t kPinOverflow = 140;  // how far a pin's value pill and badge may reach
 // The heat image's strips (D-052), and how fast they come back after it caught up.
@@ -666,7 +665,6 @@ struct Screen::Impl {
     }
     detail::PulseBudget budget;
     if (deps.pulse_memory_bytes != 0) budget.memory_bytes = deps.pulse_memory_bytes;
-    budget.max_animated_rooms = kMaxAnimatedRooms;
     budget.micros = deps.micros;
     pulses = std::make_unique<detail::PulseLayer>(
         w.map, lv_point_t{a.x, a.y}, lv_point_t{a.width, a.height}, room_points, centres, w.pin,
@@ -1611,6 +1609,7 @@ PulseCounters Screen::pulse_counters() const {
   c.rooms_animated = s.rooms_animated;
   c.frame_us = s.frame_us;
   c.prepare_us = s.prepare_us;
+  c.frame_divisor = s.frame_divisor;
   return c;
 }
 

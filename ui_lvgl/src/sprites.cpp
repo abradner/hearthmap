@@ -166,6 +166,54 @@ void opaque_image_cover_cb(lv_event_t* e) {
   if (lv_area_is_in(info->area, &coords, 0)) info->res = LV_COVER_RES_COVER;
 }
 
+void opaque_tiles_cover_cb(lv_event_t* e) {
+  auto* info = static_cast<lv_cover_check_info_t*>(lv_event_get_param(e));
+  if (info == nullptr || info->res == LV_COVER_RES_MASKED) return;
+  lv_obj_t* box = lv_event_get_current_target_obj(e);
+  const lv_area_t& a = *info->area;
+  // The children's rectangles that meet the area, as a grid of x and y boundaries: the area is
+  // covered when every grid cell inside it lies in some child.
+  lv_area_t rects[64];
+  std::size_t n = 0;
+  const std::uint32_t count = lv_obj_get_child_count(box);
+  for (std::uint32_t i = 0; i < count && n < 64; ++i) {
+    lv_obj_t* c = lv_obj_get_child(box, static_cast<std::int32_t>(i));
+    if (lv_obj_is_hidden(c) || lv_image_get_src(c) == nullptr) continue;
+    lv_area_t r;
+    lv_obj_get_coords(c, &r);
+    if (r.x1 > a.x2 || r.x2 < a.x1 || r.y1 > a.y2 || r.y2 < a.y1) continue;
+    rects[n++] = r;
+  }
+  if (n == 0) return;
+  std::int32_t xs[130], ys[130];
+  std::size_t nx = 0, ny = 0;
+  xs[nx++] = a.x1;
+  xs[nx++] = a.x2 + 1;
+  ys[ny++] = a.y1;
+  ys[ny++] = a.y2 + 1;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (rects[i].x1 > a.x1) xs[nx++] = rects[i].x1;
+    if (rects[i].x2 + 1 <= a.x2) xs[nx++] = rects[i].x2 + 1;
+    if (rects[i].y1 > a.y1) ys[ny++] = rects[i].y1;
+    if (rects[i].y2 + 1 <= a.y2) ys[ny++] = rects[i].y2 + 1;
+  }
+  std::sort(xs, xs + nx);
+  std::sort(ys, ys + ny);
+  for (std::size_t yi = 0; yi + 1 < ny; ++yi) {
+    if (ys[yi] == ys[yi + 1]) continue;
+    for (std::size_t xi = 0; xi + 1 < nx; ++xi) {
+      if (xs[xi] == xs[xi + 1]) continue;
+      bool covered = false;
+      for (std::size_t i = 0; i < n && !covered; ++i) {
+        covered = rects[i].x1 <= xs[xi] && rects[i].x2 >= xs[xi + 1] - 1 && rects[i].y1 <= ys[yi] &&
+                  rects[i].y2 >= ys[yi + 1] - 1;
+      }
+      if (!covered) return;
+    }
+  }
+  info->res = LV_COVER_RES_COVER;
+}
+
 void distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
                     float cy, std::vector<std::uint16_t>& out) {
   out.resize(static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
@@ -227,29 +275,51 @@ void add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std:
 namespace hearthmap::ui {
 
 void SpriteComposer::compose(const ComposeJob& j) const {
-  for (std::int32_t y = j.y0; y < j.y1; ++y) {
-    const std::size_t row = static_cast<std::size_t>(y) * static_cast<std::size_t>(j.stride);
-    for (std::int32_t x = j.x0; x < j.x1; ++x) {
-      const std::size_t i = row + static_cast<std::size_t>(x);
-      const std::uint16_t b = j.below[i];
-      if (j.full[i] != b) {
-        j.out[i] = j.full[i];
-        continue;
+  const auto stride = static_cast<std::size_t>(j.stride);
+  const auto w = static_cast<std::size_t>(j.w);
+  for (std::int32_t y = 0; y < j.h; ++y) {
+    const std::size_t row = static_cast<std::size_t>(y) * stride;
+    std::copy(j.below + row, j.below + row + w, j.out + row);
+  }
+  auto clamp_box = [&j](TileBox b) {
+    b.x0 = std::max<std::int32_t>(0, b.x0);
+    b.y0 = std::max<std::int32_t>(0, b.y0);
+    b.x1 = std::min(j.w, b.x1);
+    b.y1 = std::min(j.h, b.y1);
+    return b;
+  };
+  for (std::size_t k = 0; k < j.overlay_count; ++k) {
+    const Overlay& o = j.overlays[k];
+    if (o.coverage == nullptr || o.lut == nullptr) continue;
+    const TileBox b = clamp_box(o.box);
+    for (std::int32_t y = b.y0; y < b.y1; ++y) {
+      const std::size_t row = static_cast<std::size_t>(y) * stride;
+      for (std::int32_t x = b.x0; x < b.x1; ++x) {
+        const std::size_t i = row + static_cast<std::size_t>(x);
+        const std::uint32_t a = o.lut[o.coverage[i]];
+        if (a != 0) j.out[i] = blend565(j.out[i], o.colour, a);
       }
-      std::uint16_t c = b;
-      for (std::size_t k = 0; k < j.overlay_count; ++k) {
-        const Overlay& o = j.overlays[k];
-        if (o.opa == 0) continue;
-        const std::uint32_t a = (static_cast<std::uint32_t>(o.coverage[i]) * o.opa + 127U) / 255U;
-        c = blend565(c, o.colour, a);
-      }
-      for (std::size_t k = 0; k < j.ring_count; ++k) {
-        const RingLayer& r = j.rings[k];
-        if (r.alpha == nullptr) continue;
+    }
+  }
+  for (std::size_t k = 0; k < j.ring_count; ++k) {
+    const RingLayer& r = j.rings[k];
+    if (r.alpha == nullptr || r.distance == nullptr) continue;
+    const TileBox b = clamp_box(r.box);
+    for (std::int32_t y = b.y0; y < b.y1; ++y) {
+      const std::size_t row = static_cast<std::size_t>(y) * stride;
+      for (std::int32_t x = b.x0; x < b.x1; ++x) {
+        const std::size_t i = row + static_cast<std::size_t>(x);
         const std::size_t d = r.distance[i];
-        if (d < r.size) c = blend565(c, r.colour, r.alpha[d]);
+        if (d >= r.size) continue;
+        const std::uint32_t a = r.alpha[d];
+        if (a != 0) j.out[i] = blend565(j.out[i], r.colour, a);
       }
-      j.out[i] = c;
+    }
+  }
+  for (std::int32_t y = 0; y < j.h; ++y) {
+    const std::size_t row = static_cast<std::size_t>(y) * stride;
+    for (std::size_t x = 0; x < w; ++x) {
+      if (j.full[row + x] != j.below[row + x]) j.out[row + x] = j.full[row + x];
     }
   }
 }

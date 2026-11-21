@@ -286,11 +286,16 @@ bool HearthmapComponent::start_screen_() {
   deps.sink = this;
   deps.photos = &this->photos_;
   deps.micros = [] { return static_cast<std::uint32_t>(micros()); };
-  // Pulse sprites get an eighth of the free PSRAM, at most 4 MiB, at least 256 KiB (D-054):
-  // past it, pulsing pins show their badge and rooms a steady outline instead of animating.
+  // Pulse sprites hold every frame of every pulse (D-053): three quarters of the PSRAM left once
+  // kPsramReserve and the map bake (3 bytes a map pixel) are set aside, at least 256 KiB.
+  // Past it they take fewer frames per cycle, then fewer pulses animate (D-054).
   const std::size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-  deps.pulse_memory_bytes = std::max<std::size_t>(
-      256U * 1024U, std::min<std::size_t>(4U * 1024U * 1024U, free_psram / 8U));
+  const std::size_t bake = raster.pixel_count() * 3U;
+  const std::size_t spare =
+      free_psram > kPsramReserve + bake ? free_psram - kPsramReserve - bake : 0U;
+  deps.pulse_memory_bytes = std::max<std::size_t>(256U * 1024U, spare / 4U * 3U);
+  ESP_LOGI(TAG, "boot: %u KiB for pulse sprites",
+           static_cast<unsigned>(deps.pulse_memory_bytes / 1024U));
   this->screen_ = std::make_unique<hm::ui::Screen>(
       this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
   // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
@@ -408,7 +413,9 @@ void HearthmapComponent::frame_slice_() {
       this->heat_active_ = true;
       this->heat_started_ms_ = millis();
     }
-  } while (!idle && millis() - start < kHeatSliceBudgetMs);
+    // Until the first image is up there is nothing to animate: the boot budget applies.
+  } while (!idle &&
+           millis() - start < (this->first_heat_logged_ ? kHeatSliceBudgetMs : kSliceBudgetMs));
   if (!idle) return;
   this->heat_active_ = false;
   this->handle_publish_();
