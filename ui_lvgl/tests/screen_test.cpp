@@ -1284,7 +1284,13 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
       const int dg = std::abs(((drawn[i] >> 5) & 63) - ((now[i] >> 5) & 63));
       const int db = std::abs((drawn[i] & 31) - (now[i] & 31));
       ++compared;
-      if (dr > 2 || dg > 4 || db > 2) ++off;
+      if (dr > 2 || dg > 4 || db > 2) {
+        if (off < 8) {
+          MESSAGE("bake off at " << x << "," << y << ": LVGL " << drawn[i] << " baked " << now[i]
+                                 << " heat " << rig.heat[0]);
+        }
+        ++off;
+      }
     }
   }
   CHECK(compared > 600000);
