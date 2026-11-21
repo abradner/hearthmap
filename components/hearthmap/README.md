@@ -180,7 +180,7 @@ worded by ui_lvgl's `summary_text()`, the same path as the host (D-049).
 |---|---|---|
 | Heat image, map area 864 x 720 RGB565: one buffer per enabled layer plus one to draw into, while 6 MiB of PSRAM stays free (D-055); at least two | up to 5 x 1,244,160 B | PSRAM (`RAMAllocator`) |
 | Map bake (walls and labels, 3 B per map pixel, D-055) | about 1,870,000 B | PSRAM via malloc |
-| Pulse sprites (D-053): an eighth of free PSRAM, 256 KiB to 4 MiB | as used | PSRAM via malloc |
+| Pulse sprites (D-053): every frame of every pulse, within three quarters of the PSRAM left past a 6 MiB reserve and the bake, at least 256 KiB (logged as `boot: N KiB for pulse sprites`) | as used | PSRAM via malloc |
 | `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM via malloc (D-037) |
 | Photos: 5 photos x (128, 52, 44 px) RGB565 | 210,240 B | flash (rodata) |
 | `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, cell colours, 4 colour tables | about 37,000 B | heap |
@@ -242,7 +242,8 @@ Measured on the panel with `tools/bench` (its README has every number):
 - **`present: true`** with `display_id`: `presenter()` returns a `DisplayPresenter`
   (`display_presenter.h`): an animated tile shown with `hm::ui::show_tile_frame()` is rotated on
   the CPU and handed to the display, 0.17 ms for 64 x 64 against about 1 ms for an LVGL refresh,
-  whenever `present_check()` allows; otherwise the tile is invalidated as before (D-058).
+  whenever `present_check()` allows; otherwise the tile is invalidated as before (D-058). Every
+  pulse frame goes this way when it is on: ring tiles and the outline grid's cells (D-053).
 - Not used, with reasons: LVGL's own PPA draw unit and ESP-IDF 6 (D-060), PIE SIMD (D-057).
 
 `dump_config` logs `hearthmap blitter: <kind>, present: <state>`.
@@ -268,8 +269,14 @@ perf 5000 ms: loop 41/s, gap max 380 ms | lvgl 12 refr, 2900 ms (58%), max 402 m
   count as heat), and its longest single `loop()`.
 - `refresh max by cause`: the longest refresh after a tap's screen update, after a heat image's
   band repaint, and otherwise (animation: pulse sprites).
-- `sprites`: pulse-sprite frames shown per second, frames skipped because the loop was late, and
-  the memory the sprites hold (D-053).
+- `sprites`: pulse frames shown per second (a ring's frame, or a room outline's step), `rate /N`
+  when memory holds only 1/N of the frames per cycle (1 is full rate: rings 31 frames/s, outlines
+  15.6 steps/s), frames skipped because the loop was late, the memory the sprites hold, time
+  choosing frames (`frames`) and capturing and composing them (`prepare`) (D-053).
+- `present`: pulse tiles put on the panel directly by the presenter, tiles invalidated instead,
+  and the most common reason a present was refused (the `PresentBlock`, by a short name;
+  `covered` is a ring's tile crossing an outline cell). All fall back while `present` is off
+  (D-058).
 - `touch`: `read` is a new contact reported by the touchscreen (only when `touchscreen_id` is
   set), `press` and `click` are LVGL's own input events on this display; `read>press` is the
   worst time from a read to LVGL seeing the press; `click>drawn` the worst time from a click to

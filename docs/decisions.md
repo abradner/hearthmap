@@ -789,6 +789,37 @@ fits, then pulses are admitted in config order while they fit. Edges are cut int
 96 px so every tile fits the 128 x 128 a presenter accepts. At most 20 tiles are invalidated per
 tick (LVGL keeps 32 areas and repaints the whole screen past that); outline containers report
 that their tiles together cover a joined repaint.
+**Amended a third time, with the presenter (D-058, merged from the hardware work).** Pulse frames
+reach the panel through `Screen::show_due_frames(presenter)`, which the component calls at the
+start of every frame slice: from the main loop, outside LVGL callbacks. With a presenter in use
+(`set_frames_deferred(true)`) the pulse timer only lists the tiles whose frame changed; each is
+presented when `present_check()` allows and otherwise invalidated (at most 20 a call, the rest
+wait for the next). Rings run 50 frames per 1.6 s cycle (31 frames/s), outlines 25 steps.
+`present_check()` refuses a tile that anything drawn after it reaches into, and the first host
+run refused nine frames in ten as `Covered`: edge pieces overlapped at their ends, at corners and
+along shared walls, and each room's container overlapped its neighbours' tiles. So outline tiles
+are now the cells of a 64 px grid (`PulseLayer::kCellPx`) that some room's stroke passes
+through, one tile per cell however many rooms share it, each cut to the aligned box of the
+pulsing rooms' strokes inside it, all in one container: no outline tile overlaps another. Where a
+ring's tile covers a cell's tile along a whole side the cell is trimmed (the ring's tile already
+draws the strokes under it), and a cell wholly under one has no tile; a ring crossing a cell only
+at a corner leaves that cell refused, and it falls back. Each room keeps an empty zero-size marker
+for its state and colour (`ScreenWidgets::room_pulse`); `outline_pulse` is the container. Rings
+come first for memory, as this decision always said: a ring that does not fit takes the memory of
+outlines, the last room first, when giving up all of them would make room; they wait and return
+when memory frees. **Host:** the proxy runs the present path at the panel's present rate (0.06 ms
+plus 0.027 us a pixel, fitted to `tools/bench`: 0.17 ms at 64 px, 0.31 at 96, 0.50 at 128) with
+8 MiB for sprites (`host::kPanelPulseMemory`, an estimate below what the panel's boot line should
+report). Panel-like soil scene (9 rings, 9 outlines, a quarter of the frames to fit): 100 ms/s,
+346 frames a second presented and 31 fallen back; temperature scene 70 ms/s; the example flat
+107 ms/s. Without a presenter the same soil scene costs 491 ms/s. The renderer now takes every
+tile's frame for one instant (in its single tick at most 20 tiles used to move, so a still could
+mix two instants) and uses the same budget; the four goldens with pulses changed for those two
+reasons. **Trade:** nine rings at the full 31 frames/s need about 15 MiB; at 8 MiB they get a
+quarter of the frames. The perf line shows the divisor (`rate /N`). **Guard:** the proxy fails
+when more than one frame in eleven falls back (the edge pieces fell back 163 a second against
+18 presented); screen tests that outline tiles never overlap and that deferred frames are
+presented without an invalidation, or all invalidated when the presenter refuses.
 
 ### D-054 The renderer is built to port: one pixel interface, budgets from memory, regions from one table (provisional)
 
@@ -846,6 +877,9 @@ removing the instant switch or the background build each fails it), the adapted 
 test, and the bake fidelity screen test (skipping the blend fails it). Goldens all change for the
 edge-wall pixels. **Would change if:** PSRAM gets tight (fewer kept layers is the first thing to
 give), or the owner wants the edge walls whole (bake a 2 px margin).
+**Amended after 4d50e76 on the panel:** a heat step of about 61 ms appeared in the perf lines; a
+32-row band costs two LVGL renders of 32 x 864 px of walls and labels in one step, the likely
+cause. Bands are 8 rows (`MapBake::kBandRows`).
 
 ### D-056 A tap is acknowledged at once; the detail card is cheap to draw; heat slices yield (provisional)
 
@@ -858,7 +892,9 @@ been applied; a pressed tab pill lightens (`LV_STATE_PRESSED`). Both are a few k
 is square and opaque, its stroke four 2 px fills; the overlay disc's photo is cut round over the
 card colour once per photo, so the disc needs no clipping mask. Modelled opening: 425 -> 193 ms;
 what remains is the disc's moisture arc and the text. (3) Heat work runs 8 ms per `loop()` once
-the screen is running (20 ms for boot), so a pulse frame waits at most that long behind it.
+the first heat image is up (20 ms before it), so a pulse frame waits at most that long behind it.
+The first image took 3.3 s on the panel (4d50e76) when the 8 ms budget started as soon as the
+screen ran; the boot budget now lasts until that image is logged.
 **Trades:** the card's 20 px rounded corners and the photo's circular clipping by LVGL (now a
 pre-cut circle, the same look); a rebuild takes about twice as long in wall time. **Would change
 if:** the owner wants the rounded card back (a pre-rendered card background would bring it at
