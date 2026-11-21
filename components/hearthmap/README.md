@@ -230,7 +230,7 @@ once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshe
 
 ## Accelerations (all optional, off by default)
 
-Measured on the panel with `examples/bench` (its README has every number):
+Measured on the panel with `tools/bench` (its README has every number):
 
 - **`lvgl: buffer_size: 12%`** in the device YAML (the example sets it): a 256,000 B draw buffer
   that ESPHome tries in internal RAM first. Partial repaints 1.3-2x faster than the default 2 MB

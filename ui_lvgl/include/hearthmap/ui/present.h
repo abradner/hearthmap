@@ -2,7 +2,7 @@
 //
 // On the panel an LVGL refresh of one small area costs about 0.66 ms before a pixel is drawn
 // (0.49 ms of LVGL's per-area work, 0.17 ms of flush set-up); rotating a 64 x 64 tile on the CPU
-// and handing it to the display costs 0.17 ms in all (examples/bench/README.md, "Tiles"). A
+// and handing it to the display costs 0.17 ms in all (tools/bench/README.md, "Tiles"). A
 // Presenter does the latter. It is only correct when the panel's pixels for the tile can come
 // from the tile alone, so show_tile_frame() checks that first and otherwise falls back to an
 // ordinary invalidation (docs/decisions.md D-058). The host and any target without a presenter

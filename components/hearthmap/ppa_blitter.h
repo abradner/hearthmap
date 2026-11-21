@@ -5,7 +5,7 @@
 // default is `software` (docs/decisions.md D-057).
 //
 // Each operation goes to the PPA only when the bench showed it wins and when it is allowed, else
-// to SoftwareBlitter (examples/bench/README.md has the numbers behind each threshold):
+// to SoftwareBlitter (tools/bench/README.md has the numbers behind each threshold):
 //   - fill: at least kFillMinPx destination pixels (the PPA costs about 46 us a call, then fills
 //     at 178 Mpx/s; the CPU fills at 25-70 Mpx/s);
 //   - blend: at least kBlendMinPx (PPA 19-44 Mpx/s against 6-8 for the C loop);

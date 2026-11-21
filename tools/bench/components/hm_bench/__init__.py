@@ -1,4 +1,4 @@
-"""hm_bench: rendering benchmarks for the ESP32-P4 panel (examples/bench/README.md).
+"""hm_bench: rendering benchmarks for the ESP32-P4 panel (tools/bench/README.md).
 
 YAML:
 

@@ -237,12 +237,12 @@ add rather than rewrite.
 - **The PIE (xesppie) assembler takes address operands only in x8-x15.** `esp.vld.128.ip q0, a6, 16`
   fails with "illegal operands", and GCC 14 here has no `cr` constraint to ask for those registers;
   pin the pointers with local register variables (`register T* p asm("a0")`), as
-  `examples/bench/components/hm_bench/kernels.cpp` does. `esp.vld.128` also ignores the low four
+  `tools/bench/components/hm_bench/kernels.cpp` does. `esp.vld.128` also ignores the low four
   address bits, so an unaligned pointer reads the wrong pixels rather than faulting.
 - **LVGL 9.6's PPA draw unit draws nothing when it cannot use a buffer.** For a draw buffer whose
   start or size is not whole 64-byte lines it logs `ppa_core: out.buffer addr or out.buffer_size
   not aligned` and leaves the area untouched (no software fallback); it also reads flash images at
-  4 Mpx/s. Measured with `examples/bench` (D-060), which is why the unit is not enabled.
+  4 Mpx/s. Measured with `tools/bench` (D-060), which is why the unit is not enabled.
 - **The PPA's scaler interpolates.** A 2x `ppa_do_scale_rotate_mirror` is not pixel doubling (up to
   21 steps per channel away), so it cannot stand in for `Blitter::scale2x` (D-057).
 
@@ -580,7 +580,7 @@ test lives** (if one exists).
    output is the same when the destination is not also the background). General rule: before
    handing memory the CPU has written to a DMA engine as an *output*, write the affected rows back
    yourself; never rely on a driver's cache handling for bytes outside the block it was given.
-   Regression check: `examples/bench` (`bench cache_trap`, raw and through `PpaBlitter`, which
+   Regression check: `tools/bench` (`bench cache_trap`, raw and through `PpaBlitter`, which
    writes the rows back first); there is no host test because the host has no such cache (D-057).
 
 ## 10. Maintaining This Document

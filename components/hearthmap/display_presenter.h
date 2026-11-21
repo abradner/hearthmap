@@ -3,7 +3,7 @@
 // Undoes LVGL's software rotation of the tile on the CPU into a small internal-RAM buffer, then
 // hands it to Display::draw_pixels_at(), the call the lvgl component's own flush ends in. On the
 // panel this is 0.08 ms for a 32 px tile and 0.17 ms for 64 px, against 0.7-1.2 ms for an LVGL
-// refresh of the same area (examples/bench/README.md, "Tiles"). Rotating straight into the DSI
+// refresh of the same area (tools/bench/README.md, "Tiles"). Rotating straight into the DSI
 // frame buffer was measured too and is slower (per-row cache maintenance), and needs the panel's
 // private handle, so it is not used.
 //

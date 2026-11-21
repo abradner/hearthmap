@@ -54,7 +54,7 @@ lvgl:
   byte_order: little_endian
   # 12% of the screen (256,000 B) is the size ESPHome tries in internal RAM first (it falls back
   # to PSRAM if that fails). Measured on the panel: partial repaints 1.3-2x faster than the
-  # default full-screen PSRAM buffer, a full repaint 1.2x (examples/bench/README.md, D-059).
+  # default full-screen PSRAM buffer, a full repaint 1.2x (tools/bench/README.md, D-059).
   buffer_size: 12%
   default_font: montserrat_24
   # hearthmap draws on the active screen itself; an empty widget list stops LVGL adding its

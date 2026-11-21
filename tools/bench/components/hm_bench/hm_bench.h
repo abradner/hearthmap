@@ -1,7 +1,7 @@
 // Benchmark component: times the pixel operations a UI needs on this board, with the CPU, LVGL's
 // software renderer, the PPA, the AXI GDMA and the PIE SIMD extension, and LVGL scene repaints
 // under several draw-buffer placements. One measurement per loop() call; results are INFO lines
-// tagged "bench" (examples/bench/README.md).
+// tagged "bench" (tools/bench/README.md).
 #pragma once
 
 #include <cstdint>

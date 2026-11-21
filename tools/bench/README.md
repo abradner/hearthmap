@@ -1,4 +1,4 @@
-# examples/bench/
+# tools/bench/
 
 A benchmark firmware for the Guition JC8012P4A1 (ESP32-P4 rev v1.3 at 360 MHz, 32 MB hex PSRAM
 at 200 MHz, 800 x 1280 MIPI-DSI panel shown landscape through LVGL's 90-degree software
@@ -16,13 +16,13 @@ scene and a status line; the frame-buffer tests scribble on it for a few seconds
 From the repository root, with the pinned image, one compile at a time:
 
 ```sh
-docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome:2026.11.0 compile examples/bench/esphome/bench.yaml
+docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome:2026.11.0 compile tools/bench/esphome/bench.yaml
 # LVGL's PPA draw unit forced on under ESP-IDF 5.5.6 (experiment, D-060):
 docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome:2026.11.0 \
-  -s lvgl_ppa_unit true -s device_name hm-bench-ppa compile examples/bench/esphome/bench.yaml
+  -s lvgl_ppa_unit true -s device_name hm-bench-ppa compile tools/bench/esphome/bench.yaml
 # ESP-IDF 6.0.1 through ESPHome's framework version option:
 docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome:2026.11.0 \
-  -s idf_version 6.0.1 -s device_name hm-bench-idf6 compile examples/bench/esphome/bench.yaml
+  -s idf_version 6.0.1 -s device_name hm-bench-idf6 compile tools/bench/esphome/bench.yaml
 ```
 
 The repository root is mounted (not this directory) because the bench compiles the shipped

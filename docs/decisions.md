@@ -850,7 +850,7 @@ little cost once the overlay is slow nowhere else), or the press ring is unwelco
 ### D-057 The P4's hardware is used through the Blitter, only where the bench shows it wins (provisional)
 
 **Question:** can the ESP32-P4's PPA, 2D-DMA, GDMA and PIE SIMD speed up rendering, and how
-should the code use them? **Measured** (examples/bench/README.md, four firmwares on the panel):
+should the code use them? **Measured** (tools/bench/README.md, four firmwares on the panel):
 big copies are memory-bound at about 21 Mpx/s PSRAM to PSRAM whatever the CPU does (memcpy,
 word loop and PIE alike; PIE is 3x memcpy only on cache-resident blocks); the PPA has 46-95 us of
 fixed cost per call; its fill reaches 178 Mpx/s (CPU 25-31), its blend 44 (C 6.3, PIE 14), its
@@ -899,7 +899,7 @@ if:** ESPHome exposes the frame buffer or a cheaper per-area flush.
 
 ### D-059 LVGL's draw buffer goes in internal RAM (provisional)
 
-**Question:** does the draw buffer's placement matter? **Measured** (examples/bench/README.md,
+**Question:** does the draw buffer's placement matter? **Measured** (tools/bench/README.md,
 Scenes): a 256,000 B internal buffer against ESPHome's default 2 MB PSRAM buffer: full screen
 126 ms against 152, a 400 x 300 image 12.4 against 24.3, a 600 x 400 translucent card 42.6
 against 64.5, a 100 x 100 ring 2.3 against 3.3; a PSRAM buffer of the same small size is the
@@ -916,7 +916,7 @@ has not been measured. **Would change if:** the panel's log shows the buffer fel
 **Question:** should the project force LVGL 9.6's PPA draw unit on (`LV_USE_PPA`) under ESP-IDF
 5.5.6, or move to ESP-IDF 6 where ESPHome enables it? **Found:** under 5.5.6 the only missing
 piece is `esp_cache_get_line_size_by_addr()`, which a one-line macro in `lv_conf.h` supplies; it
-builds and runs (examples/bench, `lvgl_ppa_unit: true`, which also has to monkeypatch the lvgl
+builds and runs (tools/bench, `lvgl_ppa_unit: true`, which also has to monkeypatch the lvgl
 component's define). ESPHome 2026.11.0 accepts `framework: version: 6.0.1`; the full example
 (Wi-Fi co-processor, API, display, touch, PSRAM, hearthmap) compiled on it unchanged, and the
 bench ran on it. **Measured:** the unit doubles large opaque fills and image blits (fills 31 to

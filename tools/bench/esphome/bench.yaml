@@ -1,10 +1,10 @@
 # Rendering benchmark for the Guition JC8012P4A1 (ESP32-P4). Self-contained: no Wi-Fi, no Home
 # Assistant, no secrets. Results are INFO lines on UART0 tagged "bench" (../README.md).
 #
-#   esphome compile examples/bench/esphome/bench.yaml
+#   esphome compile tools/bench/esphome/bench.yaml
 #
 # Variants are substitutions on the command line, for example
-#   esphome -s lvgl_ppa_unit true -s device_name hm-bench-ppa compile examples/bench/esphome/bench.yaml
+#   esphome -s lvgl_ppa_unit true -s device_name hm-bench-ppa compile tools/bench/esphome/bench.yaml
 
 substitutions:
   device_name: "hm-bench"
