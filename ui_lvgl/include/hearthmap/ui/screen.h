@@ -20,6 +20,7 @@
 
 #include "hearthmap/config.h"
 #include "hearthmap/ui/fonts.h"
+#include "hearthmap/ui/pixel_ops.h"
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/view_model.h"
 #include "lvgl.h"
@@ -58,6 +59,21 @@ struct ScreenDeps {
   Fonts fonts;
   EventSink* sink = nullptr;              ///< Required.
   const ImageProvider* photos = nullptr;  ///< Optional: nullptr draws every plant as a leaf.
+  /// Optional: the pixel operations for sprites (D-054). nullptr: plain C++ (cpu_pixel_ops()).
+  const PixelOps* pixel_ops = nullptr;
+  /// Memory the pulse sprites may hold, bytes (D-053, D-054). 0: 2 MiB. Pulsing pins and rooms
+  /// past it show their badge or a steady state instead of an animation.
+  std::size_t pulse_memory_bytes = 0;
+};
+
+/// The pulse sprites' counters (D-053), for an embedder's performance log.
+struct PulseCounters {
+  std::uint32_t frames = 0;    ///< ring frames and room steps shown since construction
+  std::uint32_t dropped = 0;   ///< ring frames skipped because the clock moved on
+  std::uint32_t captures = 0;  ///< sprite backgrounds rendered since construction
+  std::size_t tile_bytes = 0;  ///< memory the sprites hold now
+  std::size_t rings_shown = 0;
+  std::size_t rooms_animated = 0;
 };
 
 /// Raw pointers to the widgets, for tests and for embedders that want to restyle. Owned by the
@@ -117,6 +133,13 @@ class Screen {
 
   /// Tell LVGL the caller rewrote the heat image buffer.
   void invalidate_heat();
+
+  /// One bounded unit of sprite preparation (capturing what lies under one pulse, a software
+  /// render of about 112 x 112 px): call it from sliced work until it returns false. Pulses are
+  /// not shown until their sprite is prepared; after a change under a sprite it shows its old
+  /// background until prepared again. Never called from inside an LVGL event.
+  bool prepare_step();
+  PulseCounters pulse_counters() const;
 
   /// Counts LVGL property writes made by update(), for tests of the diffing (and a cheap
   /// "did anything change" signal for embedders).

@@ -242,6 +242,10 @@ perf 5000 ms: loop 41/s, gap max 380 ms | lvgl 12 refr, 2900 ms (58%), max 402 m
   `kpx/s invalidated` pixels asked for by invalidations before LVGL joins them.
 - `hm`: this component's own time: view model and screen updates, heat-rebuild steps (boot steps
   count as heat), and its longest single `loop()`.
+- `refresh max by cause`: the longest refresh after a tap's screen update, after a heat image's
+  band repaint, and otherwise (animation: pulse sprites).
+- `sprites`: pulse-sprite frames shown per second, frames skipped because the loop was late, and
+  the memory the sprites hold (D-053).
 - `touch`: `read` is a new contact reported by the touchscreen (only when `touchscreen_id` is
   set), `press` and `click` are LVGL's own input events on this display; `read>press` is the
   worst time from a read to LVGL seeing the press; `click>drawn` the worst time from a click to

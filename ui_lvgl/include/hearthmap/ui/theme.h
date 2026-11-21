@@ -52,6 +52,15 @@ inline constexpr std::uint8_t kHappyRangeOpa = 89;  ///< 0.35 * 255, rounded.
 inline constexpr Palette kHeatPalette{Rgb888{30, 35, 41}, Rgb888{42, 120, 214},
                                       Rgb888{227, 73, 72}};
 
+// Pulses (UI spec, "Pins" and "Rooms"; D-053): drawn as sprites by ui_lvgl's pulse layer.
+inline constexpr int kPulseRingFrom = 26;  ///< danger ring radius at the start of a cycle, px
+inline constexpr int kPulseRingTo = 52;    ///< and at the end, where it has faded out
+inline constexpr int kPulseRingWidth = 4;
+inline constexpr std::uint32_t kPulseRingCycleMs = 1600;
+inline constexpr int kRoomPulseWidth = 5;                 ///< room outline width, px
+inline constexpr std::uint32_t kRoomPulseCycleMs = 2800;  ///< opacity 0.35 -> 1 -> 0.35
+inline constexpr std::uint8_t kRoomPulseMinOpa = 89;      ///< 0.35 * 255
+
 // Geometry (device pixels, landscape 1280 x 800)
 inline constexpr int kScreenWidth = 1280;
 inline constexpr int kScreenHeight = 800;

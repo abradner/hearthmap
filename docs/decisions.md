@@ -658,6 +658,8 @@ domain "fraction of the way out of the happy range" rather than raw thirst.
 
 ### D-051 Pulses are stepped on one clock, and drawing cost has a budget (provisional)
 
+**Pulses superseded by D-053** (the owner rejected the steps; sprites replace them). The rest stands.
+
 **What happened:** on the panel the screen looked right but touch was slow. The first measured
 build (c182d6b, perf log, real config, temperature layer, nobody touching) spent 76 % of all time
 in LVGL refreshes, 12.8 a second of about 61 ms each, flushing 2.6 Mpx/s; the main loop ran 13
@@ -712,3 +714,60 @@ from the new pixels", the cover test, and the unchanged tap-routing cases);
 Goldens overlay-plant and overlay-climate change for (1) only. **Would change if:** the owner
 prefers the darkened backdrop at the cost of a slower overlay, or the device shows the card's own
 repaint is still too slow.
+
+### D-053 Pulses are pre-rendered opaque sprites; the drawing budget is a cost model (provisional)
+
+**What happened:** 350b09a's stepped pulses fixed the temperature tab (LVGL 2 % of the time) but
+the owner rejected them ("gave an impression of 3 fps"), and the soil tab with nine rings still
+spent 45 % of its time in LVGL at about 32 ms per refresh for only 25 kpx: about 1 us per pixel
+of anti-aliased arc, line and translucent drawing, against under 0.1 us for copying an opaque
+RGB565 image and flushing it. **Default:** nothing that moves is drawn by LVGL; it is copied.
+Each danger ring and each room-outline edge is an opaque RGB565 `lv_image` above the pins. What
+lies under it is captured once through LVGL's own renderer (`render_area()`, following
+`lv_snapshot`'s internals with an arbitrary area, twice: without the pins and with them); each
+frame blends the pulse over the first capture from tables (ring alpha by distance in 1/16 px,
+outline coverage per pixel), keeping pixels where the two captures differ (the pins). Rings: 20
+frames over 1.6 s, radius 26 to 52 px, fading, as the spec; room outlines: 14 eased steps over
+2.8 s; one LVGL timer at 16 ms shows the frame for LVGL's tick, so a slow loop drops frames
+rather than queueing. Overlapping rings and outlines under a ring are composed into each tile; a
+room step reaches a ring tile at that ring's next frame (at most 80 ms later), so it costs no
+extra repaint. Captures happen in `Screen::prepare_step()`, one tile per call, from the
+component's slices (before heat work); a change under a tile (a pin's look within its overflow,
+a new heat image, the image hidden and revealed on a layer change) marks it, and until it is
+recaptured it shows its old background (at most a few slices). **Budget by construction:** tile
+memory is capped (`ScreenDeps::pulse_memory_bytes`, D-054; a tile needs 8 bytes per pixel, a ring
+tile about 100 KB), pulses past it show only their badge or nothing; at most 4 outlines animate,
+others hold a steady full-opacity outline; each ring frame repaints only the box of its old and
+new radius. **The cost model** (`host/tests/perf_proxy_test.cpp`): a flushed area costs 0.85 ms,
+a flushed pixel 0.077 us, a drawn pixel 0.03 us (opaque image), 0.02 (fill) or 0.55 (anti-aliased
+shapes), fitted to the panel's logs; it predicts 485 ms/s for 350b09a's soil scene (measured 466)
+and 434 for the first sprite version, which flushed 285 areas a second. The budget is 300 ms/s
+and 33 ms per refresh; this version is 293 ms/s (200 areas a second) with refreshes of at most
+11 ms. **Trades:** per ring 12.5 frames/s, not 30 (at 0.85 ms per flushed area, nine rings at 30
+fps would cost 230 ms/s in fixed flush overhead alone; the screen as a whole updates about 60
+times a second because rings are offset in phase); room outlines 5 steps/s; only 4 animate; a
+ring is clipped at the map's edge; rings draw over room outlines (as before) but under pins. The
+frame counts are constants of `PulseLayer` to raise when a cheaper flush path lands (the "hw"
+work). **Guard:** the cost-model budget (350b09a fails it at 485 ms/s); screen tests that a ring
+tile equals LVGL's own drawing everywhere outside the ring (removing the pin mask, or the
+recapture after a heat change, each fails it), frame counts per cycle, no LVGL animation, strip
+geometry, clearing. **Would change if:** the flush path gets cheaper (raise frames), or the owner
+finds 12.5 frames/s per ring too slow.
+
+### D-054 The renderer is built to port: one pixel interface, budgets from memory, regions from one table (provisional)
+
+**Question:** a later follow-up ports the renderer to an ESP32-S3 with a 480 x 480 parallel-RGB
+panel, about 8 MB of PSRAM, no PPA, no rotation (issue 27). What must hold now so that port is a
+new table and an implementation, not a rewrite? **Default (owner's constraints, 2026-11-21):**
+(1) every large pixel move (composing a sprite, copying or filling blocks; later the baked map
+and its bands) goes through `hearthmap::ui::PixelOps` (`pixel_ops.h`), plain C++ by default
+(`cpu_pixel_ops()`), replaceable through `ScreenDeps::pixel_ops` by a hardware or SIMD one
+without touching callers; (2) memory budgets are parameters, not constants sized for 32 MB:
+`ScreenDeps::pulse_memory_bytes` (the component passes an eighth of free PSRAM, 256 KiB to 4
+MiB), with graceful degradation past them; later budgets (cached layer images, back buffers)
+follow the same rule; (3) screen regions and pulse geometry come from `theme.h` (`kMapRegion*`,
+`kPulseRing*`, `kRoomPulse*`), never literals in the sprite or bake code; (4) nothing in the
+sprite or bake path assumes software rotation or the P4's orientation: tiles are in LVGL's
+logical coordinates, and rotation stays the display driver's business; (5) the proxy's cost
+model takes its rates from a table per target (`TargetRates`). **Would change if:** the port
+shows a constraint missing here, in which case it is added to this list.

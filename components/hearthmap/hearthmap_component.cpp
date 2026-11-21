@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 
+#include "esp_heap_caps.h"
 #include "esphome/components/api/api_server.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
@@ -262,6 +263,11 @@ bool HearthmapComponent::start_screen_() {
   deps.fonts = hm::ui::builtin_fonts();
   deps.sink = this;
   deps.photos = &this->photos_;
+  // Pulse sprites get an eighth of the free PSRAM, at most 4 MiB, at least 256 KiB (D-054):
+  // past it, pulsing pins show their badge and rooms a steady outline instead of animating.
+  const std::size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  deps.pulse_memory_bytes = std::max<std::size_t>(
+      256U * 1024U, std::min<std::size_t>(4U * 1024U * 1024U, free_psram / 8U));
   this->screen_ = std::make_unique<hm::ui::Screen>(
       this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
   ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, 2 x %u bytes; rasterizer %u bytes)",
@@ -283,6 +289,7 @@ void HearthmapComponent::invalidate_band_() {
     return;
   lv_area_t coords;
   lv_obj_get_coords(image, &coords);
+  this->perf_.cause_heat();
   lv_area_t band = coords;
   band.y1 = coords.y1 + this->band_row_;
   band.y2 = std::min<int32_t>(coords.y1 + this->band_row_ + kHeatBandRows - 1, coords.y2);
@@ -336,7 +343,10 @@ void HearthmapComponent::frame_slice_() {
     this->refresh_view_(start, connected);
     this->show_view_();
   }
-  if (touched) this->perf_.events_applied(millis(), this->screen_->writes() != writes_before);
+  if (touched) {
+    this->perf_.events_applied(millis(), this->screen_->writes() != writes_before);
+    this->perf_.cause_tap();
+  }
   const uint32_t heat_t0 = micros();
   // Counts this call's work when it returns, whichever way it returns.
   struct OwnTimer {
@@ -350,6 +360,9 @@ void HearthmapComponent::frame_slice_() {
   // just after a press.
   if (this->pressed_ && millis() - this->last_press_ms_ < kHeatHoldAfterPressMs) return;
   this->pressed_ = false;
+  // Pulse sprites first (one tile per step, a small software render each): a pulse appears, or
+  // catches up with a change under it, before the next heat work (D-053).
+  if (this->screen_->prepare_step()) return;
   bool idle = false;
   do {
     idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
@@ -450,8 +463,16 @@ void TouchProbe::touch(touchscreen::TouchPoint /*tp*/) {
 void HearthmapComponent::log_perf_() {
   const uint32_t now = millis();
   if (!this->perf_.due(now)) return;
-  const hearthmap_device::PerfWindow w = this->perf_.take(now);
-  char line[400];
+  hearthmap_device::PerfWindow w = this->perf_.take(now);
+  if (this->screen_) {
+    const hm::ui::PulseCounters c = this->screen_->pulse_counters();
+    w.sprite_frames = c.frames - this->last_sprite_frames_;
+    w.sprite_dropped = c.dropped - this->last_sprite_dropped_;
+    w.sprite_kib = static_cast<uint32_t>(c.tile_bytes / 1024U);
+    this->last_sprite_frames_ = c.frames;
+    this->last_sprite_dropped_ = c.dropped;
+  }
+  char line[512];
   hearthmap_device::PerfStats::format(w, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
 }

@@ -44,6 +44,17 @@ struct PerfWindow {
   std::uint32_t read_to_press_max_ms = 0;  ///< Touch read until LVGL saw the press.
   std::uint32_t acks = 0;                  ///< Clicks whose screen update has been drawn.
   std::uint32_t click_to_ack_max_ms = 0;   ///< LVGL click until the refresh showing its effect.
+
+  // The longest refresh by what caused it: a tap's screen update, a new heat image being
+  // repainted, or neither (animation: pulse sprites).
+  std::uint32_t refresh_max_tap = 0;
+  std::uint32_t refresh_max_heat = 0;
+  std::uint32_t refresh_max_anim = 0;
+
+  // Pulse sprites (ui_lvgl's Screen::pulse_counters()), set by the caller at the window's end.
+  std::uint32_t sprite_frames = 0;   ///< frames shown in the window
+  std::uint32_t sprite_dropped = 0;  ///< frames skipped in the window
+  std::uint32_t sprite_kib = 0;      ///< memory the sprites hold now
 };
 
 class PerfStats {
@@ -71,6 +82,10 @@ class PerfStats {
   void touch_read(std::uint32_t now_ms);
   void lvgl_pressed(std::uint32_t now_ms);
   void lvgl_clicked(std::uint32_t now_ms);
+  /// What the next refresh draws: a tap's update, a heat repaint (otherwise: animation).
+  void cause_tap() { cause_tap_ = true; }
+  void cause_heat() { cause_heat_ = true; }
+
   /// The component applied the queued UI events and updated the screen; `changed` says whether
   /// that update changed anything on screen (a tap on empty map or on the shown tab does not,
   /// and is then not timed: the next refresh would be some pulse, not its answer).
@@ -98,6 +113,8 @@ class PerfStats {
   std::uint32_t refresh_flushes_ = 0;
   std::uint32_t flush_start_us_ = 0;
 
+  bool cause_tap_ = false;
+  bool cause_heat_ = false;
   bool read_pending_ = false;
   std::uint32_t read_ms_ = 0;
   bool click_pending_ = false;  ///< A click waits for the component to apply it.

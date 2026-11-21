@@ -108,6 +108,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool dimmed_ = false;       ///< The last Screen update hid the heat image as behind.
   uint32_t heat_started_ms_ = 0;
   uint32_t last_view_ms_ = 0;
+  uint32_t last_sprite_frames_ = 0;
+  uint32_t last_sprite_dropped_ = 0;
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).
   uint32_t last_press_ms_ = 0;
 

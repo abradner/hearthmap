@@ -55,14 +55,18 @@ and passes a `SourceStatus` (D-046, D-047).
   the widest value pill a plain pin may show; else top-left. This depends on the config only, so
   updates never move a label. The HUD gap shrinks from 10 px (never below 4) so `max_items`
   cards and the "+N more" line end 12 px above the bottom edge; the spec's cap of 7 fits.
-- **Pulses are stepped, not animated** (D-051). One LVGL timer (50 ms) shows each running
-  pulse's step for the current time: a danger ring steps through radius 30, 40 and 50 px at
-  falling opacity, then a gap, every 1.6 s; a room outline steps through opacity 1, 0.67, 0.35,
-  0.67 every 2.8 s. Objects are offset over eight slots so their steps fall in different
-  refreshes. A room outline is one short line object per edge, sitting on that edge, so a step
-  invalidates thin strips along the walls only. The timer stops itself when nothing pulses. The
-  embedder needs nothing but LVGL's timer handler; `host/tests/perf_proxy_test.cpp` bounds what
-  this costs per second.
+- **Pulses are pre-rendered sprites** (D-053, `src/pulse_layer.h`). Every danger ring and room
+  outline is an opaque RGB565 image above the pins. What lies under it is captured once through
+  LVGL's own renderer (`render_area()`, twice: without and with the pins), and each frame is
+  composed by `PixelOps::compose()` from look-up tables (ring alpha by distance, outline
+  coverage), keeping the pins' pixels; LVGL only copies the tile. Rings run 20 frames over 1.6 s
+  (radius 26 to 52 px, fading), room outlines 14 eased steps over 2.8 s; one LVGL timer (16 ms)
+  shows the frame for LVGL's tick, so a slow loop drops frames. Captures run in
+  `Screen::prepare_step()`, which the embedder calls from its sliced work (the host until done);
+  a change under a sprite (a pin's look, a new heat image) marks it for recapture. Memory is
+  bounded by `ScreenDeps::pulse_memory_bytes`; at most 4 outlines animate, others hold steady.
+- **All large pixel work goes through `PixelOps`** (`include/hearthmap/ui/pixel_ops.h`, D-054):
+  plain C++ by default, replaceable by an accelerated one through `ScreenDeps::pixel_ops`.
 - **The heat image is 16 strip images** over slices of the embedder's buffer (D-052). Each reports
   that it covers its area when opaque (LVGL 9.6's image widget never does without an opaque
   background of its own), so a refresh inside the map starts at the image instead of filling the

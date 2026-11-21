@@ -10,12 +10,14 @@
 //     carry an image, a line, a label and a mask on top of each other.
 // The budgets below are the regression guard; the printed table is the instrument.
 //
-// Budgets come from the panel's measured rates (ESP32-P4 at 360 MHz, c182d6b's perf log, real
-// config): software rendering about 4.5 Mpx/s, the flush path (PPA rotation plus the copy into
-// the DSI frame buffer) about 13 Mpx/s, so about 300 ns per flushed pixel all in. 500 kpx/s of
-// steady-state redraw is then about 15 % of the main loop, and a 75 kpx refresh about 22 ms.
-// Before the pulses were stepped (D-051) these scenes asked for 21 to 42 Mpx/s, single refreshes
-// up to 685 kpx, and the panel spent 76 % of its time in LVGL on the temperature layer.
+// Pixels are not all alike, so the budget is a cost model (D-053): each flush, each flushed
+// pixel and each pixel of each draw-task type costs what the target measured (TargetRates, one
+// table per target, D-054). The panel's table is fitted to its perf logs (ESP32-P4 at 360 MHz,
+// real config, c182d6b and 350b09a): about 0.85 ms fixed per flushed area (LVGL's per-area work,
+// PPA rotation set-up, the DMA2D copy and its wait), 0.077 us per flushed pixel, and for
+// rendering about 0.03 us per pixel of opaque RGB565 image, 0.02 of fill, and 0.55 of the
+// anti-aliased shapes (lines, arcs, borders, labels, masks, layers). The budget is 300 ms of
+// LVGL per second (30 % of the loop) and 33 ms for any single refresh in steady state.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -43,8 +45,25 @@ using namespace hearthmap::host;
 
 namespace {
 
-constexpr double kBudgetFlushedPxPerS = 500'000;
-constexpr std::uint64_t kBudgetLargestRefreshPx = 75'000;
+/// What one target costs per operation, fitted to its own measurements (D-054).
+struct TargetRates {
+  const char* name;
+  double flush_fixed_ms;                  ///< per flushed area
+  double flush_us_per_px;                 ///< per flushed pixel
+  std::array<double, 32> task_us_per_px;  ///< by lv_draw_task_type_t
+};
+
+TargetRates p4_rates() {
+  TargetRates r{"ESP32-P4 1280x800", 0.85, 0.077, {}};
+  r.task_us_per_px.fill(0.55);  // anti-aliased shapes and anything not listed
+  r.task_us_per_px[LV_DRAW_TASK_TYPE_IMAGE] = 0.03;
+  r.task_us_per_px[LV_DRAW_TASK_TYPE_FILL] = 0.02;
+  return r;
+}
+
+const TargetRates kRates = p4_rates();
+constexpr double kBudgetMsPerS = 300.0;
+constexpr double kBudgetRefreshMs = 33.0;
 
 // ---- counting ----------------------------------------------------------------------------------
 
@@ -54,6 +73,10 @@ struct Counts {
   std::uint32_t refreshes = 0;
   std::uint64_t refresh_px = 0;      // flushed in the refresh in progress
   std::uint64_t max_refresh_px = 0;  // the largest single refresh
+  std::uint32_t flushes = 0;
+  double cost_ms = 0;     // the cost model's total
+  double refresh_ms = 0;  // ...for the refresh in progress
+  double max_refresh_ms = 0;
   std::uint32_t tasks = 0;
   std::array<std::uint64_t, 32> task_px{};  // by lv_draw_task_type_t
   std::uint64_t task_px_total() const {
@@ -71,7 +94,12 @@ std::int32_t count_task(lv_draw_unit_t* /*unit*/, lv_draw_task_t* t) {
   if (!lv_area_intersect(&a, &t->area, &t->clip_area)) return 0;
   const auto type = static_cast<std::size_t>(t->type);
   ++g_counts->tasks;
-  if (type < g_counts->task_px.size()) g_counts->task_px[type] += lv_area_get_size(&a);
+  if (type < g_counts->task_px.size()) {
+    g_counts->task_px[type] += lv_area_get_size(&a);
+    const double ms = lv_area_get_size(&a) * kRates.task_us_per_px[type] / 1000.0;
+    g_counts->cost_ms += ms;
+    g_counts->refresh_ms += ms;
+  }
   return 0;  // never takes the task: the software unit still draws it
 }
 
@@ -98,6 +126,11 @@ void on_display_event(lv_event_t* e) {
       if (area != nullptr) {
         g_counts->flushed_px += lv_area_get_size(area);
         g_counts->refresh_px += lv_area_get_size(area);
+        ++g_counts->flushes;
+        const double ms =
+            kRates.flush_fixed_ms + lv_area_get_size(area) * kRates.flush_us_per_px / 1000.0;
+        g_counts->cost_ms += ms;
+        g_counts->refresh_ms += ms;
       }
       break;
     case LV_EVENT_INVALIDATE_AREA:
@@ -106,9 +139,11 @@ void on_display_event(lv_event_t* e) {
     case LV_EVENT_REFR_START:
       ++g_counts->refreshes;
       g_counts->refresh_px = 0;
+      g_counts->refresh_ms = 0;
       break;
     case LV_EVENT_REFR_READY:
       g_counts->max_refresh_px = std::max(g_counts->max_refresh_px, g_counts->refresh_px);
+      g_counts->max_refresh_ms = std::max(g_counts->max_refresh_ms, g_counts->refresh_ms);
       break;
     default: break;
   }
@@ -269,6 +304,7 @@ struct Result {
   std::size_t pulsing_pins = 0;
   std::size_t pulsing_rooms = 0;
   double flushed_per_s() const { return static_cast<double>(counts.flushed_px) / seconds; }
+  double cost_ms_per_s() const { return counts.cost_ms / seconds; }
   double tasks_per_s() const { return static_cast<double>(counts.task_px_total()) / seconds; }
 };
 
@@ -315,8 +351,11 @@ Result run_steady(const char* name, const Scenario& s, Layer layer, double secon
 
   std::printf("perf proxy [%s]: %zu pulsing pins, %zu pulsing rooms, over %.0f s\n", name,
               r.pulsing_pins, r.pulsing_rooms, seconds);
-  std::printf("  largest single refresh %.1f kpx\n",
-              static_cast<double>(counts.max_refresh_px) / 1000.0);
+  std::printf(
+      "  cost model (%s): %.0f ms/s of LVGL, %.1f flushes/s, largest refresh %.1f ms "
+      "(%.1f kpx)\n",
+      kRates.name, r.cost_ms_per_s(), counts.flushes / seconds, counts.max_refresh_ms,
+      static_cast<double>(counts.max_refresh_px) / 1000.0);
   std::printf(
       "  refreshes %.1f/s, flushed %.0f kpx/s, invalidated %.0f kpx/s, draw tasks %.0f/s "
       "covering %.0f kpx/s, host %.1f ms/s\n",
@@ -342,8 +381,8 @@ TEST_CASE("perf proxy: the panel-shaped house, pulses running, stays inside its 
   REQUIRE(r.pulsing_pins == 9);
   REQUIRE(r.pulsing_rooms >= 3);
   CHECK(r.counts.flushed_px > 0);  // positive control: the probe sees refreshes at all
-  CHECK(r.flushed_per_s() <= kBudgetFlushedPxPerS);
-  CHECK(r.counts.max_refresh_px <= kBudgetLargestRefreshPx);
+  CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
+  CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
 }
 
 TEST_CASE("perf proxy: the panel-shaped house on the temperature layer, rooms pulsing") {
@@ -351,8 +390,8 @@ TEST_CASE("perf proxy: the panel-shaped house on the temperature layer, rooms pu
       run_steady("panel-like, temperature layer", panel_like(), Layer::Temperature, 10.0);
   REQUIRE(r.pulsing_rooms >= 4);
   CHECK(r.counts.flushed_px > 0);
-  CHECK(r.flushed_per_s() <= kBudgetFlushedPxPerS);
-  CHECK(r.counts.max_refresh_px <= kBudgetLargestRefreshPx);
+  CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
+  CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
 }
 
 TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budget") {
@@ -360,8 +399,8 @@ TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budge
       run_steady("example thirsty-many, soil layer", example_thirsty(), Layer::Soil, 10.0);
   REQUIRE(r.pulsing_pins >= 1);
   CHECK(r.counts.flushed_px > 0);
-  CHECK(r.flushed_per_s() <= kBudgetFlushedPxPerS);
-  CHECK(r.counts.max_refresh_px <= kBudgetLargestRefreshPx);
+  CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
+  CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
 }
 
 namespace {

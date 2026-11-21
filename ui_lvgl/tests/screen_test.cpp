@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -95,7 +96,11 @@ struct Rig {
     screen = std::make_unique<Screen>(display.screen(), config, &heat_dsc, deps);
   }
   const ScreenWidgets& w() const { return screen->widgets(); }
-  void show(const ViewModel& vm, Timestamp now = 1000) { screen->update(vm, header, now); }
+  void show(const ViewModel& vm, Timestamp now = 1000) {
+    screen->update(vm, header, now);
+    while (screen->prepare_step()) {
+    }
+  }
 };
 
 }  // namespace
@@ -993,7 +998,7 @@ void count_invalidation(lv_event_t* e) {
 
 }  // namespace
 
-TEST_CASE("pulses step a few times per cycle, with no property animation") {
+TEST_CASE("pulses are sprites: smooth frames from the tick, no LVGL animation") {
   Rig rig;
   ViewModel vm = test::temperature_vm(rig.config);
   vm.pins[0].active_value = 33.0;
@@ -1003,32 +1008,38 @@ TEST_CASE("pulses step a few times per cycle, with no property animation") {
   const auto& w = rig.w();
   REQUIRE_FALSE(hidden(w.pin_pulse[0]));
   REQUIRE_FALSE(hidden(w.room_pulse[0]));
-  lv_obj_t* edge = lv_obj_get_child(w.room_pulse[0], 0);
-  REQUIRE(edge != nullptr);
+  // The ring is an opaque RGB565 image, the size of the ring's reach.
+  const auto* dsc = static_cast<const lv_image_dsc_t*>(lv_image_get_src(w.pin_pulse[0]));
+  REQUIRE(dsc != nullptr);
+  CHECK(dsc->header.cf == LV_COLOR_FORMAT_RGB565);
+  CHECK(lv_obj_get_width(w.pin_pulse[0]) == static_cast<std::int32_t>(dsc->header.w));
 
-  int ring_changes = 0, room_changes = 0;
-  std::int32_t ring_w = lv_obj_get_style_width(w.pin_pulse[0], LV_PART_MAIN);
-  lv_opa_t ring_o = lv_obj_get_style_opa(w.pin_pulse[0], LV_PART_MAIN);
-  lv_opa_t room_o = lv_obj_get_style_line_opa(edge, LV_PART_MAIN);
-  for (std::uint32_t t = 0; t <= 5600; t += 16) {
+  // A pixel 40 px below the pin's centre (clear of its value pill and badge): the ring passes it
+  // once a cycle.
+  lv_area_t tile;
+  lv_obj_get_coords(w.pin_pulse[0], &tile);
+  const CanvasRect& a = rig.config.canvas.map_area;
+  const auto cx = static_cast<std::int32_t>(a.x + 0.25 * a.width);  // temperature pin 0
+  const auto cy = static_cast<std::int32_t>(a.y + 0.25 * a.height);
+  const auto* px = reinterpret_cast<const std::uint16_t*>(dsc->data);
+  const std::size_t probe = static_cast<std::size_t>(cy + 40 - tile.y1) * dsc->header.w +
+                            static_cast<std::size_t>(cx - tile.x1);
+  std::vector<std::uint16_t> seen;
+  const PulseCounters before = rig.screen->pulse_counters();
+  for (std::uint32_t t = 0; t <= 3200; t += 16) {
     rig.display.set_time_ms(t);
     rig.display.run_timers();
     CHECK(lv_anim_count_running() == 0);
-    const std::int32_t rw = lv_obj_get_style_width(w.pin_pulse[0], LV_PART_MAIN);
-    const lv_opa_t ro = lv_obj_get_style_opa(w.pin_pulse[0], LV_PART_MAIN);
-    if (rw != ring_w || ro != ring_o) ++ring_changes;
-    ring_w = rw;
-    ring_o = ro;
-    const lv_opa_t eo = lv_obj_get_style_line_opa(edge, LV_PART_MAIN);
-    if (eo != room_o) ++room_changes;
-    room_o = eo;
+    if (seen.empty() || seen.back() != px[probe]) seen.push_back(px[probe]);
   }
-  // 5.6 s: 3.5 ring cycles of 4 frames, 2 room cycles of 4 steps. A smooth animation would
-  // change at almost every one of the 350 ticks.
-  CHECK(ring_changes >= 12);
-  CHECK(ring_changes <= 15);
-  CHECK(room_changes >= 7);
-  CHECK(room_changes <= 9);
+  const PulseCounters after = rig.screen->pulse_counters();
+  // 3.2 s: two ring cycles of 20 frames, a little over one room cycle of 14 steps.
+  const std::uint32_t frames = after.frames - before.frames;
+  CHECK(frames >= 2 * 20 + 14);
+  CHECK(frames <= 2 * 20 + 2 * 14 + 2);
+  CHECK(after.dropped == before.dropped);  // a 16 ms tick never skips a 80 ms frame
+  CHECK(seen.size() >= 4);                 // the ring sweeps over the probe, in several shades
+  CHECK(after.tile_bytes > 0);
 }
 
 TEST_CASE("a room's pulse outline invalidates strips along its walls, never its interior") {
@@ -1062,8 +1073,8 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
     rig.display.run_timers();
   }
   CHECK(g_invalidated > 0);  // it does pulse
-  // At most five steps in that window, each the strips plus their drawing margin (under 2x).
-  CHECK(g_invalidated < 5U * 2U * area);
+  // At most 15 steps of the outline in that window, each exactly its strips.
+  CHECK(g_invalidated <= 15U * area);
 }
 
 TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") {
@@ -1169,4 +1180,71 @@ TEST_CASE("a diagonal wall's pulse is cut into small pieces, so it never invalid
   }
   // Under half the triangle; one object for the hypotenuse alone covered 443 x 371 px.
   CHECK(area < 432U * 360U / 2U / 2U);
+}
+
+namespace {
+
+// Pixels of the framebuffer inside `a` whose distance from (cx, cy) is below `inner` or above
+// `outer`, with the ring tile shown and with it hidden: they must be equal.
+struct TileDiff {
+  std::size_t compared = 0, differ = 0, ring_differ = 0;
+};
+TileDiff diff_without_tile(Rig& rig, lv_obj_t* tile, float cx, float cy, float inner, float outer) {
+  lv_area_t a;
+  lv_obj_get_coords(tile, &a);
+  rig.display.render();
+  const std::vector<std::uint16_t> with = rig.display.framebuffer();
+  lv_obj_set_hidden(tile, true);
+  rig.display.render();
+  const std::vector<std::uint16_t>& without = rig.display.framebuffer();
+  TileDiff d;
+  for (std::int32_t y = a.y1; y <= a.y2; ++y) {
+    for (std::int32_t x = a.x1; x <= a.x2; ++x) {
+      const std::size_t i = static_cast<std::size_t>(y) * 1280U + static_cast<std::size_t>(x);
+      const float dx = static_cast<float>(x) + 0.5f - cx, dy = static_cast<float>(y) + 0.5f - cy;
+      const float r = std::sqrt(dx * dx + dy * dy);
+      if (r >= inner && r <= outer) {
+        d.ring_differ += with[i] != without[i] ? 1U : 0U;
+        continue;
+      }
+      ++d.compared;
+      d.differ += with[i] != without[i] ? 1U : 0U;
+    }
+  }
+  lv_obj_set_hidden(tile, false);
+  return d;
+}
+
+}  // namespace
+
+TEST_CASE("a ring sprite shows exactly what lies under it, plus the ring, and follows the map") {
+  Rig rig;
+  for (auto& p : rig.heat) p = 0xF800;  // red
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  rig.show(vm);
+  rig.display.set_time_ms(500);
+  rig.display.run_timers();
+  const auto& w = rig.w();
+  const CanvasRect& a = rig.config.canvas.map_area;
+  const float cx = static_cast<float>(a.x) + 0.25f * static_cast<float>(a.width);
+  const float cy = static_cast<float>(a.y) + 0.25f * static_cast<float>(a.height);
+  // Inside 22 px is the pin; beyond 57 px nothing of the ring reaches. Both must match LVGL's own
+  // drawing exactly (the pin, its value pill and badge, the map); between them the ring shows.
+  TileDiff d = diff_without_tile(rig, w.pin_pulse[0], cx, cy, 22.0f, 57.0f);
+  CHECK(d.compared > 1000);
+  CHECK(d.differ == 0);
+  CHECK(d.ring_differ > 50);
+
+  // A new heat image under the sprite: once prepared again, the sprite shows it.
+  std::vector<Rgb565> green(rig.heat.size(), 0x07E0);
+  rig.heat_dsc.data = reinterpret_cast<const std::uint8_t*>(green.data());
+  rig.screen->invalidate_heat();
+  while (rig.screen->prepare_step()) {
+  }
+  rig.display.set_time_ms(600);
+  rig.display.run_timers();
+  d = diff_without_tile(rig, w.pin_pulse[0], cx, cy, 22.0f, 57.0f);
+  CHECK(d.differ == 0);
 }

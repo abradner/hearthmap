@@ -206,6 +206,19 @@ int main() {
   CHECK(w.loops == 0 && w.refreshes == 3);
   CHECK(w.acks == 0 && w.click_to_ack_max_ms == 0);
 
+  // The longest refresh by cause: a tap's update, a heat repaint, else animation.
+  p.take(12000);
+  p.cause_tap();
+  p.refresh_start(12000000); p.flush_start(12000000); p.flush_finish(12001000, 1);
+  p.refresh_ready(12090000, 12090);  // 90 ms: a tap
+  p.cause_heat();
+  p.refresh_start(12100000); p.flush_start(12100000); p.flush_finish(12101000, 1);
+  p.refresh_ready(12140000, 12140);  // 40 ms: heat
+  p.refresh_start(12200000); p.flush_start(12200000); p.flush_finish(12201000, 1);
+  p.refresh_ready(12210000, 12210);  // 10 ms: neither
+  w = p.take(12300);
+  CHECK(w.refresh_max_tap == 90000 && w.refresh_max_heat == 40000 && w.refresh_max_anim == 10000);
+
   // The log line: rates per second and the share of the window spent refreshing.
   PerfWindow f;
   f.window_ms = 5000;

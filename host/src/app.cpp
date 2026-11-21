@@ -65,6 +65,9 @@ void App::refresh() {
   if (heat_layer_ != vm_.active_layer) render_heat(vm_.active_layer);
   ui::HeaderText header{clock_text(now_, utc_offset_minutes_), ui::summary_text(vm_.summary)};
   screen_->update(vm_, header, now_);
+  // The host has no frame budget: prepare every pulse sprite now (the device slices this).
+  while (screen_->prepare_step()) {
+  }
 }
 
 std::size_t App::process_events() {
