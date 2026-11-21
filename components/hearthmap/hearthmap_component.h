@@ -62,7 +62,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   /// `present: true` with this display: small animated tiles skip LVGL's refresh (D-058).
   void set_present_display(display::Display* display) { present_display_ = display; }
 
-  /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after setup().
+  /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
+  /// setup().
   hm::ui::Blitter& blitter() { return *blitter_; }
   /// Pass to hm::ui::show_tile_frame(). A NoPresenter unless `present: true`. Valid after setup().
   hm::ui::Presenter& presenter() { return *presenter_; }
