@@ -17,6 +17,7 @@
 #include "esphome/core/hal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "heap_watch.h"
 #include "loop_breadcrumb.h"
 #include "ping/ping_sock.h"
 #include "sdkconfig.h"
@@ -48,10 +49,6 @@ constexpr std::uint32_t kPeriodMs = 10000;
 constexpr std::uint32_t kTaskEvery = 6;  // the task table every 60 s
 constexpr const char* kPrefix = "[I][hm.diag]: ";
 
-std::atomic<std::uint32_t> g_failed{0};
-std::atomic<std::uint32_t> g_failed_dma{0};
-std::atomic<std::uint32_t> g_last_failed_size{0};
-std::atomic<std::uint32_t> g_last_failed_caps{0};
 std::atomic<bool> g_api{false};
 
 std::atomic<std::uint32_t> g_ping_ok{0};
@@ -59,14 +56,6 @@ std::atomic<std::uint32_t> g_ping_lost{0};
 std::atomic<std::uint32_t> g_ping_reply_ms{0};
 esp_ping_handle_t g_ping = nullptr;
 std::uint32_t g_ping_started_ms = 0;
-
-// Runs in the allocating task: counts only.
-void on_alloc_failed(size_t size, uint32_t caps, const char* /*function_name*/) {
-  g_failed.fetch_add(1, std::memory_order_relaxed);
-  if ((caps & MALLOC_CAP_DMA) != 0) g_failed_dma.fetch_add(1, std::memory_order_relaxed);
-  g_last_failed_size.store(static_cast<std::uint32_t>(size), std::memory_order_relaxed);
-  g_last_failed_caps.store(caps, std::memory_order_relaxed);
-}
 
 void put(const char* line) {
   esp_rom_printf("%s%s\n", kPrefix, line);
@@ -104,22 +93,6 @@ void start_ping_once() {
   }
   g_ping = h;
   g_ping_started_ms = millis();
-}
-
-MemorySample sample_memory() {
-  MemorySample m;
-  m.internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-  m.internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-  m.internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-  m.dma_internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-  m.dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
-  m.psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-  m.psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-  m.failed_allocs = g_failed.load(std::memory_order_relaxed);
-  m.failed_dma_allocs = g_failed_dma.load(std::memory_order_relaxed);
-  m.last_failed_size = g_last_failed_size.load(std::memory_order_relaxed);
-  m.last_failed_caps = g_last_failed_caps.load(std::memory_order_relaxed);
-  return m;
 }
 
 #if configUSE_TRACE_FACILITY && configGENERATE_RUN_TIME_STATS
@@ -231,7 +204,7 @@ void start_hosted_diagnostics() {
   static bool started = false;
   if (started) return;
   started = true;
-  heap_caps_register_failed_alloc_callback(on_alloc_failed);
+  start_heap_watch();  // the failed-allocation tally (also started by the component itself)
   // ESPHome builds ESP-IDF's log at ERROR unless `esp32: framework: log_level` says otherwise,
   // which hides esp-hosted's "mempool OOM start", "dma_alloc failed" and "rx_get_buffer failed"
   // (all WARN). The component raises the compiled ceiling to INFO in this mode; WARN is enough

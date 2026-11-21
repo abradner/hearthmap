@@ -234,6 +234,12 @@ int main() {
   f.presented = 1500;
   f.present_fallbacks = 50;
   f.present_block = "covered";
+  f.internal_free_kib = 180;
+  f.internal_min_kib = 150;
+  f.dma_largest_kib = 31;
+  f.bulk_kib = 9000;
+  f.bulk_refused = 2;
+  f.sprites_paused = true;
   char line[640];
   const std::size_t n = PerfStats::format(f, line, sizeof(line));
   std::printf("%s\n", line);
@@ -243,8 +249,15 @@ int main() {
   CHECK(std::strstr(line, "1000 kpx/s flushed") != nullptr);
   CHECK(std::strstr(line, "sprites 310 frames/s (rate /2), 0 dropped, 3 not ready, 0 canary") != nullptr);
   CHECK(std::strstr(line, "present 1500 / fallback 50 (covered)") != nullptr);
+  CHECK(n < 512);  // ESPHome's logger buffer: one line at the schema's sizes
+  const std::size_t m = PerfStats::format_memory(f, line, sizeof(line));
+  std::printf("%s\n", line);
+  CHECK(m == std::strlen(line));
+  CHECK(std::strstr(line, "perf mem: internal 180 KiB (lowest 150 KiB), largest DMA block 31 KiB "
+                          "| ui in psram 9000 KiB, refused 2 | sprite builds paused") != nullptr);
   char tiny[8];
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
+  CHECK(PerfStats::format_memory(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   std::printf("perf checks done, %d failures\n", failures);
   return failures == 0 ? 0 : 1;
 }
@@ -1305,4 +1318,71 @@ def test_hosted_diagnostics_report(tmp_path):
     (tmp_path / "diag_test.cpp").write_text(DIAG_TEST)
     out = _build_and_run(tmp_path, [str(tmp_path / "diag_test.cpp"), str(COMPONENT / "diag_report.cpp")],
                          [COMPONENT])
+    assert "0 failures" in out
+
+
+GUARD_TEST = r"""
+#include <cstdio>
+#include "internal_ram_guard.h"
+using namespace esphome::hearthmap_panel;
+int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+int main() {
+  constexpr std::size_t K = 1024;
+  InternalRamGuard g(64 * K, 60000);
+  CHECK(g.margin() == 16 * K);
+  // Above the floor: nothing to do.
+  auto v = g.update(1000, 200 * K);
+  CHECK(!v.pause && !v.warn && !v.recovered && !g.low());
+  v = g.update(2000, 120 * K);
+  CHECK(!v.pause && !v.warn);
+  // Below: pause and warn at once, naming what it fell from.
+  v = g.update(3000, 50 * K);
+  CHECK(v.pause && v.warn && !v.recovered && g.low());
+  CHECK(v.fell_from == 120 * K);
+  CHECK(g.spells() == 1);
+  // Still low: paused, warned again only after the interval.
+  v = g.update(4000, 10 * K);
+  CHECK(v.pause && !v.warn);
+  v = g.update(62999, 10 * K);
+  CHECK(v.pause && !v.warn);
+  v = g.update(63000, 10 * K);
+  CHECK(v.pause && v.warn);
+  // Back above the floor but inside the margin: still paused (no flapping at the line).
+  v = g.update(64000, 70 * K);
+  CHECK(v.pause && !v.recovered && g.low());
+  // Above floor + margin: resumed, said once.
+  v = g.update(65000, 80 * K);
+  CHECK(!v.pause && v.recovered && !g.low());
+  v = g.update(66000, 80 * K);
+  CHECK(!v.pause && !v.recovered);
+  // A second spell is counted, and warns at once whatever the interval.
+  v = g.update(67000, 30 * K);
+  CHECK(v.pause && v.warn && g.spells() == 2 && v.fell_from == 80 * K);
+  // The rate limit holds across the millisecond clock's wrap.
+  InternalRamGuard w(64 * K, 60000);
+  v = w.update(0xFFFFF000u, 1 * K);
+  CHECK(v.warn);
+  v = w.update(0x00001000u, 1 * K);  // 8 s later
+  CHECK(!v.warn && v.pause);
+  // Floor 0: off.
+  InternalRamGuard off(0);
+  v = off.update(1000, 0);
+  CHECK(!v.pause && !v.warn && !off.low());
+  // A small floor still needs a real margin.
+  InternalRamGuard small(16 * K);
+  CHECK(small.margin() == 8 * K);
+  std::printf("guard checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_internal_ram_guard(tmp_path):
+    (tmp_path / "guard_test.cpp").write_text(GUARD_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "guard_test.cpp"), str(COMPONENT / "internal_ram_guard.cpp")],
+        [COMPONENT],
+    )
     assert "0 failures" in out

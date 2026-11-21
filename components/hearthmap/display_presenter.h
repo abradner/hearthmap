@@ -34,6 +34,9 @@ class DisplayPresenter final : public ::hearthmap::ui::Presenter {
 
   /// Allocates the rotation buffer and records the calling task as the only one allowed to
   /// present. Call from setup(). False if the buffer cannot be had (then every present fails).
+  /// The buffer (kMaxTilePx pixels, 32 KiB) is internal, DMA-capable RAM on purpose, the one
+  /// bulk block hearthmap keeps there (docs/decisions.md D-064): taken once here, never resized,
+  /// freed only with the presenter.
   bool begin();
 
   bool present(int x, int y, const ::hearthmap::ui::View565& tile) override;

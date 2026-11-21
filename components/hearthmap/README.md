@@ -28,6 +28,7 @@ hearthmap:
   # blitter: software       or ppa: large fills, blends and copies on the ESP32-P4's PPA (D-057)
   # present: false          true (with display_id): animated tiles skip LVGL's refresh (D-058)
   # display_id: ...         the display LVGL draws to (needed by present)
+  # internal_ram_floor: 64kB  below it: a warning, and pulse sprite builds pause (0: off, D-064)
   # diagnostics: false      true: a 10 s hosted Wi-Fi link report on the UART (D-063)
   # pulse_sprites: animated still or off: bisecting aids for the Wi-Fi link fault (D-063)
 ```
@@ -180,12 +181,14 @@ worded by ui_lvgl's `summary_text()`, the same path as the host (D-049).
 
 | Item | Size | Where |
 |---|---|---|
-| Heat image, map area 864 x 720 RGB565: one buffer per enabled layer plus one to draw into, while 6 MiB of PSRAM stays free (D-055); at least two | up to 5 x 1,244,160 B | PSRAM (`RAMAllocator`) |
-| Map bake (walls and labels, 3 B per map pixel, D-055) | about 1,870,000 B | PSRAM via malloc |
-| Pulse sprites (D-053): every frame of every pulse, within three quarters of the PSRAM left past a 6 MiB reserve and the bake, at least 256 KiB (logged as `boot: N KiB for pulse sprites`) | as used | PSRAM via malloc |
-| `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM via malloc (D-037) |
+| Heat image, map area 864 x 720 RGB565: one buffer per enabled layer plus one to draw into, while 6 MiB of PSRAM stays free (D-055); at least two | up to 5 x 1,244,160 B | PSRAM (memory port, D-064) |
+| Map bake (walls and labels, 3 B per map pixel, D-055) | about 1,870,000 B | PSRAM (memory port) |
+| Pulse sprites (D-053): every frame, capture and table of every pulse, within three quarters of the PSRAM left past a 6 MiB reserve and the bake, at least 256 KiB (logged as `boot: N KiB for pulse sprites`) | as used | PSRAM (memory port) |
+| `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM (memory port) |
+| Presenter rotation buffer (`present: true` only, D-058) | 32,768 B | internal, DMA-capable, on purpose |
+| esp-hosted SDIO packet pool, with `esp32_hosted` over SDIO (D-065) | 47,616 B | internal, DMA-capable, reserved when the link starts |
 | Photos: 5 photos x (128, 52, 44 px) RGB565 | 210,240 B | flash (rodata) |
-| `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, cell colours, 4 colour tables | about 37,000 B | heap |
+| `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, 4 colour tables (core's own vectors) | about 37,000 B | heap (PSRAM above 16 KiB per block, D-037) |
 | LVGL draw buffer at the default `buffer_size: 100%` | 2,048,000 B | PSRAM (ESPHome's lvgl) |
 | Software rotation buffer (800 x 1280 panel shown landscape) | up to 2,048,000 B | ESPHome's lvgl / display driver |
 
@@ -251,6 +254,42 @@ Measured on the panel with `tools/bench` (its README has every number):
 
 `dump_config` logs `hearthmap blitter: <kind>, present: <state>, stall monitor: <state>`.
 
+## Internal RAM and the Wi-Fi link
+
+On the ESP32-P4 the hosted Wi-Fi driver (`esp32_hosted`) takes a DMA-capable frame from internal
+RAM for every packet (ESP-IDF 5.5.6 registers the P4's PSRAM without `MALLOC_CAP_DMA`). When internal RAM ran out under the pulse sprites'
+many small buffers the link died with nothing in the log (D-063). So:
+
+- **The memory port** (D-064): everything ui_lvgl sizes by pixels, cells or pulses, and the
+  heat images, comes from PSRAM through `hearthmap/ui/memory.h`, installed first thing in
+  `setup()` (`psram_memory.h`). A request PSRAM cannot meet is refused, never moved to internal
+  RAM: a sprite then stops animating (counted), the bake leaves walls and labels as objects.
+- **The internal-RAM floor** (`internal_ram_floor`, default 64 kB, D-064): checked once a second.
+  Below it a warning goes to the log at once and then at most once a minute:
+
+  ```
+  internal RAM low: <K> KiB free, floor <K> KiB (was <K> KiB), lowest <K> KiB, largest DMA-capable block <K> KiB; failed allocations <n>, DMA <n> (last <B> B, caps 0x<caps>); hearthmap holds <K> KiB in PSRAM (<n> refused) and captured <n> sprites since; pulse sprite builds paused (D-064)
+  ```
+
+  and pulse sprite builds pause (pulses already built keep playing; animation degrades, the
+  network does not) until free RAM is back above the floor plus a quarter of it. `0` turns the
+  guard off. The boot log has the same figures, and every perf window adds a second line,
+  `perf mem: internal <K> KiB (lowest <K> KiB), largest DMA block <K> KiB | ui in psram <K> KiB,
+  refused <n> | sprite builds on|paused`.
+- **esp-hosted's packet pool** (D-065): with `esp32_hosted` over SDIO the component sets
+  `CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL` (as a default: an `sdkconfig_options` value of your
+  own wins), which reserves 31 frames (47,616 B) for the link when it starts instead of
+  allocating each frame. `dump_config` says whether the build has it.
+- **ESP-IDF's warnings** (D-066): ESPHome compiles ESP-IDF's log at ERROR, which removes
+  esp-hosted's out-of-memory warnings. The example sets this, and the component warns at
+  config time when a hosted device compiles below it:
+
+  ```yaml
+  esp32:
+    framework:
+      log_level: WARN
+  ```
+
 ## Stalls and the task watchdog
 
 - **Stall monitor** (always on, D-062): if the main loop has not turned for 2 s, a line like
@@ -260,7 +299,10 @@ Measured on the panel with `tools/bench` (its README has every number):
   present, a PPA call, or elsewhere (another component, such as Wi-Fi).
 - **Watchdog versus Wi-Fi** (D-061): with `esp32_hosted`, every Wi-Fi call from the main loop can
   wait up to the co-processor's RPC timeout (5 s by default), so the component refuses an
-  `esp32: watchdog_timeout` below 16 s (three such waits and a second); set it in the device YAML:
+  `esp32: watchdog_timeout` below 16 s (three such waits and a second). This stops a dead link
+  resetting the panel; it does not keep the link alive, and a panel that no longer resets may
+  still have lost its network (the section above is what protects the link). Set it in the device
+  YAML:
 
   ```yaml
   esp32:

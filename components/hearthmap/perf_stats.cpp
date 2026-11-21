@@ -143,4 +143,19 @@ std::size_t PerfStats::format(const PerfWindow& w, char* out, std::size_t size) 
   return static_cast<std::size_t>(n) < size ? static_cast<std::size_t>(n) : size - 1;
 }
 
+std::size_t PerfStats::format_memory(const PerfWindow& w, char* out, std::size_t size) {
+  if (out == nullptr || size == 0) return 0;
+  const int n = std::snprintf(out, size,
+                              "perf mem: internal %" PRIu32 " KiB (lowest %" PRIu32
+                              " KiB), largest DMA block %" PRIu32 " KiB | ui in psram %" PRIu32
+                              " KiB, refused %" PRIu32 " | sprite builds %s",
+                              w.internal_free_kib, w.internal_min_kib, w.dma_largest_kib,
+                              w.bulk_kib, w.bulk_refused, w.sprites_paused ? "paused" : "on");
+  if (n < 0) {
+    out[0] = '\0';
+    return 0;
+  }
+  return static_cast<std::size_t>(n) < size ? static_cast<std::size_t>(n) : size - 1;
+}
+
 }  // namespace hearthmap_device

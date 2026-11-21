@@ -12,11 +12,15 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
+#include "heap_watch.h"
 #include "hearthmap/ui/fonts.h"
 #include "hearthmap/ui/format.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/theme.h"
 #include "hearthmap_gen/photos.h"
+#include "psram_memory.h"
 #include "readings_ingest.h"
+#include "sdkconfig.h"
 
 namespace esphome::hearthmap_panel {
 
@@ -124,6 +128,24 @@ void HearthmapComponent::setup() {
   // Nothing heavy here: boot work runs in slices from loop(). Subscriptions must exist before
   // Home Assistant connects (it asks for the list once per connection), so they are made now;
   // states that arrive early simply wait in readings_.
+  // First, before anything of the UI's is allocated: its bulk storage comes from PSRAM through
+  // the memory port, never from internal RAM (D-064).
+  start_heap_watch();
+  if (!hm::ui::set_bulk_memory(&psram_memory())) {
+    ESP_LOGE(TAG, "memory port: UI storage was allocated before setup; it stays where it is");
+  }
+  hm::ui::set_bulk_failure_handler(report_bulk_exhausted);
+  {
+    const MemorySample m = sample_memory();
+    ESP_LOGI(TAG,
+             "memory at boot: internal free %u KiB (lowest %u KiB), largest DMA-capable block %u "
+             "KiB, PSRAM free %u KiB; internal RAM floor %u KiB",
+             static_cast<unsigned>(m.internal_free / 1024U),
+             static_cast<unsigned>(m.internal_min / 1024U),
+             static_cast<unsigned>(m.dma_largest / 1024U),
+             static_cast<unsigned>(m.psram_free / 1024U),
+             static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
+  }
   this->boot_started_ms_ = millis();
   this->stage_started_ms_ = this->boot_started_ms_;
   this->blitter_ = make_blitter(this->blitter_kind_, &this->blitter_name_);
@@ -184,6 +206,7 @@ void HearthmapComponent::loop() {
   const CrumbScope crumb(Crumb::Hearthmap, millis());
   this->perf_.loop_start(micros());
   this->check_sprite_canaries_();
+  this->check_memory_();
   this->log_perf_();
   switch (this->phase_) {
     case Phase::Booting: {
@@ -280,7 +303,11 @@ bool HearthmapComponent::start_screen_() {
   const uint32_t start = millis();
   ESP_LOGI(TAG, "boot: screen started");
   const hm::ui::HeatRasterizer& raster = this->pipeline_->rasterizer();
-  RAMAllocator<hm::Rgb565> allocator;  // PSRAM when present
+  // From the memory port: PSRAM only (ESPHome's RAMAllocator would fall back to internal RAM).
+  const std::size_t bytes = raster.pixel_count() * sizeof(hm::Rgb565);
+  auto allocate = [bytes] {
+    return static_cast<hm::Rgb565*>(hm::ui::bulk_allocate(bytes, alignof(hm::Rgb565)));
+  };
   // Every buffer starts black, cleared by the blitter (a PPA fill on the panel, not 1.3 MiB of
   // CPU stores per buffer).
   auto clear = [this, &raster](hm::Rgb565* px) {
@@ -288,7 +315,7 @@ bool HearthmapComponent::start_screen_() {
                                static_cast<int>(raster.height()), static_cast<int>(raster.width())};
     this->blitter_->fill(s, 0, 0, s.w, s.h, 0);
   };
-  this->heat_pixels_ = allocator.allocate(raster.pixel_count());
+  this->heat_pixels_ = allocate();
   if (this->heat_pixels_ == nullptr) {
     ESP_LOGE(TAG, "no memory for the %dx%d heat image", static_cast<int>(raster.width()),
              static_cast<int>(raster.height()));
@@ -299,11 +326,11 @@ bool HearthmapComponent::start_screen_() {
   }
   clear(this->heat_pixels_);
   // A second buffer: frames render into the back one and swap it in whole (PanelPipeline).
-  this->heat_back_ = allocator.allocate(raster.pixel_count());
+  this->heat_back_ = allocate();
   if (this->heat_back_ == nullptr) {
     // Nothing holds the first buffer yet (neither the pipeline nor the screen): give it back
     // rather than keep ~1.3 MiB for a component that has stopped.
-    allocator.deallocate(this->heat_pixels_, raster.pixel_count());
+    hm::ui::bulk_free(this->heat_pixels_, bytes);
     this->heat_pixels_ = nullptr;
     ESP_LOGE(TAG, "no memory for the second heat image buffer");
     this->phase_ = Phase::Failed;
@@ -318,10 +345,9 @@ bool HearthmapComponent::start_screen_() {
   std::vector<hm::Rgb565*> buffers{this->heat_pixels_, this->heat_back_};
   std::size_t enabled = 0;
   for (const auto& layer : this->pipeline_->config().layers) enabled += layer.enabled ? 1U : 0U;
-  const std::size_t bytes = raster.pixel_count() * sizeof(hm::Rgb565);
   while (buffers.size() < enabled + 1 &&
          heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > bytes + kPsramReserve) {
-    hm::Rgb565* extra = allocator.allocate(raster.pixel_count());
+    hm::Rgb565* extra = allocate();
     if (extra == nullptr) break;
     clear(extra);
     buffers.push_back(extra);
@@ -354,6 +380,7 @@ bool HearthmapComponent::start_screen_() {
   // (D-058); otherwise LVGL's timer invalidates them as before.
   this->screen_->set_frames_deferred(this->presenting_);
   this->screen_->set_pulse_mode(this->pulse_mode_);
+  this->screen_->set_sprite_builds_paused(this->sprites_paused_);
   // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
   this->pipeline_->set_row_hook(
       [this](hm::Rgb565* image, std::int32_t stride, std::int32_t begin, std::int32_t end) {
@@ -608,6 +635,44 @@ void HearthmapComponent::check_sprite_canaries_() {
   }
 }
 
+// Once a second: internal RAM against its floor (D-064). Below it, sprite builds pause (animation
+// degrades, the Wi-Fi driver keeps its DMA frames) and a warning says how low, what failed, and
+// what hearthmap did meanwhile; the UI's own bulk storage is in PSRAM, so it is a witness here,
+// not a suspect, unless the port's counters say otherwise.
+void HearthmapComponent::check_memory_() {
+  const uint32_t now = millis();
+  if (now - this->last_memory_check_ms_ < 1000U) return;
+  this->last_memory_check_ms_ = now;
+  const MemorySample m = sample_memory();
+  const InternalRamGuard::Verdict v = this->ram_guard_.update(now, m.internal_free);
+  const uint32_t captures = this->screen_ ? this->screen_->pulse_counters().captures : 0U;
+  if (v.pause != this->sprites_paused_) {
+    this->sprites_paused_ = v.pause;
+    if (this->screen_) this->screen_->set_sprite_builds_paused(v.pause);
+  }
+  if (v.warn) {
+    const hm::ui::BulkStats b = hm::ui::bulk_stats();
+    ESP_LOGW(
+        TAG,
+        "internal RAM low: %u KiB free, floor %u KiB (was %u KiB), lowest %u KiB, largest "
+        "DMA-capable block %u KiB; failed allocations %u, DMA %u (last %u B, caps 0x%x); "
+        "hearthmap holds %u KiB in PSRAM (%u refused) and captured %u sprites since; "
+        "pulse sprite builds paused (D-064)",
+        static_cast<unsigned>(m.internal_free / 1024U),
+        static_cast<unsigned>(this->ram_guard_.floor() / 1024U),
+        static_cast<unsigned>(v.fell_from / 1024U), static_cast<unsigned>(m.internal_min / 1024U),
+        static_cast<unsigned>(m.dma_largest / 1024U), static_cast<unsigned>(m.failed_allocs),
+        static_cast<unsigned>(m.failed_dma_allocs), static_cast<unsigned>(m.last_failed_size),
+        static_cast<unsigned>(m.last_failed_caps), static_cast<unsigned>(b.in_use / 1024U),
+        static_cast<unsigned>(b.failures), static_cast<unsigned>(captures - this->captures_at_ok_));
+  }
+  if (v.recovered) {
+    ESP_LOGI(TAG, "internal RAM back to %u KiB: pulse sprite builds resumed",
+             static_cast<unsigned>(m.internal_free / 1024U));
+  }
+  if (!this->ram_guard_.low()) this->captures_at_ok_ = captures;
+}
+
 void HearthmapComponent::log_perf_() {
   const uint32_t now = millis();
   if (!this->perf_.due(now)) return;
@@ -638,8 +703,18 @@ void HearthmapComponent::log_perf_() {
     this->last_sprite_frames_ = c.frames;
     this->last_sprite_dropped_ = c.dropped;
   }
+  const MemorySample m = sample_memory();
+  const hm::ui::BulkStats b = hm::ui::bulk_stats();
+  w.internal_free_kib = static_cast<uint32_t>(m.internal_free / 1024U);
+  w.internal_min_kib = static_cast<uint32_t>(m.internal_min / 1024U);
+  w.dma_largest_kib = static_cast<uint32_t>(m.dma_largest / 1024U);
+  w.bulk_kib = static_cast<uint32_t>(b.in_use / 1024U);
+  w.bulk_refused = b.failures;
+  w.sprites_paused = this->sprites_paused_;
   char line[640];
   hearthmap_device::PerfStats::format(w, line, sizeof(line));
+  ESP_LOGD(TAG, "%s", line);
+  hearthmap_device::PerfStats::format_memory(w, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
 }
 
@@ -674,6 +749,15 @@ void HearthmapComponent::dump_config() {
   }
 #ifdef HEARTHMAP_DIAGNOSTICS
   ESP_LOGCONFIG(TAG, "  Diagnostics: hosted link report every 10 s on the UART (D-063)");
+#endif
+  ESP_LOGCONFIG(TAG, "  UI storage: PSRAM through the memory port; internal RAM floor %u KiB",
+                static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
+#ifdef CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO
+#ifdef CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL
+  ESP_LOGCONFIG(TAG, "  Hosted SDIO packet pool: on (reserved when the link starts, D-064)");
+#else
+  ESP_LOGCONFIG(TAG, "  Hosted SDIO packet pool: off, frames come from the DMA heap (D-064)");
+#endif
 #endif
   ESP_LOGCONFIG(TAG,
                 "hearthmap:\n"

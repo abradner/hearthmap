@@ -64,6 +64,15 @@ struct PerfWindow {
   std::uint32_t presented = 0;          ///< pulse frames put on the panel directly (D-058)
   std::uint32_t present_fallbacks = 0;  ///< pulse frames shown by invalidating instead
   const char* present_block = "none";   ///< the most common reason a present was refused
+
+  // Memory at the window's end (D-064), set by the caller: internal RAM is what the hosted
+  // Wi-Fi driver's DMA frames come from; the UI's bulk storage is in PSRAM through the port.
+  std::uint32_t internal_free_kib = 0;
+  std::uint32_t internal_min_kib = 0;  ///< the lowest since boot
+  std::uint32_t dma_largest_kib = 0;   ///< largest DMA-capable block
+  std::uint32_t bulk_kib = 0;          ///< the UI's bulk storage held through the port
+  std::uint32_t bulk_refused = 0;      ///< port allocations refused, since boot
+  bool sprites_paused = false;         ///< the internal-RAM guard has paused sprite builds
 };
 
 class PerfStats {
@@ -107,6 +116,9 @@ class PerfStats {
 
   /// One log line for `w`, into `out` (always NUL-terminated); returns the length written.
   static std::size_t format(const PerfWindow& w, char* out, std::size_t size);
+  /// The window's memory figures as a second line (D-064), kept apart so neither line passes
+  /// ESPHome's logger buffer (512 bytes by default).
+  static std::size_t format_memory(const PerfWindow& w, char* out, std::size_t size);
 
  private:
   std::uint32_t window_ms_;

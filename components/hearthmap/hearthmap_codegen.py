@@ -843,3 +843,27 @@ def hosted_watchdog_floor_ms(full_config: dict) -> int | None:
     options = full_config.get("esp32", {}).get("framework", {}).get("sdkconfig_options", {}) or {}
     rpc_ms = int(options.get("CONFIG_ESP_HOSTED_HOST_RPC_TIMEOUT_MS", HOSTED_RPC_TIMEOUT_DEFAULT_MS))
     return HOSTED_RPCS_PER_PASS * rpc_ms + 1000
+
+
+def hosted_sdio(full_config: dict) -> bool:
+    """Whether the device's esp32_hosted link runs over SDIO (its default transport), where
+    esp-hosted can take its packet buffers from a pool reserved once at start-up. D-064."""
+    hosted = full_config.get("esp32_hosted")
+    if hosted is None:
+        return False
+    return str(hosted.get("type", "sdio")).lower() == "sdio"
+
+
+# ESP-IDF log levels by rank, as `esp32: framework: log_level` names them.
+_IDF_LOG_RANKS = {"NONE": 0, "ERROR": 1, "WARN": 2, "INFO": 3, "DEBUG": 4, "VERBOSE": 5}
+
+
+def hosted_warnings_hidden(full_config: dict) -> bool:
+    """True when the device has an esp32_hosted link and ESP-IDF's log is compiled below WARN
+    (ESPHome's default is ERROR), so esp-hosted's out-of-memory warnings never print. D-063,
+    D-064."""
+    if "esp32_hosted" not in full_config:
+        return False
+    framework = full_config.get("esp32", {}).get("framework", {}) or {}
+    level = str(framework.get("log_level", "ERROR")).upper()
+    return _IDF_LOG_RANKS.get(level, 1) < _IDF_LOG_RANKS["WARN"]

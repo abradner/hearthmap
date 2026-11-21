@@ -24,6 +24,10 @@ esp32:
   watchdog_timeout: 16s
   framework:
     type: esp-idf
+    # ESP-IDF's own warnings, compiled in (ESPHome's default is ERROR): esp-hosted reports a
+    # Wi-Fi link short of DMA memory only at WARN, so at ERROR such a link dies with nothing in
+    # the log (D-063, D-064). The hearthmap component notes it at config time when this is lower.
+    log_level: WARN
     advanced:
       enable_idf_experimental_features: true  # 200 MHz PSRAM
 

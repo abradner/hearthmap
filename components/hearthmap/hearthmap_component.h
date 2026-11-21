@@ -21,6 +21,7 @@
 #include "hearthmap/view_model.h"
 #include "hearthmap_gen/generated_config.h"
 #include "hosted_diag.h"
+#include "internal_ram_guard.h"
 #include "loop_breadcrumb.h"
 #include "panel_pipeline.h"
 #include "perf_stats.h"
@@ -67,6 +68,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_watchdog_ms(uint32_t ms) { watchdog_ms_ = ms; }
   /// `pulse_sprites: still | off`: a bisecting aid for the Wi-Fi link fault (D-063).
   void set_pulse_mode(hm::ui::PulseMode mode) { pulse_mode_ = mode; }
+  /// `internal_ram_floor`: below it, warn and pause sprite builds (D-064). 0: off.
+  void set_internal_ram_floor(uint32_t bytes) { ram_guard_ = InternalRamGuard(bytes); }
 
   /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
   /// setup().
@@ -98,6 +101,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void hide_status_();
   void hook_perf_();
   void check_sprite_canaries_();
+  void check_memory_();
   void log_perf_();
   static void on_display_event_(lv_event_t* e);
   static void on_indev_event_(lv_event_t* e);
@@ -151,7 +155,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).
   uint32_t last_press_ms_ = 0;
 
-  hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
+  InternalRamGuard ram_guard_{64U * 1024U};
+  uint32_t last_memory_check_ms_ = 0;
+  uint32_t captures_at_ok_ = 0;  ///< sprite captures at the last sample above the floor
+  bool sprites_paused_ = false;
+
+  hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, from the port.
   hm::Rgb565* heat_back_ = nullptr;    ///< The second buffer frames render into.
   int32_t band_row_ = 1 << 30;         ///< Next heat-image row to invalidate; past the end: none.
   uint32_t last_band_ms_ = 0;

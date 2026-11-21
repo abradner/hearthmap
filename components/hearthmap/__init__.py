@@ -9,6 +9,7 @@ YAML:
       # optional: lvgl_id, refresh_interval (30s), min_redraw_interval (500ms),
       #           heat_refresh_interval (15s), touchscreen_id (touch latency in the perf log),
       #           blitter (software | ppa; default software), present (false) with display_id
+      #           internal_ram_floor (64kB; below it, warn and pause sprite builds; 0: off, D-064)
       # bisecting aids for the hosted Wi-Fi link (D-063), off by default:
       #           diagnostics (false), pulse_sprites (animated | still | off; default animated)
 
@@ -19,6 +20,7 @@ ESPHome surface. See README.md for how core and ui_lvgl reach the build.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import esphome.codegen as cg
@@ -35,6 +37,8 @@ from esphome.coroutine import CoroPriority
 
 from . import hearthmap_codegen as gen
 
+_LOGGER = logging.getLogger(__name__)
+
 CODEOWNERS = ["@abradner"]
 DEPENDENCIES = ["api", "lvgl", "time"]
 
@@ -49,6 +53,7 @@ CONF_PRESENT = "present"
 CONF_DISPLAY_ID = "display_id"
 CONF_DIAGNOSTICS = "diagnostics"
 CONF_PULSE_SPRITES = "pulse_sprites"
+CONF_INTERNAL_RAM_FLOOR = "internal_ram_floor"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -146,6 +151,11 @@ CONFIG_SCHEMA = cv.All(
             # A 10 s heap / SDIO / Wi-Fi / lwIP / task report on the UART (hosted_diag.h, D-063).
             cv.Optional(CONF_DIAGNOSTICS, default=False): cv.boolean,
             cv.Optional(CONF_PULSE_SPRITES, default="animated"): cv.enum(PULSE_MODES, lower=True),
+            # Internal RAM below this: a rate-limited warning, and pulse sprite builds pause so
+            # the hosted Wi-Fi driver keeps its DMA frames (internal_ram_guard.h, D-064). 0: off.
+            cv.Optional(CONF_INTERNAL_RAM_FLOOR, default="64kB"): cv.All(
+                cv.validate_bytes, cv.int_range(min=0, max=400_000)
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_document,
@@ -174,12 +184,24 @@ def _check_watchdog(full_config: dict) -> None:
         )
 
 
+def _note_hidden_warnings(full_config: dict) -> None:
+    if gen.hosted_warnings_hidden(full_config):
+        _LOGGER.warning(
+            "hearthmap: esp32 framework log_level is below WARN, so esp-hosted's out-of-memory "
+            "warnings (a Wi-Fi link dropping packets) are compiled out. Consider "
+            "`esp32: framework: log_level: WARN` (D-063, D-064)."
+        )
+
+
 def _final_validate(config: dict) -> dict:
     # Done at validation time so it precedes lvgl's to_code, which emits the LV_USE_* and
     # LV_FONT_* defines from these sets.
     add_lv_use(*UI_WIDGETS)
     get_lv_fonts_used().update(UI_FONTS)
-    _check_watchdog(fv.full_config.get())
+    full = fv.full_config.get()
+    _check_watchdog(full)
+    if not config[CONF_DIAGNOSTICS]:  # diagnostics opens those warnings itself
+        _note_hidden_warnings(full)
     return config
 
 
@@ -219,14 +241,28 @@ def _diagnostics_sdkconfig() -> None:
     add_idf_sdkconfig_option("CONFIG_LOG_MAXIMUM_LEVEL_INFO", True)
 
 
+def _hosted_mempool() -> None:
+    """esp-hosted's SDIO packet pool (D-064): with it, every frame the P4 sends or reads comes
+    from 31 blocks of 1536 bytes (about 47 KiB of DMA-capable internal RAM) reserved once when
+    the link starts (the RX queue's 20 plus 11; esp-hosted 3.1.0, eh_host_bus_sdio.c), instead of
+    a fresh heap_caps_malloc(1536, MALLOC_CAP_DMA) per frame that fails once internal RAM is
+    short. A full pool drops a frame until one is freed; it never asks the heap. Set as a
+    default, so a user's own sdkconfig_options value wins."""
+    from esphome.components.esp32 import set_idf_sdkconfig_default
+
+    set_idf_sdkconfig_default("CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL", True)
+
+
 @coroutine_with_priority(CoroPriority.FINAL)
 async def _psram_malloc() -> None:
     """Let plain malloc/new use PSRAM for large blocks. The psram component sets
     CONFIG_SPIRAM_USE_CAPS_ALLOC (PSRAM only through heap_caps_malloc), but ui_lvgl's
-    HeatRasterizer keeps a per-pixel room index in a std::vector (about 620 KiB for the example),
-    more than the P4's internal RAM can spare. With CONFIG_SPIRAM_USE_MALLOC, blocks above
+    core keeps its heat field and room mask in std::vectors (over 100 KiB on the panel), more than
+    the P4's internal RAM can spare. With CONFIG_SPIRAM_USE_MALLOC, blocks above
     CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (16 KiB by default) go to PSRAM and small ones stay
-    internal. Run at FINAL priority so it lands after the psram component's own setting."""
+    internal, which is why ui_lvgl's bulk storage does not rely on it: many small buffers would
+    all land in internal RAM (D-064); they go through the memory port instead. Run at FINAL
+    priority so it lands after the psram component's own setting."""
     from esphome.components.esp32 import add_idf_sdkconfig_option
 
     add_idf_sdkconfig_option("CONFIG_SPIRAM_USE_CAPS_ALLOC", False)
@@ -246,6 +282,7 @@ async def to_code(config: dict) -> None:
     if wdt is not None:
         cg.add(var.set_watchdog_ms(int(wdt.total_milliseconds)))
     cg.add(var.set_pulse_mode(config[CONF_PULSE_SPRITES]))
+    cg.add(var.set_internal_ram_floor(config[CONF_INTERNAL_RAM_FLOOR]))
     if config[CONF_DIAGNOSTICS]:
         cg.add_define("HEARTHMAP_DIAGNOSTICS")
         if CORE.using_toolchain_esp_idf:
@@ -260,6 +297,8 @@ async def to_code(config: dict) -> None:
     _write_build_tree(config)
     if CORE.is_esp32 and "psram" in CORE.config:
         CORE.add_job(_psram_malloc)
+    if CORE.using_toolchain_esp_idf and gen.hosted_sdio(CORE.config):
+        _hosted_mempool()
 
     if CORE.using_toolchain_esp_idf:
         from esphome.components.esp32 import add_src_cmake
