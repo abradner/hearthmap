@@ -427,6 +427,12 @@ the psram component's `CONFIG_SPIRAM_USE_CAPS_ALLOC`), so allocations above
 more than the ESP32-P4's internal RAM can spare, and with exceptions off a failed allocation aborts.
 The heat image itself is allocated explicitly in PSRAM. **Would change if:** ui_lvgl takes an
 allocator for its working set, after which this global setting can go.
+**Amended (D-064):** ui_lvgl now allocates its whole working set through the memory port (PSRAM
+on the panel), so the rasterizer no longer depends on this setting. It stays for core's own
+vectors (the heat field and room mask, over 100 KiB on the panel-sized house) and other
+components' large blocks. The same setting is what sent the sprite code's many 4-12 KiB buffers
+to internal RAM (D-064): it moves only blocks over 16 KiB, so it is no substitute for the port.
+Would change now if core's working set also took an allocator.
 
 ### D-038 Nothing on the device blocks: scanline room maps and sliced boot and frame work (provisional)
 
@@ -1048,6 +1054,12 @@ a co-processor image over the same SDIO link when installed. Risk: an interrupte
 can leave the C6 unbootable, with Wi-Fi gone until it is flashed over its own serial pins.
 **Would change if:** the stall monitor shows the resets are not Wi-Fi calls, or esp-hosted
 documents a worst case for its calls.
+**Correction (2026-11-21, D-064):** this rule removed the resets; it did not mend the link, and
+the text above should not be read as saying it did. The resets were the visible end of a link
+that was already dead: the pulse sprites had exhausted internal RAM, so the hosted driver could
+not allocate its DMA frames (measured with the D-063 diagnostics). With the reset gone the panel
+ran on, quietly, with a dead link. No reset is not a live link. The fix is D-064 and D-065; this
+rule stays, because a co-processor call can still time out for other reasons.
 
 ### D-062 A stall monitor names the main loop's wait (provisional)
 
@@ -1064,6 +1076,10 @@ is stuck; the WARN lines also go through ESPHome's logger for API subscribers on
 The judging is pure and host-tested (`StallJudge`). **Why:** the next hang names its wait, whether
 it is a Wi-Fi call (D-061), ESPHome's flush (docs/upstream/mipi-dsi-unbounded-wait.md) or a PPA
 call. **Would change if:** ESPHome prints other tasks' logs directly, or gains such a monitor.
+**Correction (2026-11-21, D-064):** the hang this was built for was not a blocked call at all.
+After D-061 the main loop never stopped turning, so this monitor stayed silent while the Wi-Fi
+link was dead from internal-RAM exhaustion (D-063, D-064). It names a wait when there is one;
+silence from it says the loop turns, not that the network works.
 
 ### D-063 The hosted Wi-Fi link gets a diagnostic build and bisecting switches (provisional)
 
@@ -1100,3 +1116,116 @@ The candidates are esp-hosted's preallocated packet pool (`CONFIG_ESP_HOSTED_HOS
 about 47 KiB taken once at boot), keeping sprite vectors out of internal RAM, and a link watchdog
 that reinitialises the transport; each waits on what the report shows. **Would change if:** the
 report points elsewhere, or a co-processor firmware update changes the transport's behaviour.
+**Found (2026-11-21, `diagnostics: true` on the panel):** heap exhaustion. Internal free fell
+from 236 KiB at 44 s to 186 KiB at 54 s, 3 KiB at 64 s and 1 KiB from then on, with the largest
+DMA-capable block at 0, just as the sprite build began (374 KiB of sprites in the perf line);
+PSRAM had 14 MB free throughout. Failed allocations rose from 72 at 64 s to 2457 at 144 s,
+nearly all 1536 B with caps 0x8 (`MALLOC_CAP_DMA`); esp-hosted logged `mempool OOM start (RX)`;
+SDIO `rx in` kept counting while `rx out` froze; gateway pings were lost; a Wi-Fi call returned
+`ESP_FAIL`. The fix chosen: D-064 (the UI's bulk storage leaves internal RAM, and a guard) and
+D-065 (esp-hosted's packet pool). The switches here stay as supported options.
+
+### D-064 The UI's bulk storage goes through one memory port, PSRAM on the panel; a guard keeps internal RAM above a floor (provisional)
+
+**Question:** the pulse sprites exhausted the panel's internal RAM and killed the hosted Wi-Fi
+link (D-063, found). How should the UI hold memory so that cannot recur, on this target or the
+next? **Mechanism:** with `CONFIG_SPIRAM_USE_MALLOC` (D-037) every `malloc` and `new` of 16 KiB
+or less is tried in internal RAM first. The sprite code made its captures, coverage, keyline and
+distance tables and frame sets as `std::vector`s, most of them 4-12 KiB for the 64 px outline
+cells, and many of them, re-made whenever a heat image changed; they filled internal RAM, and the
+P4's PSRAM heap is registered without `MALLOC_CAP_DMA` (ESP-IDF 5.5.6, D-063), so the driver's
+1536 B frames had nowhere else to come from. **Measured on the host** (`host/tests/memory_budget_test.cpp`, the
+panel-shaped house through every tab, pulses starting and stopping, heat images rebuilt and the
+overlay opened, after a warm-up): before this change the default heap rose 8.4 MB above its
+baseline, blocks of 16 KiB or less (internal RAM on the panel) rose 1.59 MB, and 4,548
+allocations over 1 KiB were made (105.7 MB in all), nearly all from `PulseLayer::capture`,
+`add_segment_coverage`, `distance_table` and the frame sets; after it, +2.6 KiB peak, +128 B at
+the end, nothing over 224 B. **Default:** (1) `ui_lvgl/include/hearthmap/ui/memory.h`: a
+`BulkMemory` port the embedder installs once (`set_bulk_memory()`, refused while memory is
+held), process-wide like LVGL, counted (`bulk_stats()`); `BulkBuffer<T>` for pixel-sized plain
+data, whose `resize()`/`assign()` return false when refused so the caller degrades;
+`BulkVector<T>` (std::vector over a stateless `BulkAllocator`) and `make_bulk<T>()` for the
+structures holding them, which report through a failure handler and abort, as `new` does with
+exceptions off (D-002). Everything ui_lvgl sizes by pixels, cells or pulses uses them: the pulse
+layer itself (its 64 KiB of opacity tables included) and every frame set, capture, table and
+container in it; the map bake; the rasterizer's per-pixel room index and bilinear tables; the
+leaf images and the overlay's round photo cuts; cell colours (the rasterizer takes a
+`CellColours` view, so a std::vector or BulkVector both work). The component installs
+`PsramMemory` (`heap_caps_aligned_alloc(..., MALLOC_CAP_SPIRAM)`, never internal) first thing in
+`setup()`, and takes its heat images from it too (ESPHome's `RAMAllocator` falls back to internal
+RAM; the port never does). The host's port is malloc, and the host App allocates through it as
+the panel does. A sprite buffer the port refuses releases that tile (it stops showing rather than
+show frames older than its captures) and the tile waits for the next change under it
+(`PulseCounters::alloc_failures`). (2) A guard (`internal_ram_guard.h`, pure, host-tested):
+once a second the component samples internal free; below `internal_ram_floor` (YAML, default
+64 kB, 0 off) it logs a warning at once and then at most once a minute, with internal free, what
+it fell from, the lowest ever, the largest DMA-capable block, the failed-allocation tally and
+last size and caps, what hearthmap holds in PSRAM and how many sprites it captured meanwhile,
+and pauses sprite builds (`Screen::set_sprite_builds_paused()`: sets already built keep playing,
+a half-built set is dropped); it resumes above the floor plus a margin (a quarter of the floor,
+at least 8 KiB). ESP-IDF has no per-owner account of internal RAM without heap tracing, so the
+warning names the victim (the failed request) and hearthmap's own activity, not a culprit. The
+boot line and a second line per perf window (`perf mem:`) carry internal free, lowest, largest
+DMA block, the port's bytes and refusals and whether builds are paused. (3) The presenter's 32 KiB rotation buffer (D-058,
+only with `present: true`) stays internal and DMA-capable on purpose (the panel copy is fastest
+from there); it is taken once in `setup()` and never freed or resized, and is the only bulk
+block hearthmap keeps in internal RAM. **Left on the default heap,
+deliberately:** core's containers (core depends on nothing, AGENTS.md section 4): the config,
+readings, view model, heat field and room mask, sized at boot and reused (on the host 71.5 KiB
+in blocks of 16 KiB or less at the baseline, most of it config and view-model strings; the heat
+field, 110 KiB, and mask, 27.5 KiB, go to PSRAM under D-037's threshold); per-object pointer
+lists (a pointer per pin, room or wall) that `ScreenWidgets` hands out as `std::vector`; the
+Screen's own `Impl`, maps of photo descriptors and the looks' strings. LVGL's own allocations
+on the panel are ESPHome's: `lv_malloc` and draw buffers go to PSRAM first
+(`lvgl_esphome.cpp`, `cap_bits`), but after one failed PSRAM allocation ESPHome switches to
+internal RAM for good, a trap the floor's warning would show. **Guards:**
+`host/tests/memory_budget_test.cpp` (its own executable: it replaces global `operator new`/
+`delete` with counting ones; budgets: +16 KiB in use, +16 KiB in blocks of 16 KiB or less, no
+allocation over 1 KiB; the port must carry over 1 MiB more than at the baseline; a 64 KiB probe
+allocation must be seen). It failed on the code before this change with the figures above.
+`ui_lvgl/tests/memory_test.cpp` (the port's contract), screen tests for refusals (every tile
+steps aside, no broken frame, back on the next change; removing the release fails it) and for
+the pause (removing it fails it), and `test_cpp.py::test_internal_ram_guard` (removing the
+margin fails it). **Portability:** nothing in ui_lvgl names a heap; an ESP32-S3 port installs
+its own `BulkMemory` (PSRAM if it has some, a bounded pool if not). **Not verified on the
+panel:** everything here; the device soak is next. **Would change if:** core's working set takes
+an allocator (D-037 could then go), or ESP-IDF registers the P4's PSRAM as DMA-capable.
+
+### D-065 The component turns on esp-hosted's SDIO packet pool (provisional)
+
+**Question:** should the hosted link take its frames from a pool reserved at start-up rather
+than from the DMA heap per frame, and who sets it? **Found** (esp-hosted 3.1.0 host source,
+`eh_host_bus_sdio.c`, `Kconfig.host.sdio`, `eh_mempool.c`): `CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL`
+reserves, when the transport starts, the RX queue size (20) plus 11 blocks (3 Bluetooth, 3
+serial, 5 network) of 1536 B: 47,616 B of DMA-capable (on the P4, internal) RAM, from one
+contiguous allocation that asserts if it fails. TX frames and each de-aggregated RX frame then
+come from it; when it is empty a frame is dropped until one is freed (it never falls back to the
+heap). It is off by default; ESPHome 2026.11.0's `esp32_hosted` does not set it. **Default:** when
+`esp32_hosted` uses SDIO (its default transport), the hearthmap component sets it with
+`set_idf_sdkconfig_default()`, so a user's own `sdkconfig_options` value still wins;
+`dump_config` says whether the build has it. **Why:** it makes the link independent of what
+everything else does to internal RAM, which D-064 alone cannot promise (other components, a
+future regression), at a fixed and visible cost taken at boot when RAM is plentiful. The
+component setting it, rather than asking each owner to, keeps the protection on by default for
+anyone using hearthmap with a hosted link; it is still a setting of another component's
+library, so it is a default, not a forced value. **Rejected:** `use_psram: true` (moves only
+staging and aggregate buffers, and the P4's PSRAM heap has no `MALLOC_CAP_DMA`); raising
+`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` (a reserve shared by every DMA user, not the link's
+own). **Risks:** a boot where 47 KiB of contiguous DMA-capable RAM is not free when the link
+starts aborts at start-up (untested on the panel); a burst
+larger than the pool drops frames that the heap might have served. **Would change if:** the soak
+shows pool drops, or esp-hosted sizes or defaults the pool differently.
+
+### D-066 The example compiles ESP-IDF's warnings in (provisional)
+
+**Question:** ESPHome compiles ESP-IDF's log at ERROR, which removes esp-hosted's out-of-memory
+warnings, so a link dying for want of DMA memory logs nothing (D-063). Should the component force
+a level, or recommend one? **Default:** the example's board file sets `esp32: framework:
+log_level: WARN`, with the reason beside it, and the component logs a config-time warning when a
+device with `esp32_hosted` compiles ESP-IDF's log below WARN (not with `diagnostics: true`,
+which opens them itself). It does not set the level: that is the esp32 component's option and
+affects every library's output and the firmware's size, so, as with the watchdog (D-061), the
+setting stays where the owner sees it. **Trades:** a larger firmware (WARN strings for every
+ESP-IDF component) and ESP-IDF warnings in the runtime log that were hidden before. **Would
+change if:** ESPHome raises its default, or the warnings prove too noisy to read.
+

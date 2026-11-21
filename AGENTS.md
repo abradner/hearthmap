@@ -257,10 +257,25 @@ add rather than rewrite.
   3.1.0 reports a P4 out of DMA-capable RAM only at WARN or DEBUG (`mempool OOM start (TX)`,
   `dma_alloc(...) failed`, `rx_get_buffer(...) failed`) while it drops the packet. A link that
   dies that way logs nothing at all. `hearthmap: diagnostics: true` opens them (D-063); otherwise
-  set `log_level: WARN` before reading a quiet log as "no Wi-Fi error".
+  set `log_level: WARN` before reading a quiet log as "no Wi-Fi error" (the example does, D-066).
+- **ESPHome's LVGL allocator moves to internal RAM for good after one PSRAM failure.**
+  `lv_malloc_core()` in ESPHome 2026.11.0's `lvgl_esphome.cpp` asks for PSRAM first, but on one
+  failure it changes its static `cap_bits` to plain 8-bit memory and never goes back, so every
+  later LVGL object and draw buffer competes for internal RAM. A boot that once ran PSRAM dry
+  starves the Wi-Fi link afterwards; the internal-RAM floor's warning (D-064) is where it shows.
 - **`operator new` aborts on this target.** Exceptions are off, so a `std::vector` that cannot
   allocate calls `abort()` on every boot that reaches it; the present self-check did this with
   internal RAM full. Large pixel buffers go in PSRAM through `heap_caps_malloc`, checked.
+  (Since D-064, the UI's go through the memory port, `hearthmap/ui/memory.h`, instead.)
+- **Small allocations go to internal RAM under `CONFIG_SPIRAM_USE_MALLOC`.** Only blocks over
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (16 KiB) go to PSRAM; everything smaller is tried in
+  internal RAM first. A UI that makes many 4-12 KiB buffers (sprite captures, coverage tables,
+  frames) fills internal RAM, and on the ESP32-P4 that starves DMA users such as the hosted
+  Wi-Fi driver, whose frames cannot come from PSRAM (ESP-IDF 5.5.6 registers the P4's PSRAM
+  heap without `MALLOC_CAP_DMA`, D-063). The link then dies silently while the panel runs on. Anything ui_lvgl sizes by pixels,
+  cells or pulses goes through the memory port (D-064); `host/tests/memory_budget_test.cpp`
+  fails if it does not. And no reset is not a live link: a quiet panel with no watchdog resets
+  can still have lost its network (D-061's correction).
 
 ## 7. CI & Deployment
 
@@ -598,6 +613,21 @@ test lives** (if one exists).
    yourself; never rely on a driver's cache handling for bytes outside the block it was given.
    Regression check: `tools/bench` (`bench cache_trap`, raw and through `PpaBlitter`, which
    writes the rows back first); there is no host test because the host has no such cache (D-057).
+5. **Animated pulses killed the Wi-Fi link, and fixing the resets hid it.** Once the pulse sprites
+   were built, the panel's hosted Wi-Fi link died a few minutes after boot. First it showed as
+   task-watchdog resets; D-061 lengthened the watchdog, the resets stopped, and the panel then ran
+   on for hours with no network and nothing in the log. The diagnostic build (D-063) showed
+   internal RAM falling from 236 KiB to 1 KiB within 20 s of the sprite build starting, then
+   thousands of failed 1536 B DMA allocations: the sprite code's many 4-12 KiB `std::vector`s
+   had gone to internal RAM under `CONFIG_SPIRAM_USE_MALLOC` (16 KiB threshold), and the hosted
+   driver's frames can only come from there. On the host nothing showed: memory is plentiful and
+   undivided. Root causes: allocation placement left to a global threshold, and a symptom (the
+   reset) treated as the fault. General rules: on a target with a split heap, decide where every
+   bulk buffer lives, through one port the embedder owns, and test the default heap's budget on
+   the host, where the failure cannot happen by itself; and when a fix removes a symptom, check
+   the function it was a symptom of (the link), not just the symptom's absence. Regression tests:
+   `host/tests/memory_budget_test.cpp` (failed before the port: +1.59 MB in small blocks over the
+   walk) and `components/hearthmap/tests/test_cpp.py::test_internal_ram_guard` (D-064).
 
 ## 10. Maintaining This Document
 
