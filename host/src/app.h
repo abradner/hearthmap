@@ -65,6 +65,7 @@ class App final : public ui::EventSink {
   lv_image_dsc_t heat_dsc_{};
   ViewModel vm_;
   std::optional<Layer> heat_layer_;
+  bool heat_baked_ = false;
   std::vector<UiEvent> pending_;
   std::unique_ptr<ui::Screen> screen_;
 };

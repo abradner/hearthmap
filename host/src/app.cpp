@@ -48,6 +48,9 @@ App::App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int 
   deps.sink = this;
   deps.photos = photos;
   screen_ = std::make_unique<ui::Screen>(parent, config_, &heat_dsc_, deps);
+  // The map bake (walls and labels) before the first image, so that image carries it.
+  while (screen_->prepare_step()) {
+  }
   refresh();
 }
 
@@ -56,6 +59,7 @@ void App::render_heat(Layer layer) {
   compute_heat_field(config_, mask_, samples_, field_);
   ui::colour_cells(field_, luts_[index_of(layer)], cell_colours_);
   raster_.render(field_, cell_colours_, heat_pixels_.data());
+  heat_baked_ = screen_->bake_rows(heat_pixels_.data(), raster_.width(), 0, raster_.height());
   screen_->invalidate_heat();
   heat_layer_ = layer;
 }
@@ -64,7 +68,9 @@ void App::refresh() {
   build_view_model(config_, readings_, now_, state_, vm_);
   if (heat_layer_ != vm_.active_layer) render_heat(vm_.active_layer);
   ui::HeaderText header{clock_text(now_, utc_offset_minutes_), ui::summary_text(vm_.summary)};
-  screen_->update(vm_, header, now_);
+  ui::SourceStatus status;
+  status.heat_baked = heat_baked_;
+  screen_->update(vm_, header, now_, status);
   // The host has no frame budget: prepare every pulse sprite now (the device slices this).
   while (screen_->prepare_step()) {
   }

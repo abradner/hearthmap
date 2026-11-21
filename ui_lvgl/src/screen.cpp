@@ -17,6 +17,7 @@
 #include "hearthmap/ui/format.h"
 #include "hearthmap/ui/theme.h"
 #include "image_util.h"
+#include "map_bake.h"
 #include "pulse_layer.h"
 // The cover-check result is only writable through LVGL's private struct
 // (detail::opaque_image_cover_cb). The root of the LVGL tree is on the include path in both builds
@@ -37,6 +38,7 @@ constexpr int kPlantRadius = 22;
 constexpr int kPinRingWidth = 6;
 // Pulses are pre-rendered sprites (D-053, pulse_layer.h).
 constexpr std::size_t kMaxAnimatedRooms = 4;
+constexpr std::size_t kDefaultBakeMemory = 4U * 1024U * 1024U;
 constexpr std::int32_t kPinOverflow = 140;  // how far a pin's value pill and badge may reach
 // The heat image's strips (D-052), and how fast they come back after it caught up.
 constexpr std::int32_t kHeatStrips = 16;
@@ -283,6 +285,9 @@ struct Screen::Impl {
 
   std::vector<std::vector<lv_point_precise_t>> room_points;
   std::unique_ptr<detail::PulseLayer> pulses;
+  std::unique_ptr<detail::MapBake> bake;
+  std::vector<lv_obj_t*> walls;
+  std::optional<bool> objects_baked;
 
   std::vector<Disc> pin_disc;  // per pin; holder == nullptr for plain pins
   std::vector<lv_obj_t*> pin_dot;
@@ -381,6 +386,7 @@ struct Screen::Impl {
     Impl* s = self(e);
     s->w = ScreenWidgets{};
     if (s->pulses) s->pulses->forget_objects();
+    if (s->bake) s->bake->forget_objects();
     s->heat_strips.clear();
     s->stop_reveal_timer();
   }
@@ -545,6 +551,7 @@ struct Screen::Impl {
       lv_obj_set_style_line_width(wall, 2, 0);
       lv_obj_set_style_line_color(wall, hex(theme::kWall), 0);
       lv_obj_set_style_line_opa(wall, LV_OPA_COVER, 0);
+      walls.push_back(wall);
     }
     for (std::size_t r = 0; r < config.rooms.size(); ++r) {
       lv_obj_t* label = make_label(w.map, deps.fonts.px20, theme::kTextSecondary);
@@ -582,6 +589,31 @@ struct Screen::Impl {
         deps.sprite_composer != nullptr ? *deps.sprite_composer : detail::cpu_sprite_composer());
     w.room_pulse = pulses->room_objects();
     w.pin_pulse = pulses->ring_objects();
+
+    // The walls and room labels, baked into the heat image when memory allows (D-055).
+    std::vector<lv_obj_t*> draw = walls;
+    // Labels too narrow for their room were hidden by place_room_label(): not drawn, not baked.
+    for (lv_obj_t* l : w.room_label) {
+      if (!lv_obj_is_hidden(l)) draw.push_back(l);
+    }
+    std::vector<lv_obj_t*> hide{w.heat_image};
+    for (lv_obj_t* p : w.pin) hide.push_back(p);
+    for (lv_obj_t* o : w.room_pulse) hide.push_back(o);
+    for (lv_obj_t* o : w.pin_pulse) hide.push_back(o);
+    const lv_area_t area{a.x, a.y, a.x + a.width - 1, a.y + a.height - 1};
+    bake = std::make_unique<detail::MapBake>(w.map, area, std::move(draw), std::move(hide));
+    const std::size_t bake_budget =
+        deps.bake_memory_bytes != 0 ? deps.bake_memory_bytes : kDefaultBakeMemory;
+    if (bake->bytes_needed() <= bake_budget) bake->start();
+  }
+
+  void update_baked(bool baked) {
+    if (!bake || objects_baked == baked) return;
+    // Only an image that carries the bake may stand in for the wall and label objects.
+    const bool hide = baked && bake->ready();
+    bake->set_objects_hidden(hide);
+    objects_baked = baked;
+    count();
   }
 
   void build_heat_strips(const lv_image_dsc_t* heat) {
@@ -635,7 +667,9 @@ struct Screen::Impl {
       offset += d.data_size;
     }
     heat_data = heat_src->data;
-    if (pulses) pulses->mark_all_dirty();  // the map under every sprite changed
+    // The map under every sprite changed: a new image of the same layer (the embedder's buffer
+    // swap), close to the old one, so sprites keep their old background until recaptured.
+    if (pulses) pulses->mark_all_dirty(false);
   }
 
   lv_obj_t* make_badge(lv_obj_t* parent) {
@@ -1285,7 +1319,7 @@ struct Screen::Impl {
       for (lv_obj_t* strip : heat_strips) lv_obj_set_hidden(strip, true);
       if (pulses) {
         pulses->set_veiled(true);
-        pulses->mark_all_dirty();
+        pulses->mark_all_dirty(true);
       }
     } else if (heat_dimmed.has_value()) {
       // Reveal the new image a strip at a time, from the top.
@@ -1309,7 +1343,7 @@ struct Screen::Impl {
     }
     stop_reveal_timer();
     if (pulses) {
-      pulses->mark_all_dirty();
+      pulses->mark_all_dirty(true);
       pulses->set_veiled(false);
     }
   }
@@ -1414,6 +1448,7 @@ void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now
   impl_->sync_heat_source();
   impl_->update_header(header, status.offline);
   impl_->update_heat_dim(status.heat_behind);
+  impl_->update_baked(status.heat_baked);
   impl_->update_tabs(vm);
   impl_->update_rooms(vm);
   impl_->update_pins(vm);
@@ -1424,13 +1459,26 @@ void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now
 void Screen::invalidate_heat() {
   if (impl_->w.heat_image == nullptr) return;
   impl_->sync_heat_source();
-  if (impl_->pulses) impl_->pulses->mark_all_dirty();  // rewritten in place on the host
+  // A repaint the embedder asks for (a layer change, or the host rewriting in place): another
+  // layer's colours may be under every sprite, so they step aside until recaptured.
+  if (impl_->pulses) impl_->pulses->mark_all_dirty(true);
   lv_obj_invalidate(impl_->w.heat_image);
 }
 
 bool Screen::prepare_step() {
-  if (impl_->w.root == nullptr || !impl_->pulses) return false;
-  return impl_->pulses->prepare_step();
+  if (impl_->w.root == nullptr) return false;
+  // The bake first: sprites captured afterwards see the final map.
+  if (impl_->bake && impl_->bake->prepare_step()) return true;
+  return impl_->pulses && impl_->pulses->prepare_step();
+}
+
+bool Screen::bake_ready() const {
+  return impl_->bake && impl_->bake->ready();
+}
+
+bool Screen::bake_rows(std::uint16_t* image, std::int32_t stride, std::int32_t row_begin,
+                       std::int32_t row_end) const {
+  return impl_->bake && impl_->bake->apply(image, stride, row_begin, row_end);
 }
 
 PulseCounters Screen::pulse_counters() const {

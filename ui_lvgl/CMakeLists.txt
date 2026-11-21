@@ -12,6 +12,7 @@ set(HEARTHMAP_UI_SOURCES
   src/format.cpp
   src/heat_image.cpp
   src/image_util.cpp
+  src/map_bake.cpp
   src/pulse_layer.cpp
   src/screen.cpp
   src/sprites.cpp

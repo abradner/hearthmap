@@ -308,11 +308,18 @@ void PulseLayer::mark_dirty(const lv_area_t& area) {
   }
 }
 
-void PulseLayer::mark_all_dirty() {
-  for (Ring& r : rings_) r.t.dirty = true;
-  for (Room& room : rooms_) {
-    for (Edge& e : room.edges) e.t.dirty = true;
+void PulseLayer::mark_all_dirty(bool hide) {
+  for (Ring& r : rings_) {
+    r.t.dirty = true;
+    r.t.has_base = r.t.has_base && !hide;
   }
+  for (Room& room : rooms_) {
+    for (Edge& e : room.edges) {
+      e.t.dirty = true;
+      e.t.has_base = e.t.has_base && !hide;
+    }
+  }
+  update_visibility();
 }
 
 void PulseLayer::set_veiled(bool veiled) {

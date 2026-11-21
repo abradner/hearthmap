@@ -1248,3 +1248,41 @@ TEST_CASE("a ring sprite shows exactly what lies under it, plus the ring, and fo
   d = diff_without_tile(rig, w.pin_pulse[0], cx, cy, 22.0f, 57.0f);
   CHECK(d.differ == 0);
 }
+
+TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
+  Rig rig;
+  for (auto& p : rig.heat) p = 0x3186;  // a dark grey-blue, like neutral heat
+  const ViewModel vm = test::temperature_vm(rig.config);
+  rig.show(vm);
+  REQUIRE(rig.screen->bake_ready());  // Rig::show() prepares everything
+  rig.display.render();
+  const std::vector<std::uint16_t> drawn = rig.display.framebuffer();
+
+  // The embedder lays the bake over its image and says so: the objects step aside.
+  CHECK(rig.screen->bake_rows(rig.heat.data(), rig.raster.width(), 0, rig.raster.height()));
+  SourceStatus baked;
+  baked.heat_baked = true;
+  rig.screen->update(vm, rig.header, 1000, baked);
+  rig.screen->invalidate_heat();
+  CHECK(hidden(rig.w().room_label[0]));
+  rig.display.render();
+  const std::vector<std::uint16_t>& now = rig.display.framebuffer();
+  // Inside the map (864 x 720 at 40, 76) every pixel within a channel step or two of LVGL's.
+  std::size_t off = 0, compared = 0;
+  for (std::int32_t y = 76; y < 76 + 720; ++y) {
+    for (std::int32_t x = 40; x < 40 + 864; ++x) {
+      const std::size_t i = static_cast<std::size_t>(y) * 1280U + static_cast<std::size_t>(x);
+      const int dr = std::abs(((drawn[i] >> 11) & 31) - ((now[i] >> 11) & 31));
+      const int dg = std::abs(((drawn[i] >> 5) & 63) - ((now[i] >> 5) & 63));
+      const int db = std::abs((drawn[i] & 31) - (now[i] & 31));
+      ++compared;
+      if (dr > 1 || dg > 2 || db > 1) ++off;
+    }
+  }
+  CHECK(compared > 600000);
+  CHECK(off == 0);
+
+  // Told the image is not baked again (a fresh image without walls): the objects come back.
+  rig.screen->update(vm, rig.header, 1000, SourceStatus{});
+  CHECK_FALSE(hidden(rig.w().room_label[0]));
+}

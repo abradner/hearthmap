@@ -79,7 +79,10 @@ class PulseLayer {
   void set_room(std::size_t room, bool on, std::uint32_t colour);
   /// Something under `area` (screen px) changed: recapture the tiles it touches.
   void mark_dirty(const lv_area_t& area);
-  void mark_all_dirty();
+  /// The whole map changed: every tile is recaptured. With `hide` (another layer's colours) the
+  /// tiles step aside until then; without (a refresh of the same layer's image, close to the old
+  /// one) they keep their old background for the few slices it takes.
+  void mark_all_dirty(bool hide);
   /// While veiled every tile is hidden (the map under them is not the one they captured).
   void set_veiled(bool veiled);
 

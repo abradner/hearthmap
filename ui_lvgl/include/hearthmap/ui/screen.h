@@ -53,6 +53,9 @@ struct SourceStatus {
   /// bands over about half a second, so a layer's colours are never shown under another
   /// layer's tab (D-052).
   bool heat_behind = false;
+  /// The heat image shown carries the walls and room labels (Screen::bake_rows() ran over all
+  /// of it). The wall and label objects are then hidden, so LVGL no longer draws them (D-055).
+  bool heat_baked = false;
 };
 
 struct ScreenDeps {
@@ -65,6 +68,9 @@ struct ScreenDeps {
   /// Memory the pulse sprites may hold, bytes (D-053, D-054). 0: 2 MiB. Pulsing pins and rooms
   /// past it show their badge or a steady state instead of an animation.
   std::size_t pulse_memory_bytes = 0;
+  /// Memory the map bake may hold, bytes (D-055; 3 per map pixel). 0: 4 MiB. Without enough,
+  /// walls and labels stay LVGL objects.
+  std::size_t bake_memory_bytes = 0;
 };
 
 /// The pulse sprites' counters (D-053), for an embedder's performance log.
@@ -141,6 +147,14 @@ class Screen {
   /// background until prepared again. Never called from inside an LVGL event.
   bool prepare_step();
   PulseCounters pulse_counters() const;
+
+  /// The walls and labels have been rendered for baking (by prepare_step()).
+  bool bake_ready() const;
+  /// Lay the walls and labels over rows [row_begin, row_end) of a freshly rasterised heat image
+  /// (the size of the map area, `stride` pixels per row). Returns false, writing nothing, until
+  /// bake_ready(). Pure pixel work: safe from the embedder's sliced heat steps.
+  bool bake_rows(std::uint16_t* image, std::int32_t stride, std::int32_t row_begin,
+                 std::int32_t row_end) const;
 
   /// Counts LVGL property writes made by update(), for tests of the diffing (and a cheap
   /// "did anything change" signal for embedders).

@@ -65,6 +65,10 @@ and passes a `SourceStatus` (D-046, D-047).
   `Screen::prepare_step()`, which the embedder calls from its sliced work (the host until done);
   a change under a sprite (a pin's look, a new heat image) marks it for recapture. Memory is
   bounded by `ScreenDeps::pulse_memory_bytes`; at most 4 outlines animate, others hold steady.
+- **Walls and room labels are baked** into the heat image when memory allows (D-055):
+  `prepare_step()` renders them through LVGL into memory (over black and white), and
+  `Screen::bake_rows()` lays them over rows of each new heat image; with
+  `SourceStatus::heat_baked` the objects are hidden and LVGL no longer draws them.
 - **Large pixel moves go through `Blitter`** (`include/hearthmap/ui/blitter.h`: copy, fill,
   constant-alpha blend, 2x scale; `SoftwareBlitter` by default) and sprite frames through
   `SpriteComposer` (`sprite_composer.h`, per-pixel blends from tables); both replaceable through
