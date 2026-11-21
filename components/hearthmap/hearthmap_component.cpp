@@ -1,19 +1,26 @@
 #include "hearthmap_component.h"
 
+#include "stall_monitor.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <string>
 
+#include "esp_heap_caps.h"
 #include "esphome/components/api/api_server.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
+#include "heap_watch.h"
 #include "hearthmap/ui/fonts.h"
 #include "hearthmap/ui/format.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/theme.h"
 #include "hearthmap_gen/photos.h"
+#include "psram_memory.h"
 #include "readings_ingest.h"
+#include "sdkconfig.h"
 
 namespace esphome::hearthmap_panel {
 
@@ -26,12 +33,22 @@ namespace {
 // the rasterizer's build, heat-field rows), small enough that a slice overruns the budget by at
 // most one step even at the schema's maximums (components/hearthmap/README.md, "Cost").
 constexpr uint32_t kSliceBudgetMs = 20;
+// Heat work once the screen is running: shorter, so a pulse frame (one every 80 ms per ring,
+// rings offset in phase, so one due every few milliseconds) waits at most this long behind it
+// (D-056). A rebuild takes longer in wall time; nothing waits on it.
+constexpr uint32_t kHeatSliceBudgetMs = 8;
 // After a new heat image is swapped in, the map is invalidated in bands of this many rows, one
 // band per loop() call at most every kBandIntervalMs, so LVGL repaints it over several refreshes
 // instead of in one long one (a full 920 x 736 repaint took 645 ms on the panel).
 constexpr int32_t kHeatBandRows = 48;
 constexpr uint32_t kBandIntervalMs = 25;
+// After a press, heat work waits this long, so the slices of a rebuild never sit between a
+// touch and the refresh that answers it (the tap, its click and the screen update all happen
+// within a few loop passes).
+constexpr uint32_t kHeatHoldAfterPressMs = 300;
 constexpr std::int32_t kBootRowsPerStep = 4;
+// PSRAM left free when allocating extra heat-image buffers (for LVGL, sprites, the bake, Wi-Fi).
+constexpr std::size_t kPsramReserve = 6U * 1024U * 1024U;
 constexpr std::int32_t kFieldRowsPerStep = 1;
 
 // Issues shown on screen when the config is refused; the rest go to the log only.
@@ -57,6 +74,25 @@ uint32_t g_lvgl_warnings = 0;
 uint32_t g_lvgl_errors = 0;
 
 }  // namespace
+
+static const char* present_block_name(hm::ui::PresentBlock b) {
+  using B = hm::ui::PresentBlock;
+  switch (b) {
+    case B::Ok: return "ok (presenter refused)";
+    case B::NotImage: return "not-image";
+    case B::NotRgb565: return "not-rgb565";
+    case B::Refreshing: return "refreshing";
+    case B::NotOnActiveScreen: return "not-active-screen";
+    case B::Hidden: return "hidden";
+    case B::NotOpaque: return "not-opaque";
+    case B::Transformed: return "transformed";
+    case B::SizeMismatch: return "size";
+    case B::Clipped: return "clipped";
+    case B::HasChildren: return "children";
+    case B::Covered: return "covered";
+  }
+  return "?";
+}
 
 uint32_t lvgl_warnings() {
   return g_lvgl_warnings;
@@ -92,8 +128,43 @@ void HearthmapComponent::setup() {
   // Nothing heavy here: boot work runs in slices from loop(). Subscriptions must exist before
   // Home Assistant connects (it asks for the list once per connection), so they are made now;
   // states that arrive early simply wait in readings_.
+  // First, before anything of the UI's is allocated: its bulk storage comes from PSRAM through
+  // the memory port, never from internal RAM (D-064).
+  start_heap_watch();
+  if (!hm::ui::set_bulk_memory(&psram_memory())) {
+    ESP_LOGE(TAG, "memory port: UI storage was allocated before setup; it stays where it is");
+  }
+  hm::ui::set_bulk_failure_handler(report_bulk_exhausted);
+  {
+    const MemorySample m = sample_memory();
+    ESP_LOGI(TAG,
+             "memory at boot: internal free %u KiB (lowest %u KiB), largest DMA-capable block %u "
+             "KiB, PSRAM free %u KiB; internal RAM floor %u KiB",
+             static_cast<unsigned>(m.internal_free / 1024U),
+             static_cast<unsigned>(m.internal_min / 1024U),
+             static_cast<unsigned>(m.dma_largest / 1024U),
+             static_cast<unsigned>(m.psram_free / 1024U),
+             static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
+  }
   this->boot_started_ms_ = millis();
   this->stage_started_ms_ = this->boot_started_ms_;
+  this->blitter_ = make_blitter(this->blitter_kind_, &this->blitter_name_);
+  // Names the main loop's wait if it ever stops turning (D-062).
+  breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
+  this->stall_monitor_ = start_stall_monitor(this->watchdog_ms_);
+  start_hosted_diagnostics();  // only with `diagnostics: true` (D-063)
+  this->presenter_ = std::make_unique<hm::ui::NoPresenter>();
+  if (this->present_display_ != nullptr && this->lvgl_ != nullptr) {
+    auto direct =
+        std::make_unique<DisplayPresenter>(this->present_display_, this->lvgl_->get_rotation());
+    if (direct->begin()) {
+      this->presenter_ = std::move(direct);
+      this->presenter_name_ = "display";
+      this->presenting_ = true;
+    } else {
+      this->presenter_name_ = "off (no internal RAM for the rotation buffer)";
+    }
+  }
   hearthmap_device::PanelPipeline::Builder builder;
   builder.steps = this->source_.build_steps();
   builder.step = [this](hm::Config& c, std::size_t k) { this->source_.build_step(c, k); };
@@ -101,6 +172,7 @@ void HearthmapComponent::setup() {
                                                                       hm::ui::theme::kHeatPalette);
   this->pipeline_->set_heat_refresh_interval_ms(this->heat_refresh_interval_ms_);
   hook_lvgl_log();  // after the lvgl component's setup, whose callback this takes over
+  this->hook_perf_();
   this->subscribe_();
   this->show_status_("Starting");
   ESP_LOGI(TAG, "boot: build started (config %s, %u entities)", hearthmap_gen::kConfigSourceName,
@@ -129,8 +201,20 @@ void HearthmapComponent::subscribe_() {
 }
 
 void HearthmapComponent::loop() {
+  // The stall monitor's view (D-062): the loop turned, and is in hearthmap until this returns.
+  breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
+  const CrumbScope crumb(Crumb::Hearthmap, millis());
+  this->perf_.loop_start(micros());
+  this->check_sprite_canaries_();
+  this->check_memory_();
+  this->log_perf_();
   switch (this->phase_) {
-    case Phase::Booting: this->boot_slice_(); return;
+    case Phase::Booting: {
+      const uint32_t t0 = micros();
+      this->boot_slice_();
+      this->perf_.own_work(0, micros() - t0);  // boot work is counted with the heat work
+      return;
+    }
     case Phase::Failed: return;
     case Phase::WaitingForTime:
     case Phase::Running: break;
@@ -159,7 +243,10 @@ void HearthmapComponent::boot_slice_() {
   do {
     const Stage before = this->pipeline_->stage();
     const uint32_t step_start = micros();
-    const Stage after = this->pipeline_->boot_step(kBootRowsPerStep);
+    const Stage after = [&] {
+      const CrumbScope crumb(Crumb::HmBoot, millis());
+      return this->pipeline_->boot_step(kBootRowsPerStep);
+    }();
     const uint32_t step_us = micros() - step_start;
     if (step_us > this->stage_worst_us_) this->stage_worst_us_ = step_us;
     if (after != before) {
@@ -216,8 +303,19 @@ bool HearthmapComponent::start_screen_() {
   const uint32_t start = millis();
   ESP_LOGI(TAG, "boot: screen started");
   const hm::ui::HeatRasterizer& raster = this->pipeline_->rasterizer();
-  RAMAllocator<hm::Rgb565> allocator;  // PSRAM when present
-  this->heat_pixels_ = allocator.allocate(raster.pixel_count());
+  // From the memory port: PSRAM only (ESPHome's RAMAllocator would fall back to internal RAM).
+  const std::size_t bytes = raster.pixel_count() * sizeof(hm::Rgb565);
+  auto allocate = [bytes] {
+    return static_cast<hm::Rgb565*>(hm::ui::bulk_allocate(bytes, alignof(hm::Rgb565)));
+  };
+  // Every buffer starts black, cleared by the blitter (a PPA fill on the panel, not 1.3 MiB of
+  // CPU stores per buffer).
+  auto clear = [this, &raster](hm::Rgb565* px) {
+    const hm::ui::Surface565 s{px, static_cast<int>(raster.width()),
+                               static_cast<int>(raster.height()), static_cast<int>(raster.width())};
+    this->blitter_->fill(s, 0, 0, s.w, s.h, 0);
+  };
+  this->heat_pixels_ = allocate();
   if (this->heat_pixels_ == nullptr) {
     ESP_LOGE(TAG, "no memory for the %dx%d heat image", static_cast<int>(raster.width()),
              static_cast<int>(raster.height()));
@@ -226,13 +324,13 @@ bool HearthmapComponent::start_screen_() {
     this->status_set_error(LOG_STR("no memory for the heat image"));
     return false;
   }
-  std::fill_n(this->heat_pixels_, raster.pixel_count(), hm::Rgb565{0});
+  clear(this->heat_pixels_);
   // A second buffer: frames render into the back one and swap it in whole (PanelPipeline).
-  this->heat_back_ = allocator.allocate(raster.pixel_count());
+  this->heat_back_ = allocate();
   if (this->heat_back_ == nullptr) {
     // Nothing holds the first buffer yet (neither the pipeline nor the screen): give it back
     // rather than keep ~1.3 MiB for a component that has stopped.
-    allocator.deallocate(this->heat_pixels_, raster.pixel_count());
+    hm::ui::bulk_free(this->heat_pixels_, bytes);
     this->heat_pixels_ = nullptr;
     ESP_LOGE(TAG, "no memory for the second heat image buffer");
     this->phase_ = Phase::Failed;
@@ -240,8 +338,23 @@ bool HearthmapComponent::start_screen_() {
     this->status_set_error(LOG_STR("no memory for the heat image"));
     return false;
   }
-  std::fill_n(this->heat_back_, raster.pixel_count(), hm::Rgb565{0});
-  this->pipeline_->set_heat_buffers(this->heat_pixels_, this->heat_back_);
+  clear(this->heat_back_);
+  // More buffers, one per enabled layer plus one to draw into, while PSRAM stays comfortable:
+  // then every layer keeps its image and a tab change shows it at once (D-055). Fewer is fine,
+  // only slower on a tab change.
+  std::vector<hm::Rgb565*> buffers{this->heat_pixels_, this->heat_back_};
+  std::size_t enabled = 0;
+  for (const auto& layer : this->pipeline_->config().layers) enabled += layer.enabled ? 1U : 0U;
+  while (buffers.size() < enabled + 1 &&
+         heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > bytes + kPsramReserve) {
+    hm::Rgb565* extra = allocate();
+    if (extra == nullptr) break;
+    clear(extra);
+    buffers.push_back(extra);
+  }
+  this->pipeline_->set_heat_buffers(buffers);
+  ESP_LOGI(TAG, "boot: %u heat image buffers for %u layers", static_cast<unsigned>(buffers.size()),
+           static_cast<unsigned>(enabled));
   this->heat_dsc_ =
       rgb565_dsc(reinterpret_cast<const uint8_t*>(this->heat_pixels_),
                  static_cast<uint32_t>(raster.width()), static_cast<uint32_t>(raster.height()));
@@ -250,8 +363,29 @@ bool HearthmapComponent::start_screen_() {
   deps.fonts = hm::ui::builtin_fonts();
   deps.sink = this;
   deps.photos = &this->photos_;
+  deps.micros = [] { return static_cast<std::uint32_t>(micros()); };
+  // Pulse sprites hold every frame of every pulse (D-053): three quarters of the PSRAM left once
+  // kPsramReserve and the map bake (3 bytes a map pixel) are set aside, at least 256 KiB.
+  // Past it they take fewer frames per cycle, then fewer pulses animate (D-054).
+  const std::size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  const std::size_t bake = raster.pixel_count() * 3U;
+  const std::size_t spare =
+      free_psram > kPsramReserve + bake ? free_psram - kPsramReserve - bake : 0U;
+  deps.pulse_memory_bytes = std::max<std::size_t>(256U * 1024U, spare / 4U * 3U);
+  ESP_LOGI(TAG, "boot: %u KiB for pulse sprites",
+           static_cast<unsigned>(deps.pulse_memory_bytes / 1024U));
   this->screen_ = std::make_unique<hm::ui::Screen>(
       this->lvgl_->get_screen_active(), this->pipeline_->config(), &this->heat_dsc_, deps);
+  // With a presenter, pulse frames are shown from loop(), straight to the panel where they can be
+  // (D-058); otherwise LVGL's timer invalidates them as before.
+  this->screen_->set_frames_deferred(this->presenting_);
+  this->screen_->set_pulse_mode(this->pulse_mode_);
+  this->screen_->set_sprite_builds_paused(this->sprites_paused_);
+  // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
+  this->pipeline_->set_row_hook(
+      [this](hm::Rgb565* image, std::int32_t stride, std::int32_t begin, std::int32_t end) {
+        return this->screen_ != nullptr && this->screen_->bake_rows(image, stride, begin, end);
+      });
   ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, 2 x %u bytes; rasterizer %u bytes)",
            static_cast<unsigned>(millis() - start), static_cast<int>(raster.width()),
            static_cast<int>(raster.height()), static_cast<unsigned>(raster.pixel_count() * 2U),
@@ -271,6 +405,7 @@ void HearthmapComponent::invalidate_band_() {
     return;
   lv_area_t coords;
   lv_obj_get_coords(image, &coords);
+  this->perf_.cause_heat();
   lv_area_t band = coords;
   band.y1 = coords.y1 + this->band_row_;
   band.y2 = std::min<int32_t>(coords.y1 + this->band_row_ + kHeatBandRows - 1, coords.y2);
@@ -299,11 +434,18 @@ void HearthmapComponent::show_view_() {
   status.offline = !this->connected_;
   status.restamped = this->connected_;  // restamp() runs exactly while connected (D-046)
   status.heat_behind = this->pipeline_->heat_behind();
+  status.heat_baked = this->pipeline_->front_baked();
   this->dimmed_ = status.heat_behind;
   this->screen_->update(this->pipeline_->view(), header, this->clock_->timestamp_now(), status);
 }
 
 void HearthmapComponent::frame_slice_() {
+  // Pulse frames LVGL's timer chose since the last pass: presented, or invalidated (D-058).
+  {
+    const CrumbScope crumb(Crumb::HmFrames, millis());
+    this->screen_->show_due_frames(*this->presenter_, &this->shown_frames_);
+  }
+  const uint32_t view_t0 = micros();
   this->invalidate_band_();
   const uint32_t start = millis();
   // The view model: taps, a change of connection state, new readings and the clock reach the
@@ -314,40 +456,86 @@ void HearthmapComponent::frame_slice_() {
   }
   this->pending_.clear();
   const bool connected = api::global_api_server->is_connected_with_state_subscription();
+  diag_note_api(connected);
   const uint32_t since = start - this->last_view_ms_;
   const bool due = !this->viewed_ || touched || connected != this->connected_ ||
                    since >= this->refresh_interval_ms_ ||
                    (this->dirty_ && since >= this->min_redraw_interval_ms_);
+  const std::size_t writes_before = this->screen_->writes();
   if (due) {
+    const CrumbScope crumb(Crumb::HmView, millis());
     this->refresh_view_(start, connected);
     this->show_view_();
+    this->handle_publish_();  // a tab change to a kept image is shown in this same call
   }
+  if (touched) {
+    const bool changed = this->screen_->writes() != writes_before;
+    this->perf_.events_applied(millis(), changed);
+    if (changed) this->perf_.cause_tap();  // a tap that changed nothing draws nothing
+  }
+  const uint32_t heat_t0 = micros();
+  // Counts this call's work when it returns, whichever way it returns.
+  struct OwnTimer {
+    hearthmap_device::PerfStats& perf;
+    uint32_t view_us;
+    uint32_t heat_t0;
+    ~OwnTimer() { perf.own_work(view_us, micros() - heat_t0); }
+  } own_timer{this->perf_, heat_t0 - view_t0, heat_t0};
 
-  // The heat image, in the rest of the slice: rebuilt only when the pipeline says so.
+  // The heat image, in the rest of the slice: rebuilt only when the pipeline says so, and not
+  // just after a press.
+  if (this->pressed_ && millis() - this->last_press_ms_ < kHeatHoldAfterPressMs) return;
+  this->pressed_ = false;
+  // The map bake and the pulse sprites first (one band or tile per step, a small software render
+  // each), before the next heat work (D-053, D-055). When the bake becomes ready every kept
+  // image is redrawn with the walls and labels in it.
+  // One unit per slice, then heat work in what is left: a queue that keeps refilling (a value
+  // near a pulse changing every pass) must not hold the heat image back.
+  {
+    const CrumbScope crumb(Crumb::HmPrepare, millis());
+    this->screen_->prepare_step();
+  }
+  if (!this->rebake_requested_ && this->screen_->bake_ready()) {
+    this->rebake_requested_ = true;
+    this->pipeline_->request_rebuild_all();
+  }
   bool idle = false;
   do {
-    idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
+    {
+      const CrumbScope crumb(Crumb::HmHeat, millis());
+      idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
+    }
     if (!idle && !this->heat_active_) {
       this->heat_active_ = true;
       this->heat_started_ms_ = millis();
     }
-  } while (!idle && millis() - start < kSliceBudgetMs);
+    // Until the first image is up there is nothing to animate: the boot budget applies.
+  } while (!idle &&
+           millis() - start < (this->first_heat_logged_ ? kHeatSliceBudgetMs : kSliceBudgetMs));
   if (!idle) return;
   this->heat_active_ = false;
-  if (!this->pipeline_->take_published()) return;
+  this->handle_publish_();
+}
 
-  // The finished back buffer is now the front: point the screen's image at it. If the map was
-  // dimmed (a layer change, or the first image), undimming repaints it whole; otherwise it is
-  // repainted in bands (invalidate_band_).
+void HearthmapComponent::handle_publish_() {
+  if (!this->pipeline_->take_published()) return;
+  // The new front image: point the screen's image at it. A layer change to a kept image is
+  // repainted whole at once (D-055: one opaque blit of the map); an image that was hidden as
+  // behind (the first, or a layer never kept) is revealed by the Screen a strip at a time
+  // (D-052); a fresh image of the shown layer is repainted in bands here (invalidate_band_).
   const bool was_dimmed = this->dimmed_;
   this->heat_dsc_.data = reinterpret_cast<const uint8_t*>(this->pipeline_->front());
-  if (was_dimmed) {
+  if (this->pipeline_->published_switch()) {
+    this->band_row_ = 1 << 30;
+    this->screen_->invalidate_heat();
+  } else if (was_dimmed) {
     this->band_row_ = 1 << 30;
   } else {
     this->band_row_ = 0;
     this->last_band_ms_ = 0;
   }
   this->show_view_();
+  if (this->pipeline_->published_switch()) return;  // no new image was drawn
   const uint32_t took = millis() - this->heat_started_ms_;
   if (!this->first_heat_logged_) {
     ESP_LOGI(TAG, "first heat image done in %u ms", static_cast<unsigned>(took));
@@ -357,6 +545,177 @@ void HearthmapComponent::frame_slice_() {
              static_cast<unsigned>(took), static_cast<unsigned>(this->pipeline_->heat_rebuilds()),
              static_cast<unsigned>(lvgl_warnings()), static_cast<unsigned>(lvgl_errors()));
   }
+}
+
+void HearthmapComponent::hook_perf_() {
+  // LVGL's own events for the display this component draws on: every refresh, every flush and
+  // every invalidation. The lvgl component registered its rounder before this, so the areas
+  // counted here are the rounded ones it actually renders.
+  lv_display_t* disp = lv_obj_get_display(this->lvgl_->get_screen_active());
+  for (lv_event_code_t code : {LV_EVENT_INVALIDATE_AREA, LV_EVENT_REFR_START, LV_EVENT_REFR_READY,
+                               LV_EVENT_FLUSH_START, LV_EVENT_FLUSH_FINISH}) {
+    lv_display_add_event_cb(disp, on_display_event_, code, this);
+  }
+  // Presses and clicks, from every pointer input device on that display.
+  for (lv_indev_t* indev = lv_indev_get_next(nullptr); indev != nullptr;
+       indev = lv_indev_get_next(indev)) {
+    if (lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER || lv_indev_get_display(indev) != disp)
+      continue;
+    lv_indev_add_event_cb(indev, on_indev_event_, LV_EVENT_PRESSED, this);
+    lv_indev_add_event_cb(indev, on_indev_event_, LV_EVENT_CLICKED, this);
+  }
+#ifdef USE_TOUCHSCREEN
+  if (this->touchscreen_ != nullptr) {
+    this->touch_probe_ = std::make_unique<TouchProbe>(&this->perf_);
+    this->touchscreen_->register_listener(this->touch_probe_.get());
+  }
+#endif
+}
+
+void HearthmapComponent::on_display_event_(lv_event_t* e) {
+  auto* self = static_cast<HearthmapComponent*>(lv_event_get_user_data(e));
+  const uint32_t now_us = micros();
+  switch (lv_event_get_code(e)) {
+    case LV_EVENT_INVALIDATE_AREA: {
+      const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
+      if (area != nullptr) self->perf_.invalidated(lv_area_get_size(area));
+      break;
+    }
+    case LV_EVENT_REFR_START:
+      self->crumb_before_refresh_ = mark_crumb(Crumb::LvglRefresh, millis());
+      self->perf_.refresh_start(now_us);
+      break;
+    case LV_EVENT_REFR_READY:
+      mark_crumb(self->crumb_before_refresh_, millis());
+      self->perf_.refresh_ready(now_us, millis());
+      break;
+    case LV_EVENT_FLUSH_START:
+      mark_crumb(Crumb::LvglFlush, millis());
+      self->perf_.flush_start(now_us);
+      break;
+    case LV_EVENT_FLUSH_FINISH: {
+      mark_crumb(Crumb::LvglRefresh, millis());
+      const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
+      self->perf_.flush_finish(now_us, area != nullptr ? lv_area_get_size(area) : 0);
+      break;
+    }
+    default: break;
+  }
+}
+
+void HearthmapComponent::on_indev_event_(lv_event_t* e) {
+  auto* self = static_cast<HearthmapComponent*>(lv_event_get_user_data(e));
+  if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+    self->perf_.lvgl_pressed(millis());
+    self->pressed_ = true;
+    self->last_press_ms_ = millis();
+  }
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) self->perf_.lvgl_clicked(millis());
+}
+
+#ifdef USE_TOUCHSCREEN
+void TouchProbe::touch(touchscreen::TouchPoint /*tp*/) {
+  this->stats_->touch_read(millis());
+}
+#endif
+
+// Once a second: every pulse frame set's guard words, so a write outside a set is reported where
+// it happened rather than as a corrupt picture (D-053). A few words per set.
+void HearthmapComponent::check_sprite_canaries_() {
+  const uint32_t now = millis();
+  if (!this->screen_ || now - this->last_canary_check_ms_ < 1000U) return;
+  this->last_canary_check_ms_ = now;
+  const uint32_t bad = this->screen_->pulse_canary_failures();
+  if (bad == 0) return;
+  this->canary_failures_ += bad;
+  if (!this->canary_logged_) {
+    this->canary_logged_ = true;
+    ESP_LOGE(TAG, "pulse sprites: %u frame set(s) written outside their bounds",
+             static_cast<unsigned>(bad));
+  }
+}
+
+// Once a second: internal RAM against its floor (D-064). Below it, sprite builds pause (animation
+// degrades, the Wi-Fi driver keeps its DMA frames) and a warning says how low, what failed, and
+// what hearthmap did meanwhile; the UI's own bulk storage is in PSRAM, so it is a witness here,
+// not a suspect, unless the port's counters say otherwise.
+void HearthmapComponent::check_memory_() {
+  const uint32_t now = millis();
+  if (now - this->last_memory_check_ms_ < 1000U) return;
+  this->last_memory_check_ms_ = now;
+  const MemorySample m = sample_memory();
+  const InternalRamGuard::Verdict v = this->ram_guard_.update(now, m.internal_free);
+  const uint32_t captures = this->screen_ ? this->screen_->pulse_counters().captures : 0U;
+  if (v.pause != this->sprites_paused_) {
+    this->sprites_paused_ = v.pause;
+    if (this->screen_) this->screen_->set_sprite_builds_paused(v.pause);
+  }
+  if (v.warn) {
+    const hm::ui::BulkStats b = hm::ui::bulk_stats();
+    ESP_LOGW(
+        TAG,
+        "internal RAM low: %u KiB free, floor %u KiB (was %u KiB), lowest %u KiB, largest "
+        "DMA-capable block %u KiB; failed allocations %u, DMA %u (last %u B, caps 0x%x); "
+        "hearthmap holds %u KiB in PSRAM (%u refused) and captured %u sprites since; "
+        "pulse sprite builds paused (D-064)",
+        static_cast<unsigned>(m.internal_free / 1024U),
+        static_cast<unsigned>(this->ram_guard_.floor() / 1024U),
+        static_cast<unsigned>(v.fell_from / 1024U), static_cast<unsigned>(m.internal_min / 1024U),
+        static_cast<unsigned>(m.dma_largest / 1024U), static_cast<unsigned>(m.failed_allocs),
+        static_cast<unsigned>(m.failed_dma_allocs), static_cast<unsigned>(m.last_failed_size),
+        static_cast<unsigned>(m.last_failed_caps), static_cast<unsigned>(b.in_use / 1024U),
+        static_cast<unsigned>(b.failures), static_cast<unsigned>(captures - this->captures_at_ok_));
+  }
+  if (v.recovered) {
+    ESP_LOGI(TAG, "internal RAM back to %u KiB: pulse sprite builds resumed",
+             static_cast<unsigned>(m.internal_free / 1024U));
+  }
+  if (!this->ram_guard_.low()) this->captures_at_ok_ = captures;
+}
+
+void HearthmapComponent::log_perf_() {
+  const uint32_t now = millis();
+  if (!this->perf_.due(now)) return;
+  hearthmap_device::PerfWindow w = this->perf_.take(now);
+  if (this->screen_) {
+    const hm::ui::PulseCounters c = this->screen_->pulse_counters();
+    w.sprite_frames = c.frames - this->last_sprite_frames_;
+    w.sprite_dropped = c.dropped - this->last_sprite_dropped_;
+    w.sprite_kib = static_cast<uint32_t>(c.tile_bytes / 1024U);
+    w.sprite_divisor = c.frame_divisor;
+    w.sprite_canary = this->canary_failures_;
+    w.sprite_not_ready = c.not_ready - this->last_sprite_not_ready_;
+    this->last_sprite_not_ready_ = c.not_ready;
+    w.sprite_frame_us = static_cast<uint32_t>(c.frame_us - this->last_sprite_frame_us_);
+    w.sprite_prepare_us = static_cast<uint32_t>(c.prepare_us - this->last_sprite_prepare_us_);
+    this->last_sprite_frame_us_ = c.frame_us;
+    w.presented = this->shown_frames_.presented;
+    w.present_fallbacks = this->shown_frames_.invalidated;
+    std::size_t top = 0;
+    for (std::size_t k = 1; k < this->shown_frames_.blocked.size(); ++k) {
+      if (this->shown_frames_.blocked[k] > this->shown_frames_.blocked[top]) top = k;
+    }
+    w.present_block = this->shown_frames_.blocked[top] == 0
+                          ? "none"
+                          : present_block_name(static_cast<hm::ui::PresentBlock>(top));
+    this->shown_frames_ = hm::ui::Screen::ShownFrames{};
+    this->last_sprite_prepare_us_ = c.prepare_us;
+    this->last_sprite_frames_ = c.frames;
+    this->last_sprite_dropped_ = c.dropped;
+  }
+  const MemorySample m = sample_memory();
+  const hm::ui::BulkStats b = hm::ui::bulk_stats();
+  w.internal_free_kib = static_cast<uint32_t>(m.internal_free / 1024U);
+  w.internal_min_kib = static_cast<uint32_t>(m.internal_min / 1024U);
+  w.dma_largest_kib = static_cast<uint32_t>(m.dma_largest / 1024U);
+  w.bulk_kib = static_cast<uint32_t>(b.in_use / 1024U);
+  w.bulk_refused = b.failures;
+  w.sprites_paused = this->sprites_paused_;
+  char line[640];
+  hearthmap_device::PerfStats::format(w, line, sizeof(line));
+  ESP_LOGD(TAG, "%s", line);
+  hearthmap_device::PerfStats::format_memory(w, line, sizeof(line));
+  ESP_LOGD(TAG, "%s", line);
 }
 
 void HearthmapComponent::show_status_(const char* text) {
@@ -382,6 +741,24 @@ void HearthmapComponent::hide_status_() {
 }
 
 void HearthmapComponent::dump_config() {
+  ESP_LOGCONFIG(TAG, "hearthmap blitter: %s, present: %s", this->blitter_name_,
+                this->presenter_name_);
+  if (this->pulse_mode_ != hm::ui::PulseMode::Animated) {
+    ESP_LOGCONFIG(TAG, "  Pulse sprites: %s (bisecting aid, D-063)",
+                  this->pulse_mode_ == hm::ui::PulseMode::Still ? "still" : "off");
+  }
+#ifdef HEARTHMAP_DIAGNOSTICS
+  ESP_LOGCONFIG(TAG, "  Diagnostics: hosted link report every 10 s on the UART (D-063)");
+#endif
+  ESP_LOGCONFIG(TAG, "  UI storage: PSRAM through the memory port; internal RAM floor %u KiB",
+                static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
+#ifdef CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO
+#ifdef CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL
+  ESP_LOGCONFIG(TAG, "  Hosted SDIO packet pool: on (reserved when the link starts, D-064)");
+#else
+  ESP_LOGCONFIG(TAG, "  Hosted SDIO packet pool: off, frames come from the DMA heap (D-064)");
+#endif
+#endif
   ESP_LOGCONFIG(TAG,
                 "hearthmap:\n"
                 "  Config: %s\n"

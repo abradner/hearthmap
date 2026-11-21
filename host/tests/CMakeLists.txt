@@ -1,7 +1,8 @@
 # Host tests: unit tests for the JSON source, the fixture parser and the top-bar text, and the
 # golden images (host/README.md, "Golden images").
 
-add_executable(hearthmap_host_tests main.cpp json_config_test.cpp top_bar_test.cpp app_test.cpp)
+add_executable(hearthmap_host_tests main.cpp json_config_test.cpp top_bar_test.cpp app_test.cpp
+  perf_proxy_test.cpp)
 target_link_libraries(hearthmap_host_tests PRIVATE hearthmap_host hearthmap_doctest)
 target_compile_definitions(hearthmap_host_tests PRIVATE
   HEARTHMAP_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
@@ -9,9 +10,20 @@ hearthmap_strict_warnings(hearthmap_host_tests)
 add_test(NAME host.unit COMMAND hearthmap_host_tests --no-version)
 set_tests_properties(host.unit PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
 
+# The default heap's budget (memory_budget_test.cpp, D-064): its own executable, because it
+# replaces the global operator new and delete with counting ones.
+add_executable(hearthmap_host_memory_tests main.cpp memory_budget_test.cpp)
+target_link_libraries(hearthmap_host_memory_tests PRIVATE hearthmap_host hearthmap_doctest)
+target_compile_definitions(hearthmap_host_memory_tests PRIVATE
+  HEARTHMAP_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
+hearthmap_strict_warnings(hearthmap_host_memory_tests)
+add_test(NAME host.memory COMMAND hearthmap_host_memory_tests --no-version)
+set_tests_properties(host.memory PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +0 +\\|")
+
 # ---- golden images -----------------------------------------------------------------------------
 # Each case: name, then the render arguments. Every case renders at --time-ms 400 so pulses are
-# caught mid-cycle. Taps are canvas pixels on the example (map area 864 x 720 at 40, 76):
+# caught mid-cycle; pulse-ring-on-red overrides it to 700, where the kitchen plant's danger ring is
+# large over its danger-red room (the keyline must keep it visible, D-053). Taps are canvas pixels on the example (map area 864 x 720 at 40, 76):
 #   basil (plant)          (0.625,  0.06) -> 580, 119
 #   living-room climate    (0.2083, 0.30) -> 220, 292
 set(_flat "${PROJECT_SOURCE_DIR}/examples/flat")
@@ -28,6 +40,7 @@ set(HEARTHMAP_GOLDEN_CASES
   "layer-humidity|thirsty-many|--layer humidity"
   "layer-soil|all-ok|--layer soil"
   "layer-air|thirsty-many|--layer air"
+  "pulse-ring-on-red|thirsty-many|--layer soil --time-ms 700"
 )
 
 set(_update_commands)

@@ -234,6 +234,48 @@ add rather than rewrite.
   `point_in_polygon()` loop (double) ran inside `setup()` (D-038). Keep `double` out of per-pixel
   and per-cell loops, never do unbounded work in a component's `setup()`, and check new device
   paths with the pipeline benchmark in `components/hearthmap/tests/test_cpp.py`.
+- **The PIE (xesppie) assembler takes address operands only in x8-x15.** `esp.vld.128.ip q0, a6, 16`
+  fails with "illegal operands", and GCC 14 here has no `cr` constraint to ask for those registers;
+  pin the pointers with local register variables (`register T* p asm("a0")`), as
+  `tools/bench/components/hm_bench/kernels.cpp` does. `esp.vld.128` also ignores the low four
+  address bits, so an unaligned pointer reads the wrong pixels rather than faulting.
+- **LVGL 9.6's PPA draw unit draws nothing when it cannot use a buffer.** For a draw buffer whose
+  start or size is not whole 64-byte lines it logs `ppa_core: out.buffer addr or out.buffer_size
+  not aligned` and leaves the area untouched (no software fallback); it also reads flash images at
+  4 Mpx/s. Measured with `tools/bench` (D-060), which is why the unit is not enabled.
+- **The PPA's scaler interpolates.** A 2x `ppa_do_scale_rotate_mirror` is not pixel doubling (up to
+  21 steps per channel away), so it cannot stand in for `Blitter::scale2x` (D-057).
+- **ESPHome prints other tasks' log lines from the main loop.** `ESP_LOGx` from any task but the
+  main one goes into a ring buffer that the logger's `loop()` drains, so a task reporting that the
+  main loop is stuck is never heard until it recovers. Write such lines with `esp_rom_printf`, as
+  `components/hearthmap/stall_monitor.cpp` does (D-062).
+- **With `esp32_hosted`, a Wi-Fi call can block the main loop for the whole RPC timeout.** It is
+  5 s by default, equal to ESPHome's default task watchdog, so a silent co-processor resets the
+  panel; the component requires `esp32: watchdog_timeout` of at least 16 s (D-061).
+- **ESPHome compiles ESP-IDF's log at ERROR, which hides esp-hosted's warnings.** `esp32:
+  framework: log_level` defaults to `ERROR` (CONFIG_LOG_DEFAULT_LEVEL_ERROR), and esp-hosted
+  3.1.0 reports a P4 out of DMA-capable RAM only at WARN or DEBUG (`mempool OOM start (TX)`,
+  `dma_alloc(...) failed`, `rx_get_buffer(...) failed`) while it drops the packet. A link that
+  dies that way logs nothing at all. `hearthmap: diagnostics: true` opens them (D-063); otherwise
+  set `log_level: WARN` before reading a quiet log as "no Wi-Fi error" (the example does, D-066).
+- **ESPHome's LVGL allocator moves to internal RAM for good after one PSRAM failure.**
+  `lv_malloc_core()` in ESPHome 2026.11.0's `lvgl_esphome.cpp` asks for PSRAM first, but on one
+  failure it changes its static `cap_bits` to plain 8-bit memory and never goes back, so every
+  later LVGL object and draw buffer competes for internal RAM. A boot that once ran PSRAM dry
+  starves the Wi-Fi link afterwards; the internal-RAM floor's warning (D-064) is where it shows.
+- **`operator new` aborts on this target.** Exceptions are off, so a `std::vector` that cannot
+  allocate calls `abort()` on every boot that reaches it; the present self-check did this with
+  internal RAM full. Large pixel buffers go in PSRAM through `heap_caps_malloc`, checked.
+  (Since D-064, the UI's go through the memory port, `hearthmap/ui/memory.h`, instead.)
+- **Small allocations go to internal RAM under `CONFIG_SPIRAM_USE_MALLOC`.** Only blocks over
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (16 KiB) go to PSRAM; everything smaller is tried in
+  internal RAM first. A UI that makes many 4-12 KiB buffers (sprite captures, coverage tables,
+  frames) fills internal RAM, and on the ESP32-P4 that starves DMA users such as the hosted
+  Wi-Fi driver, whose frames cannot come from PSRAM (ESP-IDF 5.5.6 registers the P4's PSRAM
+  heap without `MALLOC_CAP_DMA`, D-063). The link then dies silently while the panel runs on. Anything ui_lvgl sizes by pixels,
+  cells or pulses goes through the memory port (D-064); `host/tests/memory_budget_test.cpp`
+  fails if it does not. And no reset is not a live link: a quiet panel with no watchdog resets
+  can still have lost its network (D-061's correction).
 
 ## 7. CI & Deployment
 
@@ -549,6 +591,43 @@ test lives** (if one exists).
    with a fake clock, since the host's speed hides the failure. Regression test:
    `components/hearthmap/tests/test_cpp.py::test_heat_rebuild_policy_and_immediate_taps`
    (D-047).
+3. **The panel spent three quarters of its time redrawing a pulse.** Rooms pulsed by animating
+   the opacity of one `lv_line` per room, and on the panel LVGL refreshed 13 times a second at
+   about 60 ms each, leaving the main loop (and touch) 13 passes a second. Root cause: LVGL 9.6
+   sizes a line object from its own origin (0, 0) to its farthest point, so a polyline placed at
+   the map's origin covered everything up to the room's far corner, and every animation frame
+   re-rendered that whole rectangle in software; the host renders it in microseconds, so nothing
+   showed until the device's perf log. General rule: on the panel, cost is pixels invalidated per
+   second; know each animated object's real area (`lv_obj_get_coords`), animate in steps on a
+   shared clock rather than per frame, and keep a host budget on what LVGL is asked to draw.
+   Regression tests: `host/tests/perf_proxy_test.cpp` and the pulse cases in
+   `ui_lvgl/tests/screen_test.cpp` (D-051).
+4. **A PPA call silently threw away pixels the CPU had just drawn.** The bench wrote a whole
+   buffer from the CPU, then had the PPA's scale-rotate engine copy a 64 x 64 block into it; of
+   the 16,384 CPU-written pixels in the same rows but outside the block, 15,840 to 16,228 were
+   gone. Root cause: ESP-IDF 5.5's PPA driver writes its *inputs* back from the cache, but for an
+   output it does not also read it only *invalidates* the output rows' cache lines, which
+   discards CPU writes not yet written back (`esp_driver_ppa/src/ppa_srm.c`; the blend engine's
+   output is the same when the destination is not also the background). General rule: before
+   handing memory the CPU has written to a DMA engine as an *output*, write the affected rows back
+   yourself; never rely on a driver's cache handling for bytes outside the block it was given.
+   Regression check: `tools/bench` (`bench cache_trap`, raw and through `PpaBlitter`, which
+   writes the rows back first); there is no host test because the host has no such cache (D-057).
+5. **Animated pulses killed the Wi-Fi link, and fixing the resets hid it.** Once the pulse sprites
+   were built, the panel's hosted Wi-Fi link died a few minutes after boot. First it showed as
+   task-watchdog resets; D-061 lengthened the watchdog, the resets stopped, and the panel then ran
+   on for hours with no network and nothing in the log. The diagnostic build (D-063) showed
+   internal RAM falling from 236 KiB to 1 KiB within 20 s of the sprite build starting, then
+   thousands of failed 1536 B DMA allocations: the sprite code's many 4-12 KiB `std::vector`s
+   had gone to internal RAM under `CONFIG_SPIRAM_USE_MALLOC` (16 KiB threshold), and the hosted
+   driver's frames can only come from there. On the host nothing showed: memory is plentiful and
+   undivided. Root causes: allocation placement left to a global threshold, and a symptom (the
+   reset) treated as the fault. General rules: on a target with a split heap, decide where every
+   bulk buffer lives, through one port the embedder owns, and test the default heap's budget on
+   the host, where the failure cannot happen by itself; and when a fix removes a symptom, check
+   the function it was a symptom of (the link), not just the symptom's absence. Regression tests:
+   `host/tests/memory_budget_test.cpp` (failed before the port: +1.59 MB in small blocks over the
+   walk) and `components/hearthmap/tests/test_cpp.py::test_internal_ram_guard` (D-064).
 
 ## 10. Maintaining This Document
 

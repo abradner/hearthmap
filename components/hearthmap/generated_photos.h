@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/ports.h"
 #include "lvgl.h"
 
@@ -30,7 +31,7 @@ class GeneratedPhotos final : public hearthmap::ui::ImageProvider {
 
  private:
   bool initialised_ = false;
-  std::vector<lv_image_dsc_t> photos_;
+  ::hearthmap::ui::BulkVector<lv_image_dsc_t> photos_;  // the memory port (D-064)
 };
 
 }  // namespace hearthmap_device

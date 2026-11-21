@@ -10,8 +10,10 @@
 //   ... with no Value cell     -> the "no data" stripes (theme::kNoDataA / kNoDataB)
 //
 // All per-pixel work is integer, so the image is bit-identical on every platform (the golden
-// images depend on it). The rasterizer allocates only in its constructor; render() writes into
-// caller-owned storage and allocates nothing.
+// images depend on it). The rasterizer allocates only in its constructor, and only through the
+// memory port (hearthmap/ui/memory.h, D-064): its per-pixel room index and bilinear tables are
+// bulk storage. render() writes into caller-owned storage and allocates nothing. Its RoomScanner
+// is core's and keeps core's own small vectors (the rooms' edges) on the default heap.
 #pragma once
 
 #include <array>
@@ -22,8 +24,26 @@
 #include "hearthmap/colour_scale.h"
 #include "hearthmap/config.h"
 #include "hearthmap/heat_field.h"
+#include "hearthmap/ui/memory.h"
 
 namespace hearthmap::ui {
+
+/// One colour per heat cell, row-major, as colour_cells() writes them: a view of the caller's
+/// storage (a std::vector or a BulkVector), never a copy.
+class CellColours {
+ public:
+  CellColours() = default;
+  template <class Container>
+  CellColours(const Container& c)  // NOLINT: a view converts implicitly, as a span does
+      : p_(c.data()), n_(c.size()) {}
+  const Rgb565* data() const { return p_; }
+  std::size_t size() const { return n_; }
+  const Rgb565& operator[](std::size_t i) const { return p_[i]; }
+
+ private:
+  const Rgb565* p_ = nullptr;
+  std::size_t n_ = 0;
+};
 
 class HeatRasterizer {
  public:
@@ -63,7 +83,7 @@ class HeatRasterizer {
   /// `cell_colours` holds one colour per field cell, row-major like field.cells; only entries
   /// of Value cells are read. `field` must have the grid size of the config this was built from;
   /// a mismatched field draws every room as "no data" rather than reading out of bounds.
-  void render(const HeatField& field, const std::vector<Rgb565>& cell_colours, Rgb565* out) const;
+  void render(const HeatField& field, CellColours cell_colours, Rgb565* out) const;
 
   /// What render_rows() needs from `field` beyond its cells: whether it fits this rasterizer,
   /// and each room's first Value cell (the fallback for pixels far from any of their room's
@@ -74,16 +94,15 @@ class HeatRasterizer {
     bool field_ok = false;
     std::array<std::int32_t, kRooms> first_value{};
   };
-  Prepared prepare(const HeatField& field, const std::vector<Rgb565>& cell_colours) const;
+  Prepared prepare(const HeatField& field, CellColours cell_colours) const;
 
   /// render() for pixel rows [row_begin, row_end) only (clamped to the image), so an embedder
   /// can spread one image over several calls; every row over all calls gives exactly render().
   /// `prepared` must come from prepare() with the same field and colours.
-  void render_rows(const Prepared& prepared, const HeatField& field,
-                   const std::vector<Rgb565>& cell_colours, Rgb565* out, std::int32_t row_begin,
-                   std::int32_t row_end) const;
+  void render_rows(const Prepared& prepared, const HeatField& field, CellColours cell_colours,
+                   Rgb565* out, std::int32_t row_begin, std::int32_t row_end) const;
   /// The same, preparing first: a pass over every cell per call.
-  void render_rows(const HeatField& field, const std::vector<Rgb565>& cell_colours, Rgb565* out,
+  void render_rows(const HeatField& field, CellColours cell_colours, Rgb565* out,
                    std::int32_t row_begin, std::int32_t row_end) const {
     render_rows(prepare(field, cell_colours), field, cell_colours, out, row_begin, row_end);
   }
@@ -96,22 +115,23 @@ class HeatRasterizer {
   std::int32_t height_ = 0;
   std::int32_t cols_ = 0;
   std::int32_t rows_ = 0;
-  std::vector<std::uint8_t> pixel_room_;  ///< Per pixel: room index, or kNoRoom.
-  std::vector<std::uint8_t> cell_room_;   ///< Per cell: room index, or kNoRoom.
-  std::vector<bool> room_outdoor_;
+  BulkVector<std::uint8_t> pixel_room_;  ///< Per pixel: room index, or kNoRoom.
+  BulkVector<std::uint8_t> cell_room_;   ///< Per cell: room index, or kNoRoom.
+  BulkVector<std::uint8_t> room_outdoor_;
   // Bilinear tables, per column and per row: the two cells either side and the weight (0..256)
   // of the second.
-  std::vector<std::int32_t> col0_, col1_, row0_, row1_;
-  std::vector<std::int32_t> wx_, wy_;
+  BulkVector<std::int32_t> col0_, col1_, row0_, row1_;
+  BulkVector<std::int32_t> wx_, wy_;
   // Deferred build state.
   RoomScanner scanner_;
-  std::vector<std::int16_t> scan_row_;  ///< One row of scanner output.
-  std::int32_t next_row_ = 0;           ///< 0..rows_ grid rows, then rows_..rows_+height_ pixels.
+  BulkVector<std::int16_t> scan_row_;  ///< One row of scanner output.
+  std::int32_t next_row_ = 0;          ///< 0..rows_ grid rows, then rows_..rows_+height_ pixels.
 };
 
 /// One colour per cell of `field` through core's ColourLut (built once per band), written into
 /// `out` (resized to the cell count; no allocation once it has that size). Non-Value cells get
 /// 0; the rasterizer never reads them.
 void colour_cells(const HeatField& field, const ColourLut& lut, std::vector<Rgb565>& out);
+void colour_cells(const HeatField& field, const ColourLut& lut, BulkVector<Rgb565>& out);
 
 }  // namespace hearthmap::ui
