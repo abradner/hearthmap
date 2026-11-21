@@ -840,6 +840,11 @@ shown frame must lie inside its own complete set and equal that frame composed a
 tile's captures, the canaries hold, no frame not yet composed (filled with a marker colour) is
 handed over, and no frame is held back. On 2aec730's arithmetic it fails at 1536 ms with a frame
 outside its set; a frame corrupted after composing, or one word written past a set, fail it too.
+**Memory at the peak (CodeRabbit, same round):** a set is recomposed while the old one plays, so
+admission and the rate divisor now use one estimate of the peak (captures, a table per pulse
+reaching each tile, every set, and room for one replacement set), and when memory forces a
+coarser rate the old, larger sets are given up first (the tiles step aside until recomposed). A
+screen test recomposes at four budgets and checks the bytes held never pass the budget.
 
 ### D-054 The renderer is built to port: one pixel interface, budgets from memory, regions from one table (provisional)
 
@@ -899,7 +904,9 @@ edge-wall pixels. **Would change if:** PSRAM gets tight (fewer kept layers is th
 give), or the owner wants the edge walls whole (bake a 2 px margin).
 **Amended after 4d50e76 on the panel:** a heat step of about 61 ms appeared in the perf lines; a
 32-row band costs two LVGL renders of 32 x 864 px of walls and labels in one step, the likely
-cause. Bands are 8 rows (`MapBake::kBandRows`).
+cause. Bands are 8 rows (`MapBake::kBandRows`). A band whose render fails is rendered again, and after three failures
+in a row the bake gives up and the objects stay; before, the band was published transparent and
+the objects hidden over it (`ui_lvgl/tests/map_bake_test.cpp`).
 
 ### D-056 A tap is acknowledged at once; the detail card is cheap to draw; heat slices yield (provisional)
 
