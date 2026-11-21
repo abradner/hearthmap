@@ -18,6 +18,14 @@
 // rendering about 0.03 us per pixel of opaque RGB565 image, 0.02 of fill, and 0.55 of the
 // anti-aliased shapes (lines, arcs, borders, labels, masks, layers). The budget is 300 ms of
 // LVGL per second (30 % of the loop) and 33 ms for any single refresh in steady state.
+//
+// The panel shows pulse frames through its presenter (D-058): a frame whose tile nothing covers
+// goes to the panel straight from its precomputed buffer, outside LVGL's refresh, and only the
+// rest are invalidated. The proxy runs that path as the panel does (Screen::show_due_frames after
+// every timer pass) with a presenter that accepts and charges the target's own present rate:
+// 0.06 ms fixed plus 0.027 us per pixel, fitted to perf-hw's bench (0.17 ms at 64 x 64, 0.31 at
+// 96 x 96, 0.50 at 128 x 128: the PPA rotation into the frame buffer and its cache write-back).
+// The fallback path (no presenter) is printed for comparison, not budgeted.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -51,10 +59,13 @@ struct TargetRates {
   double flush_fixed_ms;                  ///< per flushed area
   double flush_us_per_px;                 ///< per flushed pixel
   std::array<double, 32> task_us_per_px;  ///< by lv_draw_task_type_t
+  double present_fixed_ms;                ///< per presented tile (D-058)
+  double present_us_per_px;               ///< per presented pixel
+  std::size_t pulse_memory_bytes;         ///< the pulse sprites' budget (D-054)
 };
 
 TargetRates p4_rates() {
-  TargetRates r{"ESP32-P4 1280x800", 0.85, 0.077, {}};
+  TargetRates r{"ESP32-P4 1280x800", 0.85, 0.077, {}, 0.06, 0.027, kPanelPulseMemory};
   r.task_us_per_px.fill(0.55);  // anti-aliased shapes and anything not listed
   r.task_us_per_px[LV_DRAW_TASK_TYPE_IMAGE] = 0.03;
   r.task_us_per_px[LV_DRAW_TASK_TYPE_FILL] = 0.02;
@@ -79,6 +90,10 @@ struct Counts {
   double max_refresh_ms = 0;
   std::uint32_t tasks = 0;
   std::array<std::uint64_t, 32> task_px{};  // by lv_draw_task_type_t
+  std::uint32_t presented = 0;              // pulse frames sent straight to the panel
+  std::uint32_t fallbacks = 0;              // ...and invalidated instead
+  std::array<std::uint32_t, 16> blocked{};  // fallbacks by ui::PresentBlock
+  double present_ms = 0;                    // the cost model's share for presenting
   std::uint64_t task_px_total() const {
     std::uint64_t s = 0;
     for (auto v : task_px) s += v;
@@ -308,12 +323,35 @@ Scenario example_thirsty() {
 
 // ---- the run -----------------------------------------------------------------------------------
 
+/// How pulse frames reach the panel.
+enum class FramePath : std::uint8_t {
+  Present,     ///< through a presenter where nothing covers the tile, as the panel runs
+  Invalidate,  ///< every frame invalidated and repainted by LVGL
+};
+
+/// Accepts every frame and charges the target's present rate for it.
+class ChargingPresenter final : public ui::Presenter {
+ public:
+  bool present(int x, int y, const ui::View565& tile) override {
+    (void)x;
+    (void)y;
+    if (g_counts != nullptr) {
+      const double ms = kRates.present_fixed_ms +
+                        static_cast<double>(tile.w) * tile.h * kRates.present_us_per_px / 1000.0;
+      g_counts->present_ms += ms;
+      g_counts->cost_ms += ms;
+    }
+    return true;
+  }
+};
+
 struct Result {
   double seconds = 0;
   Counts counts;
   double host_ms = 0;  // wall time in lv_timer_handler: informational only
   std::size_t pulsing_pins = 0;
   std::size_t pulsing_rooms = 0;
+  ui::PulseCounters pulses;  // at the end of the run
   double flushed_per_s() const { return static_cast<double>(counts.flushed_px) / seconds; }
   double cost_ms_per_s() const { return counts.cost_ms / seconds; }
   double tasks_per_s() const { return static_cast<double>(counts.task_px_total()) / seconds; }
@@ -321,7 +359,8 @@ struct Result {
 
 constexpr std::uint32_t kTickMs = 16;  // ESPHome's LV_DEF_REFR_PERIOD
 
-Result run_steady(const char* name, const Scenario& s, Layer layer, double seconds) {
+Result run_steady(const char* name, const Scenario& s, Layer layer, double seconds,
+                  FramePath path = FramePath::Present) {
   HeadlessDisplay display(1280, 800);
   lv_display_add_event_cb(display.display(), rounder, LV_EVENT_INVALIDATE_AREA, nullptr);
   install_task_counter();  // after lv_init(), which would forget a unit created before it
@@ -329,8 +368,25 @@ Result run_steady(const char* name, const Scenario& s, Layer layer, double secon
        {LV_EVENT_FLUSH_START, LV_EVENT_INVALIDATE_AREA, LV_EVENT_REFR_START, LV_EVENT_REFR_READY})
     lv_display_add_event_cb(display.display(), on_display_event, code, nullptr);
   SizedPhotos photos;
-  App app(display.screen(), s.config, s.readings, s.now, 0, &photos);
+  App app(display.screen(), s.config, s.readings, s.now, 0, &photos, kRates.pulse_memory_bytes);
   app.set_layer(layer);
+  ChargingPresenter presenter;
+  const bool presenting = path == FramePath::Present;
+  app.screen().set_frames_deferred(presenting);
+  // One timer pass, then (presenting) the frames it chose, outside LVGL's refresh as the panel's
+  // main loop shows them.
+  auto step = [&](std::uint32_t at, Counts* c) {
+    display.set_time_ms(at);
+    display.run_timers();
+    if (!presenting) return;
+    ui::Screen::ShownFrames shown;
+    app.screen().show_due_frames(presenter, &shown);
+    if (c != nullptr) {
+      c->presented += shown.presented;
+      c->fallbacks += shown.invalidated;
+      for (std::size_t i = 0; i < shown.blocked.size(); ++i) c->blocked[i] += shown.blocked[i];
+    }
+  };
 
   Result r;
   for (const PinView& pv : app.view_model().pins) {
@@ -343,26 +399,34 @@ Result run_steady(const char* name, const Scenario& s, Layer layer, double secon
   // Warm up: the first full draw and a second of animation, not counted.
   std::uint32_t t = 0;
   display.render();
-  for (; t < 1000; t += kTickMs) {
-    display.set_time_ms(t);
-    display.run_timers();
-  }
+  for (; t < 1000; t += kTickMs) step(t, nullptr);
   Counts counts;
   g_counts = &counts;
   const auto start = std::chrono::steady_clock::now();
   const std::uint32_t end = t + static_cast<std::uint32_t>(seconds * 1000.0);
-  for (; t < end; t += kTickMs) {
-    display.set_time_ms(t);
-    display.run_timers();
-  }
+  for (; t < end; t += kTickMs) step(t, &counts);
   const auto stop = std::chrono::steady_clock::now();
   g_counts = nullptr;
+  r.pulses = app.screen().pulse_counters();
   r.seconds = seconds;
   r.counts = counts;
   r.host_ms = std::chrono::duration<double, std::milli>(stop - start).count();
 
-  std::printf("perf proxy [%s]: %zu pulsing pins, %zu pulsing rooms, over %.0f s\n", name,
-              r.pulsing_pins, r.pulsing_rooms, seconds);
+  std::printf("perf proxy [%s, %s]: %zu pulsing pins, %zu pulsing rooms, over %.0f s\n", name,
+              presenting ? "presenting" : "invalidating", r.pulsing_pins, r.pulsing_rooms, seconds);
+  std::printf("  sprites: %zu rings and %zu outlines animated, frames / %u, %.1f MiB\n",
+              r.pulses.rings_shown, r.pulses.rooms_animated, r.pulses.frame_divisor,
+              static_cast<double>(r.pulses.tile_bytes) / (1024.0 * 1024.0));
+  if (presenting) {
+    std::printf("  presented %.1f frames/s (%.0f ms/s of it), fell back %.1f/s\n",
+                counts.presented / seconds, counts.present_ms / seconds,
+                counts.fallbacks / seconds);
+    std::printf("  fallbacks by PresentBlock:");
+    for (std::size_t i = 0; i < counts.blocked.size(); ++i) {
+      if (counts.blocked[i] != 0) std::printf(" %zu: %u", i, counts.blocked[i]);
+    }
+    std::printf("\n");
+  }
   std::printf(
       "  cost model (%s): %.0f ms/s of LVGL, %.1f flushes/s, largest refresh %.1f ms "
       "(%.1f kpx)\n",
@@ -392,7 +456,10 @@ TEST_CASE("perf proxy: the panel-shaped house, pulses running, stays inside its 
   // The scenario must actually exercise the pulses, or the budget proves nothing.
   REQUIRE(r.pulsing_pins == 9);
   REQUIRE(r.pulsing_rooms >= 3);
-  CHECK(r.counts.flushed_px > 0);  // positive control: the probe sees refreshes at all
+  // Positive control: the frames reach the panel (presented; nothing needs LVGL to repaint, so
+  // a steady house may flush nothing at all).
+  CHECK(r.counts.presented + r.counts.fallbacks > 0);
+  CHECK(r.counts.fallbacks * 10U <= r.counts.presented);  // outline cells and rings present
   CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
   CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
 }
@@ -401,7 +468,8 @@ TEST_CASE("perf proxy: the panel-shaped house on the temperature layer, rooms pu
   const Result r =
       run_steady("panel-like, temperature layer", panel_like(), Layer::Temperature, 10.0);
   REQUIRE(r.pulsing_rooms >= 4);
-  CHECK(r.counts.flushed_px > 0);
+  CHECK(r.counts.presented + r.counts.fallbacks > 0);
+  CHECK(r.counts.fallbacks * 10U <= r.counts.presented);
   CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
   CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
 }
@@ -410,9 +478,19 @@ TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budge
   const Result r =
       run_steady("example thirsty-many, soil layer", example_thirsty(), Layer::Soil, 10.0);
   REQUIRE(r.pulsing_pins >= 1);
-  CHECK(r.counts.flushed_px > 0);
+  CHECK(r.counts.presented + r.counts.fallbacks > 0);
+  CHECK(r.counts.fallbacks * 10U <= r.counts.presented);
   CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
   CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
+}
+
+// Not a budget: the same house with every frame invalidated (a target with no presenter), so the
+// present path's saving can be read off.
+TEST_CASE("perf proxy: the panel-shaped house without a presenter (informative)") {
+  const Result r =
+      run_steady("panel-like, soil layer", panel_like(), Layer::Soil, 10.0, FramePath::Invalidate);
+  CHECK(r.counts.flushed_px > 0);
+  CHECK(r.counts.presented == 0);
 }
 
 namespace {

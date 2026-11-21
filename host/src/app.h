@@ -25,11 +25,18 @@
 
 namespace hearthmap::host {
 
+/// The pulse sprites' budget on the panel, as the host models it: an estimate of what the panel
+/// gets (its "boot: N KiB for pulse sprites" line: three quarters of the PSRAM left past the
+/// reserve and the map bake), on the low side. The renderer and the perf proxy use it, so goldens
+/// and budgets show the panel rather than a small target.
+inline constexpr std::size_t kPanelPulseMemory = 8U * 1024U * 1024U;
+
 class App final : public ui::EventSink {
  public:
-  /// Builds the Screen under `parent`. `config` and `readings` are copied.
+  /// Builds the Screen under `parent`. `config` and `readings` are copied. `pulse_memory_bytes`
+  /// is the pulse sprites' budget (0: the Screen's default, a small target's).
   App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int utc_offset_minutes,
-      const ui::ImageProvider* photos);
+      const ui::ImageProvider* photos, std::size_t pulse_memory_bytes = 0);
 
   /// ui::EventSink: queue only (LVGL is mid-callback).
   void on_ui_event(const UiEvent& event) override { pending_.push_back(event); }
@@ -44,6 +51,7 @@ class App final : public ui::EventSink {
   const UiState& ui_state() const { return state_; }
   const ViewModel& view_model() const { return vm_; }
   const ui::Screen& screen() const { return *screen_; }
+  ui::Screen& screen() { return *screen_; }
   std::size_t heat_image_bytes() const { return heat_pixels_.size() * sizeof(Rgb565); }
   std::size_t rasterizer_bytes() const { return raster_.working_bytes(); }
 

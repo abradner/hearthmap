@@ -29,7 +29,7 @@ static void describe_rgb565(lv_image_dsc_t& dsc, const std::vector<Rgb565>& pixe
 #endif
 
 App::App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int utc_offset_minutes,
-         const ui::ImageProvider* photos)
+         const ui::ImageProvider* photos, std::size_t pulse_memory_bytes)
     : config_(std::move(config)),
       readings_(std::move(readings)),
       now_(now),
@@ -47,6 +47,7 @@ App::App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int 
   deps.fonts = ui::builtin_fonts();
   deps.sink = this;
   deps.photos = photos;
+  deps.pulse_memory_bytes = pulse_memory_bytes;
   screen_ = std::make_unique<ui::Screen>(parent, config_, &heat_dsc_, deps);
   // The map bake (walls and labels) before the first image, so that image carries it.
   while (screen_->prepare_step()) {
