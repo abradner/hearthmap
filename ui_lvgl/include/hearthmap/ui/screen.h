@@ -68,6 +68,9 @@ struct ScreenDeps {
   /// Memory the pulse sprites may hold, bytes (D-053, D-054). 0: 2 MiB. Pulsing pins and rooms
   /// past it show their badge or a steady state instead of an animation.
   std::size_t pulse_memory_bytes = 0;
+  /// Optional: a microsecond clock, so pulse_counters() can say how long frames and captures
+  /// take (the panel's perf log). ui_lvgl reads no clock of its own.
+  std::uint32_t (*micros)() = nullptr;
   /// Memory the map bake may hold, bytes (D-055; 3 per map pixel). 0: 4 MiB. Without enough,
   /// walls and labels stay LVGL objects.
   std::size_t bake_memory_bytes = 0;
@@ -81,6 +84,8 @@ struct PulseCounters {
   std::size_t tile_bytes = 0;  ///< memory the sprites hold now
   std::size_t rings_shown = 0;
   std::size_t rooms_animated = 0;
+  std::uint64_t frame_us = 0;    ///< composing frames, in LVGL's timer (with ScreenDeps::micros)
+  std::uint64_t prepare_us = 0;  ///< in prepare_step() (with ScreenDeps::micros)
 };
 
 /// Raw pointers to the widgets, for tests and for embedders that want to restyle. Owned by the

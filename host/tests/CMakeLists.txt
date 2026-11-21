@@ -12,7 +12,8 @@ set_tests_properties(host.unit PROPERTIES FAIL_REGULAR_EXPRESSION "test cases: +
 
 # ---- golden images -----------------------------------------------------------------------------
 # Each case: name, then the render arguments. Every case renders at --time-ms 400 so pulses are
-# caught mid-cycle. Taps are canvas pixels on the example (map area 864 x 720 at 40, 76):
+# caught mid-cycle; pulse-ring-on-red overrides it to 700, where the kitchen plant's danger ring is
+# large over its danger-red room (the keyline must keep it visible, D-053). Taps are canvas pixels on the example (map area 864 x 720 at 40, 76):
 #   basil (plant)          (0.625,  0.06) -> 580, 119
 #   living-room climate    (0.2083, 0.30) -> 220, 292
 set(_flat "${PROJECT_SOURCE_DIR}/examples/flat")
@@ -29,6 +30,7 @@ set(HEARTHMAP_GOLDEN_CASES
   "layer-humidity|thirsty-many|--layer humidity"
   "layer-soil|all-ok|--layer soil"
   "layer-air|thirsty-many|--layer air"
+  "pulse-ring-on-red|thirsty-many|--layer soil --time-ms 700"
 )
 
 set(_update_commands)

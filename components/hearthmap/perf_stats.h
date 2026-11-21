@@ -52,9 +52,11 @@ struct PerfWindow {
   std::uint32_t refresh_max_anim = 0;
 
   // Pulse sprites (ui_lvgl's Screen::pulse_counters()), set by the caller at the window's end.
-  std::uint32_t sprite_frames = 0;   ///< frames shown in the window
-  std::uint32_t sprite_dropped = 0;  ///< frames skipped in the window
-  std::uint32_t sprite_kib = 0;      ///< memory the sprites hold now
+  std::uint32_t sprite_frames = 0;      ///< frames shown in the window
+  std::uint32_t sprite_dropped = 0;     ///< frames skipped in the window
+  std::uint32_t sprite_kib = 0;         ///< memory the sprites hold now
+  std::uint32_t sprite_frame_us = 0;    ///< composing sprite frames (inside LVGL's timer handler)
+  std::uint32_t sprite_prepare_us = 0;  ///< capturing sprite backgrounds (inside hm heat)
 };
 
 class PerfStats {

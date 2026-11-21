@@ -281,6 +281,7 @@ bool HearthmapComponent::start_screen_() {
   deps.fonts = hm::ui::builtin_fonts();
   deps.sink = this;
   deps.photos = &this->photos_;
+  deps.micros = [] { return static_cast<std::uint32_t>(micros()); };
   // Pulse sprites get an eighth of the free PSRAM, at most 4 MiB, at least 256 KiB (D-054):
   // past it, pulsing pins show their badge and rooms a steady outline instead of animating.
   const std::size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -510,6 +511,10 @@ void HearthmapComponent::log_perf_() {
     w.sprite_frames = c.frames - this->last_sprite_frames_;
     w.sprite_dropped = c.dropped - this->last_sprite_dropped_;
     w.sprite_kib = static_cast<uint32_t>(c.tile_bytes / 1024U);
+    w.sprite_frame_us = static_cast<uint32_t>(c.frame_us - this->last_sprite_frame_us_);
+    w.sprite_prepare_us = static_cast<uint32_t>(c.prepare_us - this->last_sprite_prepare_us_);
+    this->last_sprite_frame_us_ = c.frame_us;
+    this->last_sprite_prepare_us_ = c.prepare_us;
     this->last_sprite_frames_ = c.frames;
     this->last_sprite_dropped_ = c.dropped;
   }

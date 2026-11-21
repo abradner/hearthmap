@@ -125,14 +125,15 @@ std::size_t PerfStats::format(const PerfWindow& w, char* out, std::size_t size) 
       " press, %" PRIu32 " click, read>press max %" PRIu32 " ms, click>drawn max %" PRIu32
       " ms (%" PRIu32 ") | refresh max by cause: anim %" PRIu32 " ms, tap %" PRIu32
       " ms, heat %" PRIu32 " ms | sprites %" PRIu64 " frames/s, %" PRIu32 " dropped, %" PRIu32
-      " KiB",
+      " KiB, compose %" PRIu32 " ms, capture %" PRIu32 " ms",
       w.window_ms, per_s(w.loops), w.loop_gap_max / 1000U, w.refreshes, w.refresh_total / 1000U,
       w.window_ms == 0 ? 0 : (static_cast<std::uint64_t>(w.refresh_total) / 10U) / w.window_ms,
       w.refresh_max / 1000U, w.flush_total / 1000U, w.flushes, per_s(w.flushed_px) / 1000U,
       per_s(w.invalidated_px) / 1000U, w.own_view / 1000U, w.own_heat / 1000U, w.own_max / 1000U,
       w.touch_reads, w.presses, w.clicks, w.read_to_press_max_ms, w.click_to_ack_max_ms, w.acks,
       w.refresh_max_anim / 1000U, w.refresh_max_tap / 1000U, w.refresh_max_heat / 1000U,
-      per_s(w.sprite_frames), w.sprite_dropped, w.sprite_kib);
+      per_s(w.sprite_frames), w.sprite_dropped, w.sprite_kib, w.sprite_frame_us / 1000U,
+      w.sprite_prepare_us / 1000U);
   if (n < 0) {
     out[0] = '\0';
     return 0;

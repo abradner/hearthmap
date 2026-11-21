@@ -60,6 +60,15 @@ inline constexpr std::uint32_t kPulseRingCycleMs = 1600;
 inline constexpr int kRoomPulseWidth = 5;                 ///< room outline width, px
 inline constexpr std::uint32_t kRoomPulseCycleMs = 2800;  ///< opacity 0.35 -> 1 -> 0.35
 inline constexpr std::uint8_t kRoomPulseMinOpa = 89;      ///< 0.35 * 255
+/// Pulses carry a dark keyline (kBackground) under their colour, so a red ring still reads on a
+/// red room: this many px wider than the stroke in all, at this share of the stroke's opacity.
+inline constexpr int kPulseHaloExtra = 4;
+inline constexpr std::uint8_t kPulseHaloOpa = 200;
+
+/// Sprite tiles and their repaints are aligned to this many pixels, a multiple of any display
+/// driver's draw rounding (ESPHome rounds invalidated areas out to its draw_rounding, 2 on the
+/// panel): a rounded repaint must stay inside its opaque tile, or LVGL draws everything under it.
+inline constexpr int kTileAlign = 8;
 
 // Geometry (device pixels, landscape 1280 x 800)
 inline constexpr int kScreenWidth = 1280;

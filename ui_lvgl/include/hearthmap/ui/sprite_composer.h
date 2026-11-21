@@ -23,11 +23,12 @@ struct RingLayer {
   const std::uint16_t* distance = nullptr;  ///< Per tile pixel, 1/16 px.
   const std::uint8_t* alpha = nullptr;      ///< By distance; nullptr: nothing drawn.
   std::size_t size = 0;
+  std::uint16_t colour = 0;  ///< RGB565.
 };
 
 /// Compose the rows [y0, y1) and columns [x0, x1) of a `stride`-wide tile: where `full` and
 /// `below` differ the pixel belongs to something drawn over the pulses (a pin) and is copied from
-/// `full`; elsewhere `below` gets each overlay in order, then each ring in `ring_colour`.
+/// `full`; elsewhere `below` gets each overlay in order, then each ring layer in its colour.
 struct ComposeJob {
   const std::uint16_t* below = nullptr;
   const std::uint16_t* full = nullptr;
@@ -38,7 +39,6 @@ struct ComposeJob {
   std::size_t overlay_count = 0;
   const RingLayer* rings = nullptr;
   std::size_t ring_count = 0;
-  std::uint16_t ring_colour = 0;
 };
 
 class SpriteComposer {

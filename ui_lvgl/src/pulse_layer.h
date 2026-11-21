@@ -34,6 +34,7 @@ namespace hearthmap::ui::detail {
 struct PulseBudget {
   std::size_t memory_bytes = 2U * 1024U * 1024U;  ///< tiles, captures and tables, all pulses
   std::size_t max_animated_rooms = 6;             ///< more pulsing rooms show a steady outline
+  std::uint32_t (*micros)() = nullptr;  ///< a microsecond clock to time frames and captures
 };
 
 struct PulseStats {
@@ -44,6 +45,8 @@ struct PulseStats {
   std::size_t rings_shown = 0;     ///< Rings with a tile now.
   std::size_t rooms_animated = 0;  ///< Room outlines animating now.
   bool pending = false;            ///< prepare_step() has work.
+  std::uint64_t frame_us = 0;      ///< Time composing frames (in LVGL's timer), when timed.
+  std::uint64_t prepare_us = 0;    ///< Time in prepare_step() (captures), when timed.
 };
 
 class PulseLayer {
@@ -111,8 +114,9 @@ class PulseLayer {
   struct RoomRef {
     std::size_t room = 0;
     std::vector<std::uint8_t> coverage;
-    lv_area_t box{};      ///< screen px: where the coverage is non-zero
-    int drawn_step = -3;  ///< the room step this tile last composed
+    std::vector<std::uint8_t> halo;  ///< the dark keyline under the stroke (D-053)
+    lv_area_t box{};                 ///< screen px: where the coverage is non-zero
+    int drawn_step = -3;             ///< the room step this tile last composed
   };
   struct Ring {
     Tile t;
@@ -156,6 +160,7 @@ class PulseLayer {
   bool capture(Tile& t);
   void compose_ring(std::size_t i, const lv_area_t& box);
   void compose_edge(Edge& e);
+  std::size_t room_overlays(const std::vector<RoomRef>& refs, Overlay* out, std::size_t cap) const;
   void rebuild_edge_geometry(Edge& e);
   void admit_waiting();
   std::size_t ring_admission_bytes(const Ring& r) const;
@@ -170,12 +175,14 @@ class PulseLayer {
   const SpriteComposer* ops_;
   lv_point_t origin_;
   lv_area_t map_area_{};
+  lv_area_t tile_area_{};  ///< map_area_ shrunk to whole kTileAlign blocks
   std::vector<lv_obj_t*> pins_;
   std::vector<Ring> rings_;
   std::vector<Room> rooms_;
   std::vector<lv_obj_t*> ring_img_;
   std::vector<lv_obj_t*> room_box_;
   std::array<std::vector<std::uint8_t>, kRingFrames> ring_alpha_;
+  std::array<std::vector<std::uint8_t>, kRingFrames> ring_halo_;
   std::array<std::uint8_t, kRoomSteps> room_opa_{};
   lv_timer_t* timer_ = nullptr;
   bool veiled_ = false;

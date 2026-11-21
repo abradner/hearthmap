@@ -118,6 +118,17 @@ void install_task_counter() {
   installed = true;
 }
 
+// ESPHome's lvgl component rounds every invalidated area out to its draw rounding (2 px on the
+// panel; lvgl_esphome.cpp, rounder_cb), before LVGL decides what covers it. Mirrored here, first.
+constexpr std::int32_t kDrawRounding = 2;
+void rounder(lv_event_t* e) {
+  auto* a = static_cast<lv_area_t*>(lv_event_get_param(e));
+  a->x1 = a->x1 / kDrawRounding * kDrawRounding;
+  a->y1 = a->y1 / kDrawRounding * kDrawRounding;
+  a->x2 = (a->x2 + kDrawRounding) / kDrawRounding * kDrawRounding - 1;
+  a->y2 = (a->y2 + kDrawRounding) / kDrawRounding * kDrawRounding - 1;
+}
+
 void on_display_event(lv_event_t* e) {
   if (g_counts == nullptr) return;
   const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
@@ -312,6 +323,7 @@ constexpr std::uint32_t kTickMs = 16;  // ESPHome's LV_DEF_REFR_PERIOD
 
 Result run_steady(const char* name, const Scenario& s, Layer layer, double seconds) {
   HeadlessDisplay display(1280, 800);
+  lv_display_add_event_cb(display.display(), rounder, LV_EVENT_INVALIDATE_AREA, nullptr);
   install_task_counter();  // after lv_init(), which would forget a unit created before it
   for (lv_event_code_t code :
        {LV_EVENT_FLUSH_START, LV_EVENT_INVALIDATE_AREA, LV_EVENT_REFR_START, LV_EVENT_REFR_READY})
@@ -426,6 +438,7 @@ std::uint64_t answer_px(HeadlessDisplay& display, std::uint32_t& t, std::uint64_
 TEST_CASE("perf proxy: what a tap costs to answer (informative)") {
   const Scenario s = panel_like();
   HeadlessDisplay display(1280, 800);
+  lv_display_add_event_cb(display.display(), rounder, LV_EVENT_INVALIDATE_AREA, nullptr);
   install_task_counter();
   for (lv_event_code_t code :
        {LV_EVENT_FLUSH_START, LV_EVENT_INVALIDATE_AREA, LV_EVENT_REFR_START, LV_EVENT_REFR_READY})

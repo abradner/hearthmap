@@ -753,6 +753,25 @@ tile equals LVGL's own drawing everywhere outside the ring (removing the pin mas
 recapture after a heat change, each fails it), frame counts per cycle, no LVGL animation, strip
 geometry, clearing. **Would change if:** the flush path gets cheaper (raise frames), or the owner
 finds 12.5 frames/s per ring too slow.
+**Amended after the first device run of sprites (7654a4b, real config).** The soil tab spent 55 % of
+its time in LVGL at about 5 ms per repainted area, not the model's 1 ms, and the loop fell to 8
+passes a second. Cause, reproduced on the host once the proxy mirrored ESPHome's rounder
+(`rounder_cb` rounds every invalidated area out to its 2 px draw rounding): a rounded repaint
+poked a pixel outside its opaque tile, so no object covered it and LVGL drew the background, the
+heat strips, the walls, labels and pin discs under every frame. Room-outline containers also
+clipped their aligned edge tiles, hiding them from LVGL's cover search. Now tiles and every
+repaint inside them are aligned out to `theme::kTileAlign` (8 px, a multiple of any power-of-two
+draw rounding up to 8), tiles stay inside the aligned part of the map, and containers hold their
+tiles whole; the proxy's draw tasks during animation are images only. Ring tiles are the topmost
+objects in the map and already carry the pins, badges and pills under them (captured with the
+pins), so nothing LVGL draws sits on top of a ring tile: the condition for presenting a tile
+directly to the display without an LVGL refresh (the acceleration work); where two ring tiles
+overlap they hold identical pixels in the overlap. **Contrast (owner's note: a red ring on a red
+room vanished):** every ring and outline now carries a dark keyline (`theme::kBackground`, 4 px
+wider than the stroke, at 200/255 of its opacity) under its colour, composed in the same pass, so
+it reads on any fill; golden `pulse-ring-on-red` holds the case. Badges already have a dark rim.
+The perf line gains the time spent composing frames (inside LVGL's timer handler, outside the
+refresh count) and capturing tiles.
 
 ### D-054 The renderer is built to port: one pixel interface, budgets from memory, regions from one table (provisional)
 

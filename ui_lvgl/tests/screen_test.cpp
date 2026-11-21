@@ -1056,12 +1056,13 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
   for (std::uint32_t i = 0; i < edges; ++i) {
     lv_area_t a;
     lv_obj_get_coords(lv_obj_get_child(w.room_pulse[0], static_cast<std::int32_t>(i)), &a);
-    // Every edge object is a strip at most 2 x 5 + 1 px thick.
-    CHECK(std::min(lv_area_get_width(&a), lv_area_get_height(&a)) <= 11);
+    // Every edge object is a strip: the stroke with its keyline and caps, aligned out to whole
+    // kTileAlign blocks (at most four of them across).
+    CHECK(std::min(lv_area_get_width(&a), lv_area_get_height(&a)) <= 4 * theme::kTileAlign);
     area += lv_area_get_size(&a);
   }
-  CHECK(area <= 2U * (432U + 360U) * 12U);  // the perimeter, 12 px wide
-  CHECK(area < 432U * 360U / 8U);           // an eighth of the room
+  CHECK(area <= 2U * (432U + 360U + 64U) * 32U);  // the perimeter, at most 32 px wide
+  CHECK(area < 432U * 360U / 4U);                 // a quarter of the room
 
   // One step of the pulse invalidates no more than those strips (plus their draw margin).
   lv_display_add_event_cb(rig.display.display(), count_invalidation, LV_EVENT_INVALIDATE_AREA,
@@ -1176,12 +1177,14 @@ TEST_CASE("a diagonal wall's pulse is cut into small pieces, so it never invalid
     const std::int32_t lo = std::min(lv_area_get_width(&a), lv_area_get_height(&a));
     const std::int32_t hi = std::max(lv_area_get_width(&a), lv_area_get_height(&a));
     // A thin strip (an axis-aligned wall), or a piece no bigger than a 48 px run plus the width
-    // and caps on each axis.
-    CHECK((lo <= 11 || hi <= 48 + 11));
+    // and caps on each axis, aligned out to whole kTileAlign blocks.
+    CHECK((lo <= 4 * theme::kTileAlign || hi <= 48 + 19 + 2 * theme::kTileAlign));
     area += lv_area_get_size(&a);
   }
-  // Under half the triangle; one object for the hypotenuse alone covered 443 x 371 px.
-  CHECK(area < 432U * 360U / 2U / 2U);
+  // Under the triangle's own area; one object for the hypotenuse alone covered 443 x 371 px,
+  // more than twice that.
+  MESSAGE("diagonal room sprite area " << area);
+  CHECK(area < 432U * 360U / 2U);
 }
 
 namespace {
@@ -1289,6 +1292,10 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
   CHECK_FALSE(hidden(rig.w().room_label[0]));
 }
 
+// One of small_config()'s top rooms' outline sprites fits, two do not (8 bytes a pixel of strips
+// about 20 px wide along 2 x (432 + 360) px, aligned).
+constexpr std::size_t kOneRoomBudget = 300U * 1024U;
+
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
   Config c = test::small_config();
@@ -1308,7 +1315,7 @@ TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   deps.fonts = builtin_fonts();
   deps.sink = &sink;
   // One room's strips: perimeter 2 x (432 + 360) px, 11 px wide plus corners, 8 bytes a pixel.
-  deps.pulse_memory_bytes = 170U * 1024U;
+  deps.pulse_memory_bytes = kOneRoomBudget;
   Screen screen(display.screen(), c, &dsc, deps);
   ViewModel vm = test::temperature_vm(c);
   const HeaderText header{"09:00", ""};

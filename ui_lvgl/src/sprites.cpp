@@ -247,7 +247,7 @@ void SpriteComposer::compose(const ComposeJob& j) const {
         const RingLayer& r = j.rings[k];
         if (r.alpha == nullptr) continue;
         const std::size_t d = r.distance[i];
-        if (d < r.size) c = blend565(c, j.ring_colour, r.alpha[d]);
+        if (d < r.size) c = blend565(c, r.colour, r.alpha[d]);
       }
       j.out[i] = c;
     }

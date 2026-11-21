@@ -111,6 +111,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t last_view_ms_ = 0;
   uint32_t last_sprite_frames_ = 0;
   uint32_t last_sprite_dropped_ = 0;
+  uint64_t last_sprite_frame_us_ = 0;
+  uint64_t last_sprite_prepare_us_ = 0;
   bool rebake_requested_ = false;
   bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).
   uint32_t last_press_ms_ = 0;
