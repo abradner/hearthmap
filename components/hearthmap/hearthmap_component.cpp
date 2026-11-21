@@ -31,6 +31,10 @@ constexpr uint32_t kSliceBudgetMs = 20;
 // instead of in one long one (a full 920 x 736 repaint took 645 ms on the panel).
 constexpr int32_t kHeatBandRows = 48;
 constexpr uint32_t kBandIntervalMs = 25;
+// After a press, heat work waits this long, so the slices of a rebuild never sit between a
+// touch and the refresh that answers it (the tap, its click and the screen update all happen
+// within a few loop passes).
+constexpr uint32_t kHeatHoldAfterPressMs = 300;
 constexpr std::int32_t kBootRowsPerStep = 4;
 constexpr std::int32_t kFieldRowsPerStep = 1;
 
@@ -341,7 +345,10 @@ void HearthmapComponent::frame_slice_() {
     ~OwnTimer() { perf.own_work(view_us, micros() - heat_t0); }
   } own_timer{this->perf_, heat_t0 - view_t0, heat_t0};
 
-  // The heat image, in the rest of the slice: rebuilt only when the pipeline says so.
+  // The heat image, in the rest of the slice: rebuilt only when the pipeline says so, and not
+  // just after a press.
+  if (this->pressed_ && millis() - this->last_press_ms_ < kHeatHoldAfterPressMs) return;
+  this->pressed_ = false;
   bool idle = false;
   do {
     idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
@@ -425,7 +432,11 @@ void HearthmapComponent::on_display_event_(lv_event_t* e) {
 
 void HearthmapComponent::on_indev_event_(lv_event_t* e) {
   auto* self = static_cast<HearthmapComponent*>(lv_event_get_user_data(e));
-  if (lv_event_get_code(e) == LV_EVENT_PRESSED) self->perf_.lvgl_pressed(millis());
+  if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+    self->perf_.lvgl_pressed(millis());
+    self->pressed_ = true;
+    self->last_press_ms_ = millis();
+  }
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) self->perf_.lvgl_clicked(millis());
 }
 
