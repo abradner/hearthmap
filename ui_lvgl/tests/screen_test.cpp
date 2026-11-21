@@ -14,7 +14,8 @@
 #include "hearthmap/ui/heat_image.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/ui/theme.h"
-#include "src/core/lv_refr_private.h"  // lv_refr_get_top_obj(), for the cover test
+#include "src/core/lv_refr_private.h"        // lv_refr_get_top_obj(), for the cover test
+#include "src/display/lv_display_private.h"  // invalidated areas, for the fallback test
 
 using namespace hearthmap;
 using namespace hearthmap::ui;
@@ -1434,6 +1435,36 @@ TEST_CASE("a press on a pin is acknowledged before release; elsewhere nothing sh
   rig.display.press(40 + 700, 76 + 600);
   CHECK(hidden(marker()));
   rig.display.release();
+}
+
+TEST_CASE("fallback invalidations stay under LVGL's area limit until a refresh") {
+  Rig rig;
+  ViewModel vm = test::temperature_vm(rig.config);
+  for (auto& r : vm.rooms) r.pulse = Severity::Danger;  // dozens of outline cells
+  rig.show(vm);
+  rig.screen->set_frames_deferred(true);
+  rig.display.render();
+  NoPresenter none;  // every frame falls back
+  lv_display_t* disp = rig.display.display();
+  std::uint32_t most = 0;
+  bool whole = false;
+  for (std::uint32_t t = 16; t <= 1600; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+    // The main loop drains the queue on every pass, several times between two refreshes.
+    for (int pass = 0; pass < 3; ++pass) {
+      Screen::ShownFrames tally;
+      rig.screen->show_due_frames(none, &tally);
+      most = std::max(most, disp->inv_p);
+      const lv_area_t& a = disp->inv_areas[0];
+      whole = whole || (disp->inv_p == 1 && a.x1 == 0 && a.y1 == 0 && a.x2 == 1279 && a.y2 == 799);
+    }
+    rig.display.render();
+  }
+  MESSAGE("most invalidated areas before a refresh: " << most);
+  CHECK(most > 0);
+  CHECK(most <= 20);
+  CHECK_FALSE(whole);  // LVGL never gave up and repainted the whole screen
 }
 
 TEST_CASE("a held press is never captured into a pulse sprite") {

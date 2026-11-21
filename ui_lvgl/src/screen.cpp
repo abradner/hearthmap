@@ -1607,19 +1607,20 @@ void Screen::set_frames_deferred(bool deferred) {
 
 void Screen::show_due_frames(Presenter& presenter, ShownFrames* tally) {
   if (impl_->w.root == nullptr || !impl_->pulses) return;
-  // A fallback invalidates the whole tile; LVGL repaints the whole screen past 32 areas, so past
-  // kMaxFallbacks the remaining frames wait for the next call.
-  constexpr std::uint32_t kMaxFallbacks = 20;
-  std::uint32_t fallbacks = 0;
+  // A fallback invalidates the whole tile, and LVGL repaints the whole screen past 32 areas
+  // pending. The main loop calls this on every pass, several times between two refreshes, so the
+  // limit is on what is pending now (whatever invalidated it): past kMaxPendingAreas the
+  // remaining frames wait for a call after the next refresh.
+  constexpr std::uint32_t kMaxPendingAreas = 20;
+  lv_display_t* disp = lv_obj_get_display(impl_->w.root);
   const std::vector<detail::PulseLayer::Due>& due = impl_->pulses->take_due();
   for (const detail::PulseLayer::Due& d : due) {
-    if (fallbacks >= kMaxFallbacks) {
+    if (disp != nullptr && disp->inv_p >= kMaxPendingAreas) {
       impl_->pulses->requeue(d);
       continue;
     }
     PresentBlock why = PresentBlock::Ok;
     const TileShown shown = show_tile_frame(d.image, *d.dsc, d.frame, presenter, &why);
-    if (shown == TileShown::Invalidated) ++fallbacks;
     if (tally == nullptr) continue;
     if (shown == TileShown::Presented) {
       ++tally->presented;
