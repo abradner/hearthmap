@@ -43,7 +43,6 @@ ui::View565 as_view(const ui::Surface565& s) {
 }  // namespace
 
 PpaBlitter::~PpaBlitter() {
-  if (srm_ != nullptr) ppa_unregister_client(srm_);
   if (blend_ != nullptr) ppa_unregister_client(blend_);
   if (fill_ != nullptr) ppa_unregister_client(fill_);
 }
@@ -51,13 +50,15 @@ PpaBlitter::~PpaBlitter() {
 bool PpaBlitter::begin() {
   ppa_client_config_t cfg{};
   cfg.max_pending_trans_num = 1;
-  cfg.oper_type = PPA_OPERATION_SRM;
-  if (ppa_register_client(&cfg, &srm_) != ESP_OK) srm_ = nullptr;
   cfg.oper_type = PPA_OPERATION_BLEND;
   if (ppa_register_client(&cfg, &blend_) != ESP_OK) blend_ = nullptr;
   cfg.oper_type = PPA_OPERATION_FILL;
   if (ppa_register_client(&cfg, &fill_) != ESP_OK) fill_ = nullptr;
-  return srm_ != nullptr && blend_ != nullptr && fill_ != nullptr;
+  return blend_ != nullptr && fill_ != nullptr;
+}
+
+bool PpaBlitter::big_enough_(const ui::BlitClip& c, uint32_t min_px) const {
+  return force_hw_ || static_cast<uint32_t>(c.w) * static_cast<uint32_t>(c.h) >= min_px;
 }
 
 bool PpaBlitter::dst_ok_(const ui::Surface565& dst) const {
@@ -77,28 +78,27 @@ void PpaBlitter::writeback_rows_(const ui::Surface565& dst, int y, int h) const 
   esp_cache_msync(start, len, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 }
 
-bool PpaBlitter::do_srm_(const ui::Surface565& dst, const ui::BlitClip& c, const ui::View565& src,
-                         float scale) {
-  const int in_w = scale > 1.5f ? c.w / 2 : c.w;
-  const int in_h = scale > 1.5f ? c.h / 2 : c.h;
-  ppa_srm_oper_config_t op{};
-  op.in = in_block(src, c.src_x, c.src_y, in_w, in_h, PPA_SRM_COLOR_MODE_RGB565);
-  op.out = out_block(dst, c.x, c.y, PPA_SRM_COLOR_MODE_RGB565);
-  op.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
-  op.scale_x = scale;
-  op.scale_y = scale;
-  op.mode = PPA_TRANS_MODE_BLOCKING;
-  writeback_rows_(dst, c.y, c.h);
-  return ppa_do_scale_rotate_mirror(srm_, &op) == ESP_OK;
-}
-
 void PpaBlitter::copy(const ui::Surface565& dst, int x, int y, const ui::View565& src) {
   const ui::BlitClip c = ui::clip_blit(dst, x, y, src.w, src.h);
   if (c.empty() || src.px == nullptr) return;
-  if (srm_ != nullptr && static_cast<uint32_t>(c.w * c.h) >= min_pixels_ && dst_ok_(dst) &&
-      src_ok_(src) && do_srm_(dst, c, src, 1.0f)) {
-    hw_calls_++;
-    return;
+  if (blend_ != nullptr && big_enough_(c, kCopyMinPx) && dst_ok_(dst) && src_ok_(src)) {
+    // The blend engine as a copy: the source is the background, and the foreground (the same
+    // memory read as A8, any readable bytes would do) is made fully transparent, so the output
+    // is the background exactly. LVGL 9.6's PPA image path does the same (lv_draw_ppa_img.c).
+    ppa_blend_oper_config_t op{};
+    op.in_bg = in_block(src, c.src_x, c.src_y, c.w, c.h, PPA_BLEND_COLOR_MODE_RGB565);
+    op.in_fg = in_block(src, c.src_x, c.src_y, c.w, c.h, PPA_BLEND_COLOR_MODE_A8);
+    op.out = out_block(dst, c.x, c.y, PPA_BLEND_COLOR_MODE_RGB565);
+    op.bg_alpha_update_mode = PPA_ALPHA_FIX_VALUE;
+    op.bg_alpha_fix_val = 0xFF;
+    op.fg_alpha_update_mode = PPA_ALPHA_FIX_VALUE;
+    op.fg_alpha_fix_val = 0;
+    op.mode = PPA_TRANS_MODE_BLOCKING;
+    writeback_rows_(dst, c.y, c.h);
+    if (ppa_do_blend(blend_, &op) == ESP_OK) {
+      hw_calls_++;
+      return;
+    }
   }
   sw_calls_++;
   SoftwareBlitter::copy(dst, x, y, src);
@@ -107,7 +107,7 @@ void PpaBlitter::copy(const ui::Surface565& dst, int x, int y, const ui::View565
 void PpaBlitter::fill(const ui::Surface565& dst, int x, int y, int w, int h, std::uint16_t colour) {
   const ui::BlitClip c = ui::clip_blit(dst, x, y, w, h);
   if (c.empty()) return;
-  if (fill_ != nullptr && static_cast<uint32_t>(c.w * c.h) >= min_pixels_ && dst_ok_(dst)) {
+  if (fill_ != nullptr && big_enough_(c, kFillMinPx) && dst_ok_(dst)) {
     ppa_fill_oper_config_t op{};
     op.out = out_block(dst, c.x, c.y, PPA_FILL_COLOR_MODE_RGB565);
     op.fill_block_w = static_cast<uint32_t>(c.w);
@@ -129,13 +129,15 @@ void PpaBlitter::fill(const ui::Surface565& dst, int x, int y, int w, int h, std
 void PpaBlitter::blend(const ui::Surface565& dst, int x, int y, const ui::View565& src,
                        std::uint8_t alpha) {
   if (alpha == 0 || alpha == 255 || src.px == nullptr) {
-    SoftwareBlitter::blend(dst, x, y, src, alpha);  // nothing, or a copy (which is ours)
+    // Nothing, or a copy: let copy() choose.
+    if (alpha == 255) {
+      copy(dst, x, y, src);
+    }
     return;
   }
   const ui::BlitClip c = ui::clip_blit(dst, x, y, src.w, src.h);
   if (c.empty()) return;
-  if (blend_ != nullptr && static_cast<uint32_t>(c.w * c.h) >= min_pixels_ && dst_ok_(dst) &&
-      src_ok_(src)) {
+  if (blend_ != nullptr && big_enough_(c, kBlendMinPx) && dst_ok_(dst) && src_ok_(src)) {
     ppa_blend_oper_config_t op{};
     op.in_bg = in_block(as_view(dst), c.x, c.y, c.w, c.h, PPA_BLEND_COLOR_MODE_RGB565);
     op.in_fg = in_block(src, c.src_x, c.src_y, c.w, c.h, PPA_BLEND_COLOR_MODE_RGB565);
@@ -154,15 +156,7 @@ void PpaBlitter::blend(const ui::Surface565& dst, int x, int y, const ui::View56
 }
 
 void PpaBlitter::scale2x(const ui::Surface565& dst, int x, int y, const ui::View565& src) {
-  const ui::BlitClip c = ui::clip_blit(dst, x, y, src.w, src.h, 2);
-  if (c.empty() || src.px == nullptr) return;
-  // A block cut through a source pixel at the right or bottom edge is odd-sized: software.
-  if (srm_ != nullptr && (c.w % 2) == 0 && (c.h % 2) == 0 &&
-      static_cast<uint32_t>(c.w * c.h) >= min_pixels_ && dst_ok_(dst) && src_ok_(src) &&
-      do_srm_(dst, c, src, 2.0f)) {
-    hw_calls_++;
-    return;
-  }
+  // Software only: the PPA's scaler interpolates, which is not pixel doubling (header).
   sw_calls_++;
   SoftwareBlitter::scale2x(dst, x, y, src);
 }

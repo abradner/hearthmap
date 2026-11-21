@@ -514,6 +514,11 @@ lv_image_dsc_t g_scene_img;
 lv_obj_t* g_card{nullptr};
 lv_obj_t* g_status{nullptr};
 lv_obj_t* g_ring{nullptr};
+constexpr int kTiles = 9;
+constexpr int kTileMax = 128;
+lv_obj_t* g_tile_obj[kTiles];
+lv_image_dsc_t g_tile_dsc[kTiles];
+uint16_t* g_tile_px{nullptr};  // kTiles tiles of kTileMax x kTileMax, PSRAM
 int64_t g_flush_t0{0}, g_flush_us{0};
 uint32_t g_flush_n{0}, g_flush_px{0};
 
@@ -589,6 +594,18 @@ void HmBench::build_scene_() {
   lv_obj_set_style_text_color(g_status, lv_color_hex(0x80FF80), 0);
   lv_obj_set_pos(g_status, 990, 740);
   lv_label_set_text(g_status, "hearthmap bench: starting");
+
+  // Opaque tile images over the plain left half of the map, as pre-rendered ring frames are.
+  g_tile_px =
+      static_cast<uint16_t*>(alloc_buf(static_cast<size_t>(kTiles) * kTileMax * kTileMax * 2, PS));
+  for (int i = 0; i < kTiles && g_tile_px != nullptr; ++i) {
+    uint16_t* t = g_tile_px + static_cast<size_t>(i) * kTileMax * kTileMax;
+    for (int k = 0; k < kTileMax * kTileMax; ++k) t[k] = pat565(k + i * 977);
+    img_dsc(g_tile_dsc[i], LV_COLOR_FORMAT_RGB565, 64, 64, 2, t);
+    g_tile_obj[i] = lv_image_create(scr);
+    lv_image_set_src(g_tile_obj[i], &g_tile_dsc[i]);
+    lv_obj_set_pos(g_tile_obj[i], 60 + (i % 3) * 150, 80 + (i / 3) * 200);
+  }
 
   g_card = lv_obj_create(scr);
   lv_obj_remove_style_all(g_card);
@@ -731,7 +748,7 @@ void HmBench::build_steps_() {
   steps.push_back([]() {
     namespace ui = ::hearthmap::ui;
     ui::SoftwareBlitter sw;
-    esphome::hearthmap_panel::PpaBlitter hw(0);  // every call to the PPA
+    esphome::hearthmap_panel::PpaBlitter hw(true);  // every call the PPA allows goes to it
     if (!hw.begin()) {
       ESP_LOGI(TAG, "bench blitter_check : PPA clients refused");
       return;
@@ -836,7 +853,7 @@ void HmBench::build_steps_() {
           const bool sc = strcmp(opn, "scale2x") == 0;
           const ui::View565 v{s, sc ? bs.w / 2 : bs.w, sc ? bs.h / 2 : bs.h, sc ? bs.w / 2 : bs.w};
           ui::SoftwareBlitter sw;
-          esphome::hearthmap_panel::PpaBlitter hw(0);
+          esphome::hearthmap_panel::PpaBlitter hw(true);  // every call the PPA allows goes to it
           hw.begin();
           for (int impl = 0; impl < 2; ++impl) {
             ui::Blitter& bl =
@@ -956,6 +973,152 @@ void HmBench::build_steps_() {
     });
   }
   steps.push_back([self]() {  // repaint what the frame-buffer tests scribbled over
+    lv_obj_invalidate(lv_display_get_screen_active(self->lvgl_->get_disp()));
+  });
+
+  // ---- Tiles: what one small opaque tile costs through LVGL, and through a direct present ----
+  static const int kTileSizes[] = {32, 64, 96, 128};
+  static const BufCfg kTileBufs[] = {{"esphome_default", PS, 0}, {"iram_256000", IN, 256000}};
+  for (const BufCfg& bc : kTileBufs) {
+    steps.push_back([self, bc]() {
+      lv_display_t* disp = self->lvgl_->get_disp();
+      lv_obj_t* scr = lv_display_get_screen_active(disp);
+      lv_draw_buf_t* orig = lv_display_get_buf_active(disp);
+      void* orig_data = orig != nullptr ? orig->data : nullptr;
+      const uint32_t orig_size = orig != nullptr ? orig->data_size : 0;
+      void* buf = nullptr;
+      if (bc.bytes != 0) {
+        buf = alloc_buf(bc.bytes, bc.mem);
+        if (buf == nullptr) return;
+        lv_display_set_buffers(disp, buf, nullptr, bc.bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+      }
+      lv_refr_now(disp);
+      // Per-refresh fixed cost: a refresh with nothing invalid, and with a 2x2 area.
+      {
+        const int reps = 50;
+        int64_t t0 = esp_timer_get_time();
+        for (int i = 0; i < reps; ++i) lv_refr_now(disp);
+        const double empty_us = (esp_timer_get_time() - t0) / double(reps);
+        g_flush_us = 0;
+        g_flush_n = 0;
+        t0 = esp_timer_get_time();
+        for (int i = 0; i < reps; ++i) {
+          lv_area_t a{70, 90, 71, 91};
+          lv_obj_invalidate_area(scr, &a);
+          lv_refr_now(disp);
+        }
+        const double tiny_us = (esp_timer_get_time() - t0) / double(reps);
+        ESP_LOGI(TAG,
+                 "bench tile lvgl_refresh buf=%s : empty %s us, one 2x2 area %s us (flush %s us in "
+                 "%u calls), n=%d",
+                 bc.name, f2(empty_us).c_str(), f2(tiny_us).c_str(),
+                 f2(g_flush_us / double(reps)).c_str(), (unsigned)(g_flush_n / reps), reps);
+      }
+      for (int sz : kTileSizes) {
+        for (int i = 0; i < kTiles; ++i) {
+          g_tile_dsc[i].header.w = sz;
+          g_tile_dsc[i].header.h = sz;
+          g_tile_dsc[i].header.stride = sz * 2;
+          g_tile_dsc[i].data_size = sz * sz * 2;
+          lv_image_set_src(g_tile_obj[i], &g_tile_dsc[i]);
+          lv_obj_set_size(g_tile_obj[i], sz, sz);
+        }
+        lv_refr_now(disp);
+        for (int ntiles : {1, kTiles}) {
+          const int reps = 20;
+          g_flush_us = 0;
+          g_flush_n = 0;
+          g_flush_px = 0;
+          int64_t total = 0;
+          for (int r = 0; r < reps; ++r) {
+            for (int i = 0; i < ntiles; ++i) lv_obj_invalidate(g_tile_obj[i]);
+            const int64_t t0 = esp_timer_get_time();
+            lv_refr_now(disp);
+            total += esp_timer_get_time() - t0;
+          }
+          const double per_tile = total / double(reps) / ntiles;
+          ESP_LOGI(TAG,
+                   "bench tile lvgl_invalidate size=%dx%d tiles=%d buf=%s : %s us per tile (flush "
+                   "%s us per tile, %u flush calls per refresh), n=%d",
+                   sz, sz, ntiles, bc.name, f2(per_tile).c_str(),
+                   f2(g_flush_us / double(reps) / ntiles).c_str(), (unsigned)(g_flush_n / reps),
+                   reps);
+          App.feed_wdt();
+        }
+      }
+      for (int i = 0; i < kTiles; ++i) {
+        g_tile_dsc[i].header.w = 64;
+        g_tile_dsc[i].header.h = 64;
+        g_tile_dsc[i].header.stride = 128;
+        g_tile_dsc[i].data_size = 64 * 64 * 2;
+        lv_image_set_src(g_tile_obj[i], &g_tile_dsc[i]);
+        lv_obj_set_size(g_tile_obj[i], 64, 64);
+      }
+      if (bc.bytes != 0) {
+        lv_display_set_buffers(disp, orig_data, nullptr, orig_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+        heap_caps_free(buf);
+      }
+      lv_obj_invalidate(scr);
+      lv_refr_now(disp);
+    });
+  }
+  // Direct present: rotate the landscape tile on the CPU, then put it on the panel either through
+  // the display's public draw_pixels_at (DMA2D) or by writing the frame buffer rows directly.
+  steps.push_back([self]() {
+    void* fbv = nullptr;
+    if (esp_lcd_dpi_panel_get_frame_buffer(self->display_->handle_, 1, &fbv) != ESP_OK ||
+        fbv == nullptr)
+      return;
+    auto* fb = static_cast<uint16_t*>(fbv);
+    const int fbw = 800;
+    auto* rot = static_cast<uint16_t*>(alloc_buf(kTileMax * kTileMax * 2, IN));
+    auto* rot_ps = static_cast<uint16_t*>(alloc_buf(kTileMax * kTileMax * 2, PS));
+    if (rot == nullptr || rot_ps == nullptr || g_tile_px == nullptr) return;
+    for (int sz : kTileSizes) {
+      const uint16_t* src = g_tile_px;  // tile 0, landscape sz x sz, PSRAM
+      // Landscape (lx, ly) -> native (799 - ly, lx) for the 90-degree panel rotation: a tile at
+      // landscape (x, y) lands at native x = 800 - y - sz, native y = x.
+      const int lx = 60, ly = 80;
+      const int nx = fbw - ly - sz, ny = lx;
+      for (int mode = 0; mode < 4; ++mode) {
+        const char* name = mode == 0   ? "present_rot_iram_draw_pixels"
+                           : mode == 1 ? "present_rot_psram_draw_pixels"
+                           : mode == 2 ? "present_rot_direct_fb"
+                                       : "present_rot_only";
+        Res r = time_op(
+            [&]() {
+              if (mode == 2) {
+                // Rotate straight into the frame buffer rows, keeping the cache coherent with
+                // DMA2D's writes: invalidate the rows' lines first, write, write them back.
+                for (int y = 0; y < sz; ++y) {
+                  uint16_t* row = fb + static_cast<size_t>(ny + y) * fbw + nx;
+                  uintptr_t a0 = reinterpret_cast<uintptr_t>(row) & ~uintptr_t{63};
+                  uintptr_t a1 = (reinterpret_cast<uintptr_t>(row + sz) + 63) & ~uintptr_t{63};
+                  esp_cache_msync(reinterpret_cast<void*>(a0), a1 - a0,
+                                  ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                  // native row y holds landscape column (ny + y - lx) = y, read bottom-up
+                  for (int x = 0; x < sz; ++x)
+                    row[x] = src[static_cast<size_t>(sz - 1 - x) * sz + y];
+                  esp_cache_msync(reinterpret_cast<void*>(a0), a1 - a0,
+                                  ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                }
+                return true;
+              }
+              uint16_t* dst = mode == 1 ? rot_ps : rot;
+              ::hm_kernels::rot90_c(dst, src, sz, sz);
+              if (mode == 3) return true;
+              self->display_->draw_pixels_at(nx, ny, sz, sz, reinterpret_cast<const uint8_t*>(dst),
+                                             display::COLOR_BITNESS_565, false);
+              return true;
+            },
+            static_cast<uint64_t>(sz) * sz, 20000);
+        ESP_LOGI(TAG, "bench tile %s size=%dx%d : %s us per tile, %s Mpx/s, n=%u", name, sz, sz,
+                 f2(r.us_call).c_str(), f2(r.mpx).c_str(), (unsigned)r.n);
+      }
+      App.feed_wdt();
+    }
+    heap_caps_free(rot);
+    heap_caps_free(rot_ps);
     lv_obj_invalidate(lv_display_get_screen_active(self->lvgl_->get_disp()));
   });
 

@@ -1044,3 +1044,36 @@ def test_names_with_an_embedded_nul_survive_generation(gen, schema, example, tmp
         [tmp_path, REPO / "core/include"],
     )
     assert "NAME size=5 first=0 rest=Room" in text, text
+
+
+BLITTER_SELECT_TEST = r"""
+#include <cstdio>
+#include <cstring>
+#include "blitter_select.h"
+using namespace esphome::hearthmap_panel;
+int main() {
+  int failures = 0;
+  const char* name = nullptr;
+  auto sw = make_blitter(BlitterKind::Software, &name);
+  if (!sw || std::strcmp(name, "software") != 0) { std::printf("FAIL software: %s\n", name); ++failures; }
+  auto ppa = make_blitter(BlitterKind::Ppa, &name);
+  // Off the P4 the PPA request must still give a working blitter, and say it fell back.
+  if (!ppa || std::strstr(name, "software") == nullptr) { std::printf("FAIL ppa fallback: %s\n", name); ++failures; }
+  std::uint16_t px[4] = {0, 0, 0, 0};
+  ppa->fill(hearthmap::ui::Surface565{px, 2, 2, 2}, 0, 0, 2, 2, 0x1234);
+  if (px[3] != 0x1234) { std::printf("FAIL fallback does not draw\n"); ++failures; }
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_blitter_select_falls_back_to_software_off_the_p4(tmp_path):
+    (tmp_path / "blitter_select_test.cpp").write_text(BLITTER_SELECT_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "blitter_select_test.cpp"), str(COMPONENT / "blitter_select.cpp"),
+         str(REPO / "ui_lvgl" / "src" / "blitter.cpp")],
+        [COMPONENT, REPO / "ui_lvgl" / "include"],
+    )
+    assert "0 failures" in out

@@ -105,6 +105,7 @@ void HearthmapComponent::setup() {
   // states that arrive early simply wait in readings_.
   this->boot_started_ms_ = millis();
   this->stage_started_ms_ = this->boot_started_ms_;
+  this->blitter_ = make_blitter(this->blitter_kind_, &this->blitter_name_);
   hearthmap_device::PanelPipeline::Builder builder;
   builder.steps = this->source_.build_steps();
   builder.step = [this](hm::Config& c, std::size_t k) { this->source_.build_step(c, k); };
@@ -550,6 +551,7 @@ void HearthmapComponent::hide_status_() {
 }
 
 void HearthmapComponent::dump_config() {
+  ESP_LOGCONFIG(TAG, "hearthmap blitter: %s", this->blitter_name_);
   ESP_LOGCONFIG(TAG,
                 "hearthmap:\n"
                 "  Config: %s\n"
