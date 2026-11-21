@@ -1169,3 +1169,58 @@ def test_panel_rotation_matches_the_lvgl_component(tmp_path):
     (tmp_path / "rot_test.cpp").write_text(PANEL_ROTATION_TEST)
     out = _build_and_run(tmp_path, [str(tmp_path / "rot_test.cpp")], [COMPONENT])
     assert "0 failures" in out
+
+
+STALL_TEST = r"""
+#include <cstdio>
+#include "loop_breadcrumb.h"
+using namespace esphome::hearthmap_panel;
+int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+int main() {
+  using V = StallJudge::Verdict;
+  StallJudge j(2000, 15500);
+  uint32_t s = 0;
+  CHECK(j.step(1000, 1000, &s) == V::None);
+  CHECK(j.step(2999, 1000, &s) == V::None);        // 1999 ms: not yet
+  CHECK(j.step(3000, 1000, &s) == V::Warn);         // 2000 ms: warn once
+  CHECK(s == 2000);
+  CHECK(j.step(9000, 1000, &s) == V::None);         // still stuck: no repeat
+  CHECK(j.step(16500, 1000, &s) == V::Error);       // just under the watchdog
+  CHECK(j.step(17000, 1000, &s) == V::None);        // error once
+  CHECK(j.step(17100, 17050, &s) == V::Recovered);  // the loop turned
+  CHECK(s == 16000);
+  CHECK(j.step(17200, 17150, &s) == V::None);       // a normal turn after recovery
+  CHECK(j.step(18000, 17900, &s) == V::None);       // short gaps never warn
+  // Wrap of the millisecond clock.
+  StallJudge w(2000, 15500);
+  CHECK(w.step(0xFFFFFF00u, 0xFFFFFF00u, &s) == V::None);
+  CHECK(w.step(0x00000800u, 0xFFFFFF00u, &s) == V::Warn);  // 2304 ms across the wrap
+  // Crumbs nest and restore.
+  CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Elsewhere));
+  {
+    CrumbScope a(Crumb::Hearthmap, 10);
+    CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Hearthmap));
+    {
+      CrumbScope b(Crumb::PpaFill, 20);
+      CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::PpaFill));
+      CHECK(breadcrumb().since_ms.load() == 20);
+    }
+    CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Hearthmap));
+    CHECK(breadcrumb().since_ms.load() == 10);
+    CHECK(mark_crumb(Crumb::LvglFlush, 30) == Crumb::Hearthmap);
+  }
+  CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Elsewhere));
+  for (int c = 0; c <= static_cast<int>(Crumb::PpaCopy); ++c)
+    CHECK(crumb_name(static_cast<Crumb>(c))[0] != 'u');  // every crumb has a name
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_stall_judge_and_breadcrumbs(tmp_path):
+    (tmp_path / "stall_test.cpp").write_text(STALL_TEST)
+    out = _build_and_run(tmp_path, [str(tmp_path / "stall_test.cpp"), str(COMPONENT / "loop_breadcrumb.cpp")],
+                         [COMPONENT])
+    assert "0 failures" in out

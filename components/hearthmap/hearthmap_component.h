@@ -20,6 +20,7 @@
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/view_model.h"
 #include "hearthmap_gen/generated_config.h"
+#include "loop_breadcrumb.h"
 #include "panel_pipeline.h"
 #include "perf_stats.h"
 #ifdef USE_TOUCHSCREEN
@@ -61,6 +62,8 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_blitter_kind(BlitterKind kind) { blitter_kind_ = kind; }
   /// `present: true` with this display: small animated tiles skip LVGL's refresh (D-058).
   void set_present_display(display::Display* display) { present_display_ = display; }
+  /// The task watchdog's timeout (esp32: watchdog_timeout), for the stall monitor (D-062).
+  void set_watchdog_ms(uint32_t ms) { watchdog_ms_ = ms; }
 
   /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
   /// setup().
@@ -107,6 +110,9 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   display::Display* present_display_ = nullptr;
   std::unique_ptr<hm::ui::Presenter> presenter_;
   const char* presenter_name_ = "off";
+  uint32_t watchdog_ms_ = 5000;
+  bool stall_monitor_ = false;
+  Crumb crumb_before_refresh_ = Crumb::Elsewhere;
   bool presenting_ = false;  ///< a DisplayPresenter is up: pulse frames are shown from loop()
 
   Phase phase_ = Phase::Booting;

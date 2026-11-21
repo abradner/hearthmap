@@ -393,3 +393,16 @@ def test_config_filename_never_reaches_a_cpp_comment(gen, schema, minimal):
     assert "\nint x = ;" not in src  # no line of source starts with the injected text
     assert "// Source" not in src
     assert 'kConfigSourceName = "evil\\012int x = ;\\012.json";' in src
+
+
+class _Seconds:
+    def __init__(self, s):
+        self.total_milliseconds = s * 1000
+
+
+def test_hosted_watchdog_floor(gen):
+    assert gen.hosted_watchdog_floor_ms({"esp32": {}}) is None  # no co-processor, no floor
+    assert gen.hosted_watchdog_floor_ms({"esp32_hosted": {}, "esp32": {}}) == 16000
+    tuned = {"esp32_hosted": {}, "esp32": {"framework": {"sdkconfig_options": {
+        "CONFIG_ESP_HOSTED_HOST_RPC_TIMEOUT_MS": "2000"}}}}
+    assert gen.hosted_watchdog_floor_ms(tuned) == 7000

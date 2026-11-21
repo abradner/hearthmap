@@ -1010,3 +1010,50 @@ had more safely by D-057 (the Blitter where it wins) and D-058 (present). **Risk
 under the Wi-Fi co-processor path has never run with a network (the bench had none). **Would
 change if:** LVGL's PPA unit gains a size threshold, a flash check and a software fallback, and
 ESPHome makes IDF 6 its recommended version.
+
+### D-061 The task watchdog outlasts the Wi-Fi co-processor's calls (provisional)
+
+**Question:** the panel reset three times in an hour, each time by the task watchdog, with the
+main loop blocked and both cores idle. What must the watchdog's relation to the Wi-Fi link be?
+**Found** (the panel's sdkconfig, esp-hosted 3.1.0, ESPHome 2026.11.0): every `esp_wifi_*` call
+ESPHome makes from the main loop is a remote call to the ESP32-C6 over SDIO, waiting up to
+`CONFIG_ESP_HOSTED_HOST_RPC_TIMEOUT_MS` (5000), and the task watchdog was ESPHome's default 5 s.
+One call to a co-processor that stops answering is therefore enough to reset the panel; the first
+recorded reset followed three `esp_wifi_get_mode failed: ESP_FAIL` warnings, which is what a
+timed-out call returns. A failed call makes ESPHome's wifi code return (`wifi_component_esp_idf.cpp`,
+`wifi_mode_` and its callers) and retry on later passes, then fall back to its access point, so a
+pass meets a few such waits at most. **Default:** with `esp32_hosted` in the configuration, the
+hearthmap component refuses (at `esphome config`) an `esp32: watchdog_timeout` shorter than three
+RPC timeouts plus a second, 16 s with esp-hosted's default (`hosted_watchdog_floor_ms()`, reading
+a `CONFIG_ESP_HOSTED_HOST_RPC_TIMEOUT_MS` override from `sdkconfig_options` if one is set); the
+example sets 16 s. A silent co-processor then costs a stall of up to 15 s, which the stall
+monitor (D-062) logs and which ends when the call times out, instead of a reset. The watchdog
+still resets a loop stuck for good. **Rejected:** shortening the RPC timeout (calls such as starting Wi-Fi or writing a co-processor
+image may legitimately take longer than usual, and nothing found documents their worst case); letting the component set the watchdog itself (it would silently override ESPHome's own
+option; a refusal with the fix in the message keeps the setting where the owner sees it).
+**Co-processor version:** the panel reports `C6 2.1.10 / host 3.1.0` and logs a major version
+mismatch at boot. esp-hosted 3.1.0's migration notes (`docs/migration.md`, Compatibility) list a
+3.x host with a 2.x co-processor as back-compatible, with upgrading the co-processor recommended;
+nothing found ties the mismatch to the timeouts. Upgrading is an action on the owner's hardware:
+ESPHome 2026.11.0's `update: - platform: esp32_hosted` (`type: embedded` with the C6 image's
+`path` and `sha256`, or `type: http` with a manifest `source`) exposes an update entity that sends
+a co-processor image over the same SDIO link when installed. Risk: an interrupted or wrong image
+can leave the C6 unbootable, with Wi-Fi gone until it is flashed over its own serial pins.
+**Would change if:** the stall monitor shows the resets are not Wi-Fi calls, or esp-hosted
+documents a worst case for its calls.
+
+### D-062 A stall monitor names the main loop's wait (provisional)
+
+**Question:** a reset with the main loop blocked leaves no trace of what it waited on: the
+watchdog's register dump is of the idle task on the other core. **Default:** an always-on
+breadcrumb (`loop_breadcrumb.h`): one relaxed atomic store marks where the loop task is
+(hearthmap's loop, LVGL rendering, LVGL's flush, a present, each blocking PPA call, or elsewhere:
+another component), and hearthmap's `loop()` stamps the time it last started. A small task
+(`stall_monitor.h`, 3 KiB stack, wakes every 250 ms) logs at WARN when the loop has not turned for
+2 s, at ERROR 0.5 s before the task watchdog is due, and at WARN when it turns again, each time
+naming the breadcrumb and how long it has been held. It writes with `esp_rom_printf` straight to
+the UART console, because ESPHome prints other tasks' log lines from the main loop, the thing that
+is stuck; the WARN lines also go through ESPHome's logger for API subscribers once the loop runs.
+The judging is pure and host-tested (`StallJudge`). **Why:** the next hang names its wait, whether
+it is a Wi-Fi call (D-061), ESPHome's flush (docs/upstream/mipi-dsi-unbounded-wait.md) or a PPA
+call. **Would change if:** ESPHome prints other tasks' logs directly, or gains such a monitor.

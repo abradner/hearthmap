@@ -1,5 +1,7 @@
 #include "hearthmap_component.h"
 
+#include "stall_monitor.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -125,6 +127,9 @@ void HearthmapComponent::setup() {
   this->boot_started_ms_ = millis();
   this->stage_started_ms_ = this->boot_started_ms_;
   this->blitter_ = make_blitter(this->blitter_kind_, &this->blitter_name_);
+  // Names the main loop's wait if it ever stops turning (D-062).
+  breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
+  this->stall_monitor_ = start_stall_monitor(this->watchdog_ms_);
   this->presenter_ = std::make_unique<hm::ui::NoPresenter>();
   if (this->present_display_ != nullptr && this->lvgl_ != nullptr) {
     auto direct =
@@ -173,6 +178,9 @@ void HearthmapComponent::subscribe_() {
 }
 
 void HearthmapComponent::loop() {
+  // The stall monitor's view (D-062): the loop turned, and is in hearthmap until this returns.
+  breadcrumb().turn_ms.store(millis(), std::memory_order_relaxed);
+  const CrumbScope crumb(Crumb::Hearthmap, millis());
   this->perf_.loop_start(micros());
   this->check_sprite_canaries_();
   this->log_perf_();
@@ -530,10 +538,20 @@ void HearthmapComponent::on_display_event_(lv_event_t* e) {
       if (area != nullptr) self->perf_.invalidated(lv_area_get_size(area));
       break;
     }
-    case LV_EVENT_REFR_START: self->perf_.refresh_start(now_us); break;
-    case LV_EVENT_REFR_READY: self->perf_.refresh_ready(now_us, millis()); break;
-    case LV_EVENT_FLUSH_START: self->perf_.flush_start(now_us); break;
+    case LV_EVENT_REFR_START:
+      self->crumb_before_refresh_ = mark_crumb(Crumb::LvglRefresh, millis());
+      self->perf_.refresh_start(now_us);
+      break;
+    case LV_EVENT_REFR_READY:
+      mark_crumb(self->crumb_before_refresh_, millis());
+      self->perf_.refresh_ready(now_us, millis());
+      break;
+    case LV_EVENT_FLUSH_START:
+      mark_crumb(Crumb::LvglFlush, millis());
+      self->perf_.flush_start(now_us);
+      break;
     case LV_EVENT_FLUSH_FINISH: {
+      mark_crumb(Crumb::LvglRefresh, millis());
       const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(e));
       self->perf_.flush_finish(now_us, area != nullptr ? lv_area_get_size(area) : 0);
       break;

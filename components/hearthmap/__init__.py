@@ -26,7 +26,8 @@ from esphome.components.touchscreen import Touchscreen
 from esphome.components.lvgl.defines import CONF_LVGL_ID, add_lv_use, get_lv_fonts_used
 from esphome.components.lvgl.lvcode import LvglComponent
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_TIME_ID
+import esphome.final_validate as fv
+from esphome.const import CONF_ID, CONF_TIME_ID, CONF_WATCHDOG_TIMEOUT
 from esphome.core import CORE, coroutine_with_priority
 from esphome.coroutine import CoroPriority
 
@@ -147,11 +148,27 @@ UI_WIDGETS = ("label", "line", "image", "arc", "flex")
 UI_FONTS = tuple(f"montserrat_{px}" for px in (20, 22, 24, 26, 28, 30, 34))
 
 
+def _check_watchdog(full_config: dict) -> None:
+    floor_ms = gen.hosted_watchdog_floor_ms(full_config)
+    if floor_ms is None:
+        return
+    wdt = full_config.get("esp32", {}).get(CONF_WATCHDOG_TIMEOUT)
+    wdt_ms = int(wdt.total_milliseconds) if wdt is not None else 5000
+    if wdt_ms < floor_ms:
+        raise cv.Invalid(
+            f"hearthmap: esp32 watchdog_timeout is {wdt_ms // 1000}s, but each Wi-Fi call to the "
+            f"esp32_hosted co-processor may wait up to its RPC timeout, and a main-loop pass can meet "
+            f"{gen.HOSTED_RPCS_PER_PASS} of them while the link is failing, so a silent co-processor resets "
+            f"the panel. Set `esp32: watchdog_timeout: {-(-floor_ms // 1000)}s` or more (D-061)."
+        )
+
+
 def _final_validate(config: dict) -> dict:
     # Done at validation time so it precedes lvgl's to_code, which emits the LV_USE_* and
     # LV_FONT_* defines from these sets.
     add_lv_use(*UI_WIDGETS)
     get_lv_fonts_used().update(UI_FONTS)
+    _check_watchdog(fv.full_config.get())
     return config
 
 
@@ -199,6 +216,9 @@ async def to_code(config: dict) -> None:
     cg.add(var.set_min_redraw_interval_ms(config[CONF_MIN_REDRAW_INTERVAL].total_milliseconds))
     cg.add(var.set_heat_refresh_interval_ms(config[CONF_HEAT_REFRESH_INTERVAL].total_milliseconds))
     cg.add(var.set_blitter_kind(config[CONF_BLITTER]))
+    wdt = CORE.config.get("esp32", {}).get(CONF_WATCHDOG_TIMEOUT)
+    if wdt is not None:
+        cg.add(var.set_watchdog_ms(int(wdt.total_milliseconds)))
     if config[CONF_PRESENT]:
         cg.add(var.set_present_display(await cg.get_variable(config[CONF_DISPLAY_ID])))
     if CONF_TOUCHSCREEN_ID in config:

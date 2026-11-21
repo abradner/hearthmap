@@ -18,6 +18,10 @@ esp32:
   engineering_sample: true
   flash_size: 16MB
   cpu_frequency: 360MHz
+  # Longer than three Wi-Fi co-processor calls at esp-hosted's 5 s RPC timeout, so a co-processor
+  # that stops answering stalls the main loop (logged by hearthmap's stall monitor) instead of
+  # resetting the panel; the hearthmap component refuses a shorter one (D-061).
+  watchdog_timeout: 16s
   framework:
     type: esp-idf
     advanced:
