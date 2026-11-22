@@ -141,8 +141,9 @@ class BulkBuffer {
     n_ = n;
     return true;
   }
-  /// resize(n), then every element `value`.
-  [[nodiscard]] bool assign(std::size_t n, const T& value) {
+  /// resize(n), then every element `value`. By value: `value` may be one of this buffer's own
+  /// elements, which resize() frees.
+  [[nodiscard]] bool assign(std::size_t n, T value) {
     if (!resize(n)) return false;
     std::fill_n(p_, n_, value);
     return true;

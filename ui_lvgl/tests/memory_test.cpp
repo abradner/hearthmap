@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 
 #include "hearthmap/ui/memory.h"
 
@@ -83,6 +84,35 @@ TEST_CASE("a refused BulkBuffer is empty and counted; nothing comes from elsewhe
   CHECK(s.failures == 1);
   CHECK(s.last_failed_bytes == 65);
   CHECK(s.in_use == 0);
+}
+
+namespace {
+
+/// The system heap, scribbling over every block it is given back, so a read of freed memory
+/// sees the scribble instead of the old value.
+class ScribblingMemory final : public BulkMemory {
+ public:
+  void* allocate(std::size_t bytes, std::size_t align) override {
+    return system_bulk_memory().allocate(bytes, align);
+  }
+  void deallocate(void* p, std::size_t bytes) override {
+    if (p != nullptr) std::memset(p, 0xAB, bytes);
+    system_bulk_memory().deallocate(p, bytes);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("assign() fills with a value taken from the buffer's own old storage") {
+  ScribblingMemory mem;
+  Installed installed(&mem);
+  BulkBuffer<std::uint16_t> b;
+  REQUIRE(b.assign(2, 7));
+  REQUIRE(b.assign(4, b[0]));  // the old storage is freed before the fill
+  CHECK(b[0] == 7);
+  CHECK(b[3] == 7);
+  REQUIRE(b.assign(4, b[1]));  // same size: kept in place
+  CHECK(b[2] == 7);
 }
 
 TEST_CASE("BulkVector and make_bulk allocate through the port") {
