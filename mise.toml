@@ -1,0 +1,89 @@
+# Local toolchain for hearthmap, managed by mise (https://mise.jdx.dev).
+#   mise trust && mise install     # once per checkout
+#   mise run setup                 # Python test dependencies into .venv
+#   mise tasks                     # what else is here
+#
+# CI does not read this file: it pins its own tools in .github/workflows/ci.yml. Each version
+# below names the place CI takes it from; change both in the same commit.
+
+[tools]
+# editor/.nvmrc, which CI's setup-node reads. Pinned here as well because a task run from the
+# repo root resolves tools from this file, not from editor/.
+node = "24"
+# ci.yml: python-version "3.13" (the calibrate job also runs 3.11, the tool's floor).
+python = "3.13"
+# ci.yml, format job: clang-format==19.1.7. Another major formats differently (AGENTS.md §6).
+clang-format = "19.1.7"
+# CI uses the runner's CMake; the floor is cmake_minimum_required(VERSION 3.21). CMake 4 is what
+# the committed golden images were rendered with. No generator is pinned: the tasks use
+# CMake's default, as CI and AGENTS.md's commands do, so they work on an existing build/.
+cmake = "4"
+
+[env]
+# One virtualenv for the Python sides (schema, calibrate, component codegen tests).
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.setup]
+description = "Install the pinned Python test dependencies into .venv"
+run = [
+  # mise builds the venv with uv when uv is installed, and a uv venv has no pip.
+  "python -m ensurepip --upgrade",
+  "python -m pip install --disable-pip-version-check -r schema/requirements.txt",
+  "python -m pip install --disable-pip-version-check -r tools/calibrate/requirements-dev.txt",
+  "python -m pip install --disable-pip-version-check -r components/hearthmap/tests/requirements.txt",
+]
+
+[tasks.build]
+description = "Configure and build core, ui_lvgl and the host renderer (Debug)"
+run = [
+  "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON",
+  "cmake --build build --parallel",
+]
+
+[tasks.test]
+description = "C++ tests and golden images, as CI's ui-host job runs them"
+depends = ["build"]
+run = "ctest --test-dir build --output-on-failure --no-tests=error"
+
+[tasks.format]
+description = "Check C++ formatting, as CI's format job does"
+run = "git ls-files '*.h' '*.cpp' | xargs clang-format --dry-run --Werror"
+
+[tasks."format:fix"]
+description = "Format C++ sources in place"
+run = "git ls-files '*.h' '*.cpp' | xargs clang-format -i"
+
+[tasks.schema]
+description = "Validate the example configs and run the schema mutation tests"
+run = ["python schema/validate.py", "python schema/test_schema.py"]
+
+[tasks."test:python"]
+description = "pytest for the calibrate tool and the component's code generator"
+env = { HEARTHMAP_REQUIRE_CORE = "1" }
+run = [
+  "cd tools/calibrate && python -m pytest -q",
+  "python -m pytest -q components/hearthmap/tests",
+]
+
+[tasks.editor]
+description = "Run the config editor at http://127.0.0.1:5174"
+dir = "editor"
+run = [
+  # Another Node ahead of mise's on PATH makes npm ci fail with EBADENGINE; say why first.
+  "node -e \"if(process.versions.node.split('.')[0]!=='24'){console.error('node '+process.version+' is ahead of the pinned Node 24 on PATH (AGENTS.md 6.1)');process.exit(1)}\"",
+  "npm ci",
+  "npm run dev",
+]
+
+[tasks."editor:check"]
+description = "Editor lint, typecheck, unit tests and production build"
+dir = "editor"
+run = [
+  # Another Node ahead of mise's on PATH makes npm ci fail with EBADENGINE; say why first.
+  "node -e \"if(process.versions.node.split('.')[0]!=='24'){console.error('node '+process.version+' is ahead of the pinned Node 24 on PATH (AGENTS.md 6.1)');process.exit(1)}\"",
+  "npm ci",
+  "npm run lint",
+  "npm run typecheck",
+  "npm test",
+  "npm run build",
+]

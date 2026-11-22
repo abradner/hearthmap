@@ -180,6 +180,13 @@ conversation context, only what's written down.
 Needs CMake >= 3.21, a C++17 compiler (Apple clang and GCC are both exercised), Python >= 3.10,
 and network access on first configure (doctest is fetched at a pinned commit).
 
+`mise.toml` installs the local toolchain (Python 3.13, clang-format 19.1.7, CMake 4 and
+Node 24, the same major as `editor/.nvmrc`) and names the common commands as tasks: `mise trust && mise install`
+once per checkout, `mise run setup` for the Python test dependencies, `mise tasks` for the rest.
+The C++ compiler is the system's. CI does not read `mise.toml`: it pins its own tools in
+`.github/workflows/ci.yml`, so a version changes in both places in one commit. The commands
+below are what the tasks run, for a machine without mise.
+
 ```sh
 # Build and run core's tests
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -202,7 +209,8 @@ git ls-files '*.h' '*.cpp' | xargs clang-format --dry-run --Werror
 git ls-files '*.h' '*.cpp' | xargs clang-format -i
 ```
 
-Where clang-format comes from a version manager, name the version explicitly (for example
+Inside a trusted checkout `mise.toml` selects clang-format 19.1.7 (`mise run format`,
+`mise run format:fix`). Outside one, name the version explicitly (for example
 `mise exec clang-format@19.1.7 -- clang-format ...`); a different major formats differently and
 CI will disagree with you. `pip install clang-format==19.1.7` into the venv also works.
 
@@ -219,6 +227,16 @@ add rather than rewrite.
 - **A version-manager shim with no version selected fails as if the tool were broken.** On a dev
   machine with clang-format managed by `mise`, a bare `clang-format` printed `mise ERROR No version
   is set for shim: clang-format` (2026-11-20). Select the pinned version explicitly (§6).
+  Since 2026-11-22 `mise.toml` selects it inside this repo, once the checkout is trusted
+  (`mise trust`); an untrusted checkout still fails the same way.
+- **`npm ci` in `editor/` refuses any Node but 24** (`EBADENGINE`, seen 2026-11-22 with a global
+  Node 26). `mise.toml` pins Node 24; run `mise install` once, or use `mise run editor`.
+- **A Homebrew tool can still shadow mise's inside an already-activated shell.** Seen 2026-11-22
+  in an agent's shell: `mise exec` and `mise run` put the pinned tools *after* `/opt/homebrew/bin`
+  on `PATH`, so `npm` ran Homebrew's Node 26 and the editor task failed, while the same task
+  passed from a clean environment (`env -i HOME=$HOME PATH=/opt/homebrew/bin:/usr/bin:/bin mise run
+  editor:check`). The editor tasks now check Node's major first and say so. If any task reports
+  the wrong version, print `PATH` inside `mise exec -- sh -c` before blaming `mise.toml`.
 - **CMake 4 refuses projects that declare `cmake_minimum_required` below 3.5**, which includes
   some third-party CMakeLists. doctest is consumed header-only for that reason
   (`SOURCE_SUBDIR` in `cmake/HearthmapDoctest.cmake` keeps its CMakeLists out of the build); do
@@ -700,8 +718,12 @@ or, where the plan was silent, chosen as the reversible option and marked provis
 - `docs/rails-prometheus-metrics.md`: not a Rails service.
 - Caveman tone module (`.cursor/`, `.windsurf/`, `.clinerules/`, `.opencode/`,
   `.github/copilot-instructions.md`): a session-level tone preference, not repo content.
-- `mise.toml`: tool versions are pinned where they are consumed (CI, `schema/requirements.txt`,
-  `cmake/HearthmapDoctest.cmake`) rather than through a version manager file.
+- `mise.toml`: declined at init ("tool versions are pinned where they are consumed (CI,
+  `schema/requirements.txt`, `cmake/HearthmapDoctest.cmake`) rather than through a version
+  manager file"). **Reversed 2026-11-22** on the owner's word, after the editor refused to
+  install under the machine's default Node: the repo now carries a `mise.toml` for the local
+  toolchain (§6). CI still pins its own tools, and library versions stay pinned where they are
+  consumed.
 - LICENSE: see above.
 
 **Kept**
