@@ -1445,3 +1445,31 @@ built. Its positive control moves every reading and sees all 78 rebuilt. Screen 
 point is "everything under the sprites changed" now really change the heat image (`Rig::new_heat()`);
 they had relied on any invalidation recomposing. **Would change if:** the device shows most
 recaptures differing anyway (then compare per row band and recompose only the changed rows).
+
+### D-072 Delta frames and a per-tile rate are not built now; the perf line's own cost is measured (provisional)
+
+**Question:** a proposal for "sprite engine v2" (2026-11-22) also listed delta frames (each
+frame stored as changed spans against one base tile), a rate divisor per tile instead of one
+for all, and a cheaper or rarer perf line (suspected of an 80 ms loop gap once a window). Do the
+code and the numbers still justify them? **Found:** (1) *Delta frames.* The host measured them
+(panel-like, soil, every frame diffed against its tile's capture with the pins, spans with gaps
+under 4 px merged and 6 bytes of header each): at the full rate a ring's set is 1.28 MB as full
+frames against 310 KB as deltas (9 rings: 11.5 MB against 2.8 MB), an outline cell's 71 KB
+against 28 KB; each delta-framed tile would also need a live frame (one more tile of memory) to
+point LVGL and the presenter at. But on the panel memory is not what binds: the 64-minute soak
+of 3bcd667 ran at `rate /1` with 2.9-5.9 MiB of sprites, inside a budget of three quarters of
+the PSRAM left (D-053). And showing a delta frame is a copy (restore the last frame's spans from
+the base, write the next frame's) of a few thousand pixels per frame on the main loop, at about
+21 Mpx/s for PSRAM copies (D-057), against today's pointer move: about 0.2 ms per ring frame,
+tens of milliseconds a second at 300-600 frames a second, spent on the loop the owner wants
+faster. Moving that copy to the worker means a second live frame per tile and a frame-by-frame
+hand-off, for a memory saving the P4 does not need. The owner trades memory for speed. (2) *A
+divisor per tile.* The soak showed `rate /1` throughout: no ring was halving any other, so there
+is nothing for it to fix on this panel. (3) *The perf line.* No host measurement can show a loop
+gap from ESPHome's logger, so the line is not made rarer on a suspicion. **Default:** none of the
+three is built. The perf work line (D-069) adds `perf log <us> us`: how long the previous
+window's three lines took to format and log, timed in the main loop, so a gap that matches it can
+be read off the panel. **Would change if:** the ESP32-S3 port (about 8 MB of PSRAM, issue 27)
+needs the memory (then deltas, with the copy on that target's main loop or in its inline worker,
+and these numbers); the panel shows `rate /2` or coarser on a real tab (then a per-tile rate);
+`perf log` shows a cost near the gap (then log less often, or only with `diagnostics`).

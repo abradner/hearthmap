@@ -190,6 +190,7 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t last_sets_built_ = 0;
   uint32_t last_sets_kept_ = 0;
   uint32_t last_sets_discarded_ = 0;
+  uint32_t last_log_us_ = 0;  ///< the last perf window's own logging time
 #ifdef USE_TOUCHSCREEN
   touchscreen::Touchscreen* touchscreen_ = nullptr;
   std::unique_ptr<TouchProbe> touch_probe_;

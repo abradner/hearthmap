@@ -295,7 +295,8 @@ many small buffers the link died with nothing in the log (D-063). So:
   bisecting; a single-core chip, or a task FreeRTOS cannot create, does the same (`dump_config`
   says which). Every perf window adds a third line, `perf work: worker core <n>|inline, busy
   <ms> ms (<%>), <n> jobs, <n> cancelled, stack free <B> B | sprite sets <n> built, <n> kept, <n>
-  discarded` (kept: a recapture that found nothing changed, D-071).
+  discarded | perf log <us> us` (kept: a recapture that found nothing changed, D-071; perf log:
+  how long the previous window's three lines took to format and log, in the main loop).
 - **Bisecting the blue flash** (D-067), one change per flash: `heap_probe: walk`,
   `hosted_packet_pool: false` (leave esp-hosted's packet pool at its default, off), `ui_storage:
   system` (no memory port: the UI's storage back on malloc as before D-064).

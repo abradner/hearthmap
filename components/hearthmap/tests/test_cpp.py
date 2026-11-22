@@ -278,10 +278,11 @@ int main() {
     k.sets_built = 12;
     k.sets_kept = 60;
     k.sets_discarded = 1;
+    k.log_us = 950;
     PerfStats::format_work(k, line, sizeof(line));
     std::printf("%s\n", line);
     CHECK(std::strstr(line, "perf work: worker core 1, busy 812 ms (16%), 40 jobs, 2 cancelled, "
-                            "stack free 5120 B | sprite sets 12 built, 60 kept, 1 discarded") != nullptr);
+                            "stack free 5120 B | sprite sets 12 built, 60 kept, 1 discarded | perf log 950 us") != nullptr);
     CHECK(PerfStats::format_work(k, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   }
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');

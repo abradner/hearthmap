@@ -26,6 +26,9 @@ struct PerfWork {
   std::uint32_t sets_built = 0;         ///< sprite frame sets composed and adopted
   std::uint32_t sets_kept = 0;          ///< recaptures that changed nothing (no set rebuilt)
   std::uint32_t sets_discarded = 0;     ///< sets built for inputs that changed meanwhile
+  /// How long the previous window's perf lines took to format and log, in the main loop: the
+  /// suspected cause of a once-per-window loop gap, measured rather than assumed.
+  std::uint32_t log_us = 0;
 };
 
 /// One window's totals. Times in microseconds unless the name says ms.
@@ -135,7 +138,7 @@ class PerfStats {
   /// ESPHome's logger buffer (512 bytes by default).
   static std::size_t format_memory(const PerfWindow& w, char* out, std::size_t size);
   /// The worker line: `perf work: worker core 1, busy 812 ms (16%), 40 jobs, 2 cancelled, stack
-  /// free 5120 B | sprite sets 12 built, 60 kept, 1 discarded`.
+  /// free 5120 B | sprite sets 12 built, 60 kept, 1 discarded | perf log 950 us`.
   static std::size_t format_work(const PerfWork& w, char* out, std::size_t size);
 
  private:

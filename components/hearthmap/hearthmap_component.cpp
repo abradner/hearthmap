@@ -710,6 +710,8 @@ void HearthmapComponent::check_memory_() {
 void HearthmapComponent::log_perf_() {
   const uint32_t now = millis();
   if (!this->perf_.due(now)) return;
+  // Timed whole (formatting and the three log calls), reported in the next window's work line.
+  const uint32_t log_t0 = micros();
   hearthmap_device::PerfWindow w = this->perf_.take(now);
   if (this->screen_) {
     const hm::ui::PulseCounters c = this->screen_->pulse_counters();
@@ -776,8 +778,10 @@ void HearthmapComponent::log_perf_() {
     this->last_sets_discarded_ = c.sets_discarded;
   }
   k.window_ms = w.window_ms;
+  k.log_us = this->last_log_us_;
   hearthmap_device::PerfStats::format_work(k, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
+  this->last_log_us_ = micros() - log_t0;
 }
 
 void HearthmapComponent::show_status_(const char* text) {

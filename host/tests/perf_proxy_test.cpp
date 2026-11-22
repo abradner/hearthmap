@@ -377,7 +377,9 @@ TEST_CASE("perf proxy: a heat refresh that changes nothing under the sprites set
   const ui::PulseCounters before = app.screen().pulse_counters();
   REQUIRE(before.rings_shown == 9);
   app.screen().invalidate_heat();  // the same image: nothing under any sprite moved
+  const auto t0 = std::chrono::steady_clock::now();
   const std::uint32_t same_steps = drain();
+  const auto t1 = std::chrono::steady_clock::now();
   const ui::PulseCounters same = app.screen().pulse_counters();
   const std::uint32_t tiles = same.captures - before.captures;
   // A changed image (every reading moved a little): sprites are composed again, the positive
@@ -387,7 +389,13 @@ TEST_CASE("perf proxy: a heat refresh that changes nothing under the sprites set
     if (r.state == ReadingState::Value) r.value += 3.0;
   }
   app.set_readings(moved, s.now);  // rebuilds the image and drains preparation
+  const auto t2 = std::chrono::steady_clock::now();
   const ui::PulseCounters changed = app.screen().pulse_counters();
+  using ms = std::chrono::duration<double, std::milli>;
+  std::printf(
+      "perf proxy [settle]: host wall time: unchanged %.1f ms, changed %.1f ms (image and "
+      "every set)\n",
+      ms(t1 - t0).count(), ms(t2 - t1).count());
   std::printf(
       "perf proxy [settle]: %u tiles recaptured; unchanged image: %u steps, %u sets kept, %u "
       "built; changed image: %u sets built, %u kept\n",
