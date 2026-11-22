@@ -281,7 +281,25 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
     ring.t.area = align_out(ring.t.area);
     if (!clip(ring.t.area, tile_area_)) ring.t.area = align_out(lv_area_t{cx, cy, cx, cy});
     make_tile(ring.t, map_, origin_);
-    ring_img_.push_back(ring.t.img);
+    ring_img_.push_back(ring.t.pc[0].img);
+  }
+  // Extra pieces (D-070) for the tiles a later tile can overlap: a ring under a later ring's
+  // tile, a cell under any ring's. Made now, so every object keeps its place in the tree.
+  for (std::size_t i = 0; i < rings_.size(); ++i) {
+    for (std::size_t j = i + 1; j < rings_.size(); ++j) {
+      if (intersects(rings_[i].t.area, rings_[j].t.area)) {
+        make_piece_slots(rings_[i].t, map_);
+        break;
+      }
+    }
+  }
+  for (Cell& c : cells_) {
+    for (const Ring& r : rings_) {
+      if (intersects(c.rect, r.t.area)) {
+        make_piece_slots(c.t, outline_box_);
+        break;
+      }
+    }
   }
   // Each tile's lists of what reaches it, sized now to everything that ever could (pins, rooms
   // and ring tiles never move; a cell's rooms are fixed above): a vector's growth cannot fail
@@ -303,9 +321,9 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
   for (Cell& c : cells_) c.refs.reserve(c.rooms.size());
   // Sized once, so the frame clock and captures never grow them: a due frame per tile at most
   // (requeue() can add one more), and everything capture() may hide.
-  due_.reserve(2 * (rings_.size() + cells_.size()));
+  due_.reserve(2 * kMaxPieces * (rings_.size() + cells_.size()));
   due_out_.reserve(due_.capacity());
-  capture_hidden_.reserve(rings_.size() + pins_.size() + 8);
+  capture_hidden_.reserve(rings_.size() * kMaxPieces + pins_.size() + 8);
 }
 
 PulseLayer::~PulseLayer() {
@@ -316,8 +334,12 @@ void PulseLayer::forget_objects() {
   alive_ = false;
   if (timer_ != nullptr) lv_timer_delete(timer_);
   timer_ = nullptr;
-  for (Ring& r : rings_) r.t.img = nullptr;
-  for (Cell& c : cells_) c.t.img = nullptr;
+  for (Ring& r : rings_) {
+    for (Piece& p : r.t.pc) p.img = nullptr;
+  }
+  for (Cell& c : cells_) {
+    for (Piece& p : c.t.pc) p.img = nullptr;
+  }
   outline_box_ = nullptr;
   ring_img_.clear();
   room_marker_.clear();
@@ -329,57 +351,150 @@ void PulseLayer::forget_objects() {
 // lv_image_header_t is a set of bit-fields; a tile is at most the screen's size.
 #pragma GCC diagnostic ignored "-Wconversion"
 #endif
+namespace {
+lv_obj_t* make_tile_image(lv_obj_t* parent) {
+  lv_obj_t* img = lv_image_create(parent);
+  lv_obj_remove_style_all(img);
+  lv_obj_set_clickable(img, false);
+  lv_obj_add_event_cb(img, opaque_image_cover_cb, LV_EVENT_COVER_CHECK, nullptr);
+  lv_obj_set_hidden(img, true);
+  return img;
+}
+}  // namespace
+
 void PulseLayer::make_tile(Tile& t, lv_obj_t* parent, lv_point_t parent_origin) {
-  t.img = lv_image_create(parent);
-  lv_obj_remove_style_all(t.img);
-  lv_obj_set_clickable(t.img, false);
-  lv_obj_add_event_cb(t.img, opaque_image_cover_cb, LV_EVENT_COVER_CHECK, nullptr);
-  lv_obj_set_hidden(t.img, true);
+  t.pc[0].img = make_tile_image(parent);
+  t.piece_slots = 1;
   size_tile(t, parent_origin);
+}
+
+void PulseLayer::make_piece_slots(Tile& t, lv_obj_t* parent) {
+  for (std::size_t k = t.piece_slots; k < kMaxPieces; ++k) t.pc[k].img = make_tile_image(parent);
+  t.piece_slots = kMaxPieces;
 }
 
 void PulseLayer::size_tile(Tile& t, lv_point_t parent_origin) {
   t.w = lv_area_get_width(&t.area);
   t.h = lv_area_get_height(&t.area);
-  t.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-  t.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-  t.dsc.header.w = static_cast<std::uint32_t>(t.w);
-  t.dsc.header.h = static_cast<std::uint32_t>(t.h);
-  t.dsc.header.stride = static_cast<std::uint32_t>(t.w) * 2U;
-  t.dsc.data_size = static_cast<std::uint32_t>(t.w) * static_cast<std::uint32_t>(t.h) * 2U;
-  if (!alive_ || t.img == nullptr) return;
-  lv_obj_set_pos(t.img, t.area.x1 - parent_origin.x, t.area.y1 - parent_origin.y);
-  lv_obj_set_size(t.img, t.w, t.h);
+  t.origin = parent_origin;
+  t.frame = nullptr;
+  for (Piece& p : t.pc) {
+    p.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    p.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+  }
+  layout_pieces(t, &t.area, 1);  // one piece, the whole tile, until cut
+}
+
+void PulseLayer::layout_pieces(Tile& t, const lv_area_t* rects, std::size_t n) {
+  if (n > t.piece_slots) {
+    n = 1;  // cannot cut that finely: the whole tile (it may then be covered)
+    rects = &t.area;
+  }
+  t.pieces = n;
+  const std::uint32_t stride = static_cast<std::uint32_t>(t.w) * 2U;
+  for (std::size_t k = 0; k < kMaxPieces; ++k) {
+    Piece& p = t.pc[k];
+    p.on = k < n;
+    if (!p.on) {
+      if (alive_ && p.img != nullptr && !lv_obj_is_hidden(p.img)) lv_obj_set_hidden(p.img, true);
+      continue;
+    }
+    const lv_area_t& r = rects[k];
+    const std::int32_t w = lv_area_get_width(&r), h = lv_area_get_height(&r);
+    p.ox = r.x1 - t.area.x1;
+    p.oy = r.y1 - t.area.y1;
+    p.dsc.header.w = static_cast<std::uint32_t>(w);
+    p.dsc.header.h = static_cast<std::uint32_t>(h);
+    p.dsc.header.stride = stride;
+    // LVGL wants data_size >= stride * h (lv_draw_buf_init): the last row's stride runs past the
+    // piece's right edge, a length LVGL only checks and never reads (a draw reads w pixels a row).
+    p.dsc.data_size = stride * static_cast<std::uint32_t>(h);
+    p.dsc.data =
+        t.frame == nullptr
+            ? nullptr
+            : reinterpret_cast<const std::uint8_t*>(
+                  t.frame + static_cast<std::size_t>(p.oy) * static_cast<std::size_t>(t.w) +
+                  static_cast<std::size_t>(p.ox));
+    if (!alive_ || p.img == nullptr) continue;
+    lv_obj_set_pos(p.img, r.x1 - t.origin.x, r.y1 - t.origin.y);
+    lv_obj_set_size(p.img, w, h);
+    // An lv_image reads its source's size when the source is set, not when it draws: given the
+    // same descriptor with a new size it would draw the old size, centred. Set it again.
+    if (lv_image_get_src(p.img) == &p.dsc) {
+      lv_image_set_src(p.img, nullptr);
+      lv_image_set_src(p.img, &p.dsc);
+    }
+  }
 }
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
+
+void PulseLayer::point(Tile& t, const std::uint16_t* frame) {
+  t.frame = frame;
+  for (std::size_t k = 0; k < t.pieces; ++k) {
+    Piece& p = t.pc[k];
+    p.dsc.data = frame == nullptr
+                     ? nullptr
+                     : reinterpret_cast<const std::uint8_t*>(
+                           frame + static_cast<std::size_t>(p.oy) * static_cast<std::size_t>(t.w) +
+                           static_cast<std::size_t>(p.ox));
+  }
+}
+
+void PulseLayer::set_src(Tile& t) {
+  if (!alive_) return;
+  for (std::size_t k = 0; k < t.pieces; ++k) {
+    Piece& p = t.pc[k];
+    if (p.img != nullptr && lv_image_get_src(p.img) != &p.dsc) lv_image_set_src(p.img, &p.dsc);
+  }
+}
+
+void PulseLayer::invalidate_tile(Tile& t) {
+  if (!alive_) return;
+  for (std::size_t k = 0; k < t.pieces; ++k) {
+    if (t.pc[k].img != nullptr && !lv_obj_is_hidden(t.pc[k].img)) lv_obj_invalidate(t.pc[k].img);
+  }
+}
+
+bool PulseLayer::drop_due(Tile& t) {
+  bool any = false;
+  for (std::size_t i = 0; i < due_.size();) {
+    bool mine = false;
+    for (const Piece& p : t.pc) mine = mine || due_[i].dsc == &p.dsc;
+    if (mine) {
+      due_.erase(due_.begin() + static_cast<std::ptrdiff_t>(i));
+      any = true;
+    } else {
+      ++i;
+    }
+  }
+  return any;
+}
 
 void PulseLayer::release(Tile& t) {
   if (job_.tile == &t) {
     job_.next.px.release();
     job_ = Job{};
   }
-  if (alive_ && t.img != nullptr) {
-    lv_obj_set_hidden(t.img, true);
-    lv_image_set_src(t.img, nullptr);
+  if (alive_) {
+    for (Piece& p : t.pc) {
+      if (p.img == nullptr) continue;
+      lv_obj_set_hidden(p.img, true);
+      lv_image_set_src(p.img, nullptr);
+    }
   }
   t.below.release();
   t.full.release();
   t.shown.px.release();
   t.shown.count = 0;
   t.shown.complete = false;
-  t.dsc.data = nullptr;
+  point(t, nullptr);
+  t.vis = false;
   t.shown_index = -1;
   t.dirty = true;
   t.hidden = false;
-  for (std::size_t i = 0; i < due_.size();) {
-    if (due_[i].dsc == &t.dsc) {
-      due_.erase(due_.begin() + static_cast<std::ptrdiff_t>(i));
-    } else {
-      ++i;
-    }
-  }
+  (void)drop_due(t);
 }
 
 std::size_t PulseLayer::tile_frame_bytes(const Tile& t, bool ring) const {
@@ -607,11 +722,85 @@ void PulseLayer::set_veiled(bool veiled) {
   update_visibility();
 }
 
+namespace {
+
+// `r` less `b`: up to four rectangles (a band above, one below, and the parts left and right of
+// `b` between them). Aligned inputs give aligned pieces.
+std::size_t subtract(const lv_area_t& r, const lv_area_t& b, lv_area_t* out) {
+  if (!intersects(r, b)) {
+    out[0] = r;
+    return 1;
+  }
+  const lv_area_t i{std::max(r.x1, b.x1), std::max(r.y1, b.y1), std::min(r.x2, b.x2),
+                    std::min(r.y2, b.y2)};
+  std::size_t n = 0;
+  if (r.y1 < i.y1) out[n++] = lv_area_t{r.x1, r.y1, r.x2, i.y1 - 1};
+  if (i.y2 < r.y2) out[n++] = lv_area_t{r.x1, i.y2 + 1, r.x2, r.y2};
+  if (r.x1 < i.x1) out[n++] = lv_area_t{r.x1, i.y1, i.x1 - 1, i.y2};
+  if (i.x2 < r.x2) out[n++] = lv_area_t{i.x2 + 1, i.y1, r.x2, i.y2};
+  return n;
+}
+
+}  // namespace
+
+void PulseLayer::cut_tiles() {
+  constexpr std::size_t kMaxRects = 16;
+  auto cut = [this](Tile& t, auto&& each_later) {
+    if (!t.vis) return;
+    lv_area_t cur[kMaxRects], next[kMaxRects], part[4];
+    std::size_t n = 1;
+    cur[0] = t.area;
+    bool overflow = false;
+    each_later([&](const lv_area_t& b) {
+      if (overflow || !intersects(t.area, b)) return;
+      std::size_t m = 0;
+      for (std::size_t k = 0; k < n && !overflow; ++k) {
+        const std::size_t parts = subtract(cur[k], b, part);
+        if (m + parts > kMaxRects) {
+          overflow = true;
+          break;
+        }
+        for (std::size_t q = 0; q < parts; ++q) next[m++] = part[q];
+      }
+      if (overflow) return;
+      std::copy(next, next + m, cur);
+      n = m;
+    });
+    if (overflow) n = kMaxPieces + 1;  // layout_pieces() keeps it whole
+    // Unchanged: nothing to move.
+    bool same = n == t.pieces;
+    for (std::size_t k = 0; same && k < n; ++k) {
+      const Piece& p = t.pc[k];
+      same = p.ox == cur[k].x1 - t.area.x1 && p.oy == cur[k].y1 - t.area.y1 &&
+             static_cast<std::int32_t>(p.dsc.header.w) == lv_area_get_width(&cur[k]) &&
+             static_cast<std::int32_t>(p.dsc.header.h) == lv_area_get_height(&cur[k]);
+    }
+    if (same) return;
+    layout_pieces(t, cur, n);
+    if (t.frame != nullptr) set_src(t);
+    // Listed frames pointed at the old pieces; moving the pieces repaints them anyway.
+    (void)drop_due(t);
+  };
+  for (std::size_t i = 0; i < rings_.size(); ++i) {
+    cut(rings_[i].t, [this, i](auto&& f) {
+      for (std::size_t j = i + 1; j < rings_.size(); ++j) {
+        if (rings_[j].t.vis) f(rings_[j].t.area);
+      }
+    });
+  }
+  for (Cell& c : cells_) {
+    cut(c.t, [this](auto&& f) {
+      for (const Ring& r : rings_) {
+        if (r.t.vis) f(r.t.area);
+      }
+    });
+  }
+}
+
 void PulseLayer::update_visibility() {
   if (!alive_) return;
   for (Ring& r : rings_) {
-    const bool show = r.on && r.allocated && r.t.shown.count > 0 && !r.t.hidden && !veiled_;
-    if (lv_obj_is_hidden(r.t.img) == show) lv_obj_set_hidden(r.t.img, !show);
+    r.t.vis = r.on && r.allocated && r.t.shown.count > 0 && !r.t.hidden && !veiled_;
   }
   // An outline appears whole: a cell shows once some pulsing room through it has frames in
   // every one of its cells (a cell being recomposed keeps playing its old set meanwhile).
@@ -622,9 +811,19 @@ void PulseLayer::update_visibility() {
       const Room& room = rooms_[k];
       any_ready = any_ready || (room.on && room.allocated && room_ready(room));
     }
-    show = show && any_ready;
-    if (lv_obj_is_hidden(c.t.img) == show) lv_obj_set_hidden(c.t.img, !show);
+    c.t.vis = show && any_ready;
   }
+  // Each shown tile through the pieces of it no later shown tile overlaps (D-070), then every
+  // piece shown or hidden with its tile.
+  cut_tiles();
+  auto apply = [](Tile& t) {
+    for (std::size_t k = 0; k < t.pieces; ++k) {
+      lv_obj_t* img = t.pc[k].img;
+      if (img != nullptr && lv_obj_is_hidden(img) == t.vis) lv_obj_set_hidden(img, !t.vis);
+    }
+  };
+  for (Ring& r : rings_) apply(r.t);
+  for (Cell& c : cells_) apply(c.t);
   for (std::size_t i = 0; i < rooms_.size(); ++i) {
     const bool on = rooms_[i].on;
     if (lv_obj_is_hidden(room_marker_[i]) == on) lv_obj_set_hidden(room_marker_[i], !on);
@@ -647,7 +846,10 @@ bool PulseLayer::capture(Tile& t, bool with_pins) {
   BulkVector<lv_obj_t*>& hidden = capture_hidden_;
   hidden.clear();
   for (Ring& r : rings_) {
-    if (!lv_obj_is_hidden(r.t.img) && intersects(r.t.area, t.area)) hidden.push_back(r.t.img);
+    if (!intersects(r.t.area, t.area)) continue;
+    for (Piece& p : r.t.pc) {
+      if (p.img != nullptr && !lv_obj_is_hidden(p.img)) hidden.push_back(p.img);
+    }
   }
   if (outline_box_ != nullptr && !lv_obj_is_hidden(outline_box_)) hidden.push_back(outline_box_);
   for (lv_obj_t* o : never_captured_) {
@@ -941,24 +1143,33 @@ void PulseLayer::show_frame(Tile& t, int index) {
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
   const std::uint16_t* frame = t.shown.frames() + static_cast<std::size_t>(index) * px;
   t.shown_index = index;
-  if (!alive_ || t.img == nullptr) return;
-  if (lv_image_get_src(t.img) != &t.dsc) {
-    t.dsc.data = reinterpret_cast<const std::uint8_t*>(frame);
-    lv_image_set_src(t.img, &t.dsc);
+  if (!alive_ || t.pc[0].img == nullptr) return;
+  if (t.frame == nullptr || lv_image_get_src(t.pc[0].img) != &t.pc[0].dsc) {
+    point(t, frame);
+    set_src(t);
   }
-  if (defer_ && !lv_obj_is_hidden(t.img)) {
+  if (defer_ && tile_shown(t)) {
     // The embedder shows it (presents it, or invalidates): until then the old frame stays.
-    for (Due& d : due_) {
-      if (d.dsc == &t.dsc) {
-        d.frame = frame;
-        return;
+    // One entry per piece, each at its own place in the frame.
+    for (std::size_t k = 0; k < t.pieces; ++k) {
+      Piece& pc = t.pc[k];
+      const std::uint16_t* at = frame +
+                                static_cast<std::size_t>(pc.oy) * static_cast<std::size_t>(t.w) +
+                                static_cast<std::size_t>(pc.ox);
+      bool listed = false;
+      for (Due& d : due_) {
+        if (d.dsc == &pc.dsc) {
+          d.frame = at;
+          listed = true;
+        }
       }
+      if (!listed) due_.push_back(Due{pc.img, &pc.dsc, at});
     }
-    due_.push_back(Due{t.img, &t.dsc, frame});
+    t.frame = frame;  // what a re-cut points the pieces at
     return;
   }
-  t.dsc.data = reinterpret_cast<const std::uint8_t*>(frame);
-  if (!lv_obj_is_hidden(t.img)) lv_obj_invalidate(t.img);
+  point(t, frame);
+  invalidate_tile(t);
 }
 
 void PulseLayer::finish_job() {
@@ -975,17 +1186,14 @@ void PulseLayer::finish_job() {
     index = 0;  // the set is complete, so frame 0 exists
   }
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  t.dsc.data = reinterpret_cast<const std::uint8_t*>(t.shown.frames() +
-                                                     static_cast<std::size_t>(index) * px);
-  for (Due& d : due_) {
-    if (d.dsc == &t.dsc) d.frame = reinterpret_cast<const std::uint16_t*>(t.dsc.data);
-  }
-  if (alive_ && t.img != nullptr) {
-    if (lv_image_get_src(t.img) != &t.dsc) lv_image_set_src(t.img, &t.dsc);
+  point(t, t.shown.frames() + static_cast<std::size_t>(index) * px);
+  (void)drop_due(t);  // listed frames of the old set: the invalidation below draws the new one
+  if (alive_ && t.pc[0].img != nullptr) {
+    set_src(t);
     t.shown_index = index;
     t.shown_ms = lv_tick_get();
     update_visibility();
-    if (!lv_obj_is_hidden(t.img)) lv_obj_invalidate(t.img);
+    invalidate_tile(t);
   }
 }
 
@@ -1108,7 +1316,7 @@ void PulseLayer::tick(std::uint32_t now_ms) {
   // (16 ms) later. Deferred (presented) frames have no such limit.
   std::uint32_t invalidations = 0;
   auto step = [this, now_ms, &invalidations](Tile& t) {
-    if (t.shown.count == 0 || t.hidden || t.img == nullptr || lv_obj_is_hidden(t.img)) return;
+    if (t.shown.count == 0 || t.hidden || !tile_shown(t)) return;
     if (!defer_ && invalidations >= kMaxInvalidationsPerTick) return;
     const std::uint32_t fm = t.shown.frame_ms;
     const int index = frame_index(t, now_ms);
@@ -1140,7 +1348,7 @@ void PulseLayer::tick(std::uint32_t now_ms) {
   for (Room& room : rooms_) {
     if (!room.on || !room.allocated || room.cells.empty()) continue;
     const Tile& first = cells_[room.cells.front()].t;
-    if (first.shown.count == 0 || lv_obj_is_hidden(first.img)) continue;
+    if (first.shown.count == 0 || !first.vis) continue;
     const auto s = static_cast<int>(((now_ms + room.phase_ms) % kCycleMs) / first.shown.frame_ms);
     if (s != room.shown_step) ++stats_.frames;
     room.shown_step = s;
@@ -1158,46 +1366,68 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
     if (why != nullptr) *why = w;
     return false;
   };
-  if (!alive_ || t.img == nullptr) return true;
-  const bool src = lv_image_get_src(t.img) == &t.dsc;
-  if (!src) {
-    if (!lv_obj_is_hidden(t.img) && lv_image_get_src(t.img) != nullptr) {
-      return fail("a tile shows a source that is not its descriptor");
-    }
-    return true;
-  }
-  if (lv_obj_is_hidden(t.img) && t.dsc.data == nullptr) return true;
+  if (!alive_) return true;
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  if (t.dsc.header.w != static_cast<std::uint32_t>(t.w) ||
-      t.dsc.header.h != static_cast<std::uint32_t>(t.h) ||
-      t.dsc.header.stride != static_cast<std::uint32_t>(t.w) * 2U ||
-      lv_obj_get_width(t.img) != t.w || lv_obj_get_height(t.img) != t.h) {
-    return fail("a tile's descriptor or object is not the tile's size");
-  }
-  if (t.dsc.data == nullptr) {
-    return lv_obj_is_hidden(t.img) ? true : fail("a visible tile has no frame");
-  }
-  if (!t.shown.complete || t.shown.count == 0) return fail("a tile points into an incomplete set");
-  if (t.shown.frame_words() != px * t.shown.count)
-    return fail("a set is not count frames of w x h");
-  const auto* p = reinterpret_cast<const std::uint16_t*>(t.dsc.data);
   const std::uint16_t* b = t.shown.frames();
-  if (p < b || p >= b + t.shown.frame_words()) return fail("a tile points outside its set");
-  if (static_cast<std::size_t>(p - b) % px != 0) return fail("a tile points between frames");
-  for (const Due& d : due_) {
-    if (d.dsc != &t.dsc) continue;
-    if (d.frame < b || d.frame >= b + t.shown.frame_words() ||
-        static_cast<std::size_t>(d.frame - b) % px != 0) {
-      return fail("a listed frame lies outside its set");
+  // A pointer into a whole frame of the set, given where in the frame it should be.
+  auto whole = [&](const std::uint16_t* q, std::size_t offset) {
+    if (!t.shown.complete || t.shown.count == 0) return false;
+    if (q < b + offset) return false;
+    const std::uint16_t* f = q - offset;
+    return f < b + t.shown.frame_words() && static_cast<std::size_t>(f - b) % px == 0;
+  };
+  const std::uint16_t* shown_frame = nullptr;
+  for (std::size_t k = 0; k < kMaxPieces; ++k) {
+    Piece& pc = t.pc[k];
+    if (pc.img == nullptr) continue;
+    const bool hidden = lv_obj_is_hidden(pc.img);
+    if (lv_image_get_src(pc.img) != &pc.dsc) {
+      if (!hidden && lv_image_get_src(pc.img) != nullptr) {
+        return fail("a tile shows a source that is not its descriptor");
+      }
+      continue;
+    }
+    if (k >= t.pieces) {
+      if (!hidden) return fail("a piece outside the tile's cut is shown");
+      continue;
+    }
+    if (hidden && pc.dsc.data == nullptr) continue;
+    const auto w = static_cast<std::int32_t>(pc.dsc.header.w);
+    const auto h = static_cast<std::int32_t>(pc.dsc.header.h);
+    lv_obj_update_layout(pc.img);  // a re-cut piece's new size is applied by the layout
+    if (w <= 0 || h <= 0 || pc.ox < 0 || pc.oy < 0 || pc.ox + w > t.w || pc.oy + h > t.h ||
+        pc.dsc.header.stride != static_cast<std::uint32_t>(t.w) * 2U ||
+        lv_obj_get_width(pc.img) != w || lv_obj_get_height(pc.img) != h ||
+        lv_image_get_src_width(pc.img) != w || lv_image_get_src_height(pc.img) != h) {
+      return fail("a tile's descriptor or object is not the tile's size");
+    }
+    if (pc.dsc.data == nullptr) {
+      if (hidden) continue;
+      return fail("a visible tile has no frame");
+    }
+    if (!t.shown.complete || t.shown.count == 0)
+      return fail("a tile points into an incomplete set");
+    if (t.shown.frame_words() != px * t.shown.count)
+      return fail("a set is not count frames of w x h");
+    const std::size_t offset = static_cast<std::size_t>(pc.oy) * static_cast<std::size_t>(t.w) +
+                               static_cast<std::size_t>(pc.ox);
+    const auto* q = reinterpret_cast<const std::uint16_t*>(pc.dsc.data);
+    if (!whole(q, offset)) return fail("a tile points outside its set, or between frames");
+    if (shown_frame == nullptr) shown_frame = q - offset;
+    for (const Due& d : due_) {
+      if (d.dsc == &pc.dsc && !whole(d.frame, offset)) {
+        return fail("a listed frame lies outside its set");
+      }
     }
   }
   // The frame shown equals that frame composed afresh from the tile's captures, unless the tile is
   // being recaptured (its old set plays meanwhile, from captures that are being replaced).
-  if (!t.dirty && job_.tile != &t && !t.below.empty() && !t.full.empty()) {
-    const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(p - b) / px);
+  if (shown_frame != nullptr && !t.dirty && job_.tile != &t && !t.below.empty() &&
+      !t.full.empty()) {
+    const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(shown_frame - b) / px);
     if (!reference_.resize(px)) return fail("no memory to compose a reference frame");
     compose_frame(t, k, t.shown.frame_ms, reference_.data());
-    if (!std::equal(reference_.begin(), reference_.end(), p)) {
+    if (!std::equal(reference_.begin(), reference_.end(), shown_frame)) {
       return fail("a shown frame differs from the same frame composed again");
     }
   }

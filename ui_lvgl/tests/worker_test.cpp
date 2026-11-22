@@ -24,8 +24,13 @@ struct FillJob final : WorkJob {
   std::size_t next = 0;
   /// For the tests only: how many steps ran (the worker writes, the test reads while it runs).
   std::atomic<std::uint32_t> steps{0};
+  /// When set, the second step waits until the test opens it: a cancel made before opening is
+  /// then seen by the worker before the job could finish, however fast the worker runs.
+  std::atomic<bool>* gate = nullptr;
   bool step() override {
-    steps.fetch_add(1, std::memory_order_relaxed);
+    if (steps.fetch_add(1, std::memory_order_relaxed) == 1 && gate != nullptr) {
+      while (!gate->load(std::memory_order_acquire)) std::this_thread::yield();
+    }
     const std::size_t end = std::min(out->size(), next + chunk);
     for (; next < end; ++next) (*out)[next] = static_cast<std::uint32_t>(next) + seed;
     return next < out->size();
@@ -122,9 +127,12 @@ TEST_CASE(
     FillJob job;
     job.out = &out;
     job.chunk = 64;  // many steps: the cancel lands while it runs
+    std::atomic<bool> gate{false};
+    job.gate = &gate;
     REQUIRE(w.submit(WorkLane::Heat, job));
     while (job.steps.load(std::memory_order_relaxed) < 2) std::this_thread::yield();
-    w.cancel(WorkLane::Heat);
+    w.cancel(WorkLane::Heat);  // while its second step is held
+    gate.store(true, std::memory_order_release);
     // Busy until the worker gives it back; then nothing of the job's runs again.
     bool completed = true;
     REQUIRE(wait_back(w, WorkLane::Heat, &completed) == Worker::Poll::Finished);

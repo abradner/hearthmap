@@ -93,7 +93,8 @@ PresentBlock present_check(lv_obj_t* image, const lv_image_dsc_t& dsc) {
     return PresentBlock::NotImage;
   }
   if (dsc.header.cf != LV_COLOR_FORMAT_RGB565 || dsc.header.w == 0 || dsc.header.h == 0 ||
-      dsc.header.stride != dsc.header.w * 2U || dsc.data == nullptr) {
+      dsc.header.stride < dsc.header.w * 2U || dsc.header.stride % 2U != 0U ||
+      dsc.data == nullptr) {
     return PresentBlock::NotRgb565;
   }
   lv_display_t* disp = lv_obj_get_display(image);
@@ -179,8 +180,9 @@ TileShown show_tile_frame(lv_obj_t* image, lv_image_dsc_t& dsc, const std::uint1
   if (verdict == PresentBlock::Ok) {
     lv_area_t a;
     lv_obj_get_coords(image, &a);
-    const int w = static_cast<int>(dsc.header.w);
-    const View565 tile{frame, w, static_cast<int>(dsc.header.h), w};
+    // A tile's piece reads its rows out of the whole tile's frame: the stride is the tile's.
+    const View565 tile{frame, static_cast<int>(dsc.header.w), static_cast<int>(dsc.header.h),
+                       static_cast<int>(dsc.header.stride / 2U)};
     if (presenter.present(a.x1, a.y1, tile)) return TileShown::Presented;
   }
   if (image != nullptr) lv_obj_invalidate(image);

@@ -1325,3 +1325,41 @@ rewritten, two lanes side by side; a mutant `poll()` that reports Finished while
 still queued fails three of its four threaded cases. CI's `tsan` job runs every `worker:*` case
 under ThreadSanitizer; with the lane's release/acquire weakened to relaxed it reports 14 races.
 **Would change if:** a client needs more than one job in flight per lane.
+
+### D-070 A pulse tile overlapped by a later one shows through pieces of itself (provisional)
+
+**What happened:** D-058's `present_check()` refuses a tile that anything drawn after it reaches
+into, and D-053's outline cells avoid each other but not the rings: a ring's tile drawn after an
+outline cell, or after an earlier ring, crossing it at a corner (where trimming cannot make it a
+rectangle) left that tile refused, so every one of its frames fell back to an LVGL refresh. On
+main the soak showed none, but after the owner's floor plan changed (rooms sharing long walls,
+more adjacent rooms pulsing, pins near room edges) the panel showed `present 3529 / fallback 228
+(covered)` in a 5 s window, the loop at 22/s and LVGL at 16 % (one observation about 70 s after
+boot, not a soak). The host reproduced it: `edge_heavy()` (panel-like with its plants 14-26 px
+from walls) fell back 22.8 frames a second, every one `Covered`, from four tiles: two rings
+cornered by a later ring, two cells cornered by a ring; panel-like itself fell back 26.6/s and
+the example flat 7.6/s, all `Covered`. **Default:** a tile shows through up to four pieces, each
+an lv_image whose descriptor points into the tile's own frame at its offset, with the tile's
+stride (`PulseLayer::Piece`). Whenever visibility changes, each shown tile is cut to its area
+less the areas of the shown tiles drawn after it (later rings for a ring, any ring for a cell):
+no two shown pieces overlap, so none is ever covered by another, and nothing is lost, because
+the later tile composes the earlier one's pulse where they overlap (D-053). Cutting moves
+objects and descriptors only: frames are composed for the whole tile as before, so a cut costs
+no recompose and no memory. A cut that would need more than four pieces keeps the tile whole (it
+may then be covered, as before); only tiles a later tile can overlap get the extra images, made
+at construction. `present_check()` now accepts a stride of at least w * 2, and
+`show_tile_frame()` passes it to the presenter (whose `View565` always had a stride). **Trades:**
+more, smaller presents where tiles meet (four in the worst case instead of one plus a fallback);
+a piece's descriptor claims `stride * h` bytes, as LVGL requires, of which its last row's tail
+past the piece is never read. **Found while building it:** an lv_image reads its source's size
+when the source is set, not when it draws, so a piece re-cut while showing drew its old size,
+centred (three goldens showed it); the source is set again after every re-cut, and
+`verify_pulse_frames()` checks each shown piece's image size against its descriptor. **Guard:**
+`host/tests/perf_proxy_test.cpp`, "pins next to walls of pulsing neighbours present without
+covered tiles" (0 covered; 228 in 10 s with the cut switched off), and every proxy scene now
+falls back 0 times; `ui_lvgl/tests/screen_test.cpp`, "a tile overlapped by a later one shows
+through pieces" (shown pieces disjoint, the earlier tile's area wholly drawn, 3 s of frames all
+presented, the tile whole again when the later ring stops; with the cut off it fails on overlap
+and 90 covered frames, with the source not set again after a re-cut it fails on size). Goldens
+unchanged. **Would change if:** the device still shows covered fallbacks (then name the object
+drawn after the tile: `present_block` in the perf line says only the reason).

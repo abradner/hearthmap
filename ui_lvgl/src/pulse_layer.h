@@ -166,10 +166,27 @@ class PulseLayer {
     std::uint32_t frame_ms = 0;  ///< count * frame_ms == kCycleMs
     bool complete = false;       ///< every frame composed: only then is it shown
   };
-  struct Tile {
+  /// One view of a tile on screen: an lv_image whose descriptor points into the tile's current
+  /// frame at (ox, oy), with the tile's stride. A tile shows through its pieces: one, the whole
+  /// tile, unless a tile drawn after it (a later ring) overlaps it, when its pieces are its area
+  /// less those tiles', so no two shown pieces overlap and each can be presented (D-070).
+  struct Piece {
     lv_obj_t* img = nullptr;
     lv_image_dsc_t dsc{};
-    lv_area_t area{};  // screen px
+    std::int32_t ox = 0, oy = 0;
+    bool on = false;  ///< part of the tile's current cut
+  };
+  static constexpr std::size_t kMaxPieces = 4;
+  struct Tile {
+    /// pc[0].img is the tile's own image (ring_objects()); the others exist only for tiles that
+    /// a later tile can overlap, made at construction.
+    std::array<Piece, kMaxPieces> pc{};
+    std::size_t piece_slots = 1;  ///< pieces with an image
+    std::size_t pieces = 1;       ///< pieces in the current cut (0: wholly under later tiles)
+    bool vis = false;             ///< shown (before cutting)
+    const std::uint16_t* frame = nullptr;  ///< the whole frame the pieces point into
+    lv_point_t origin{};                   ///< the pieces' parent, screen px
+    lv_area_t area{};                      // screen px
     std::int32_t w = 0, h = 0;
     BulkBuffer<std::uint16_t> below, full;  ///< the captures
     FrameSet shown;                         ///< what plays
@@ -234,6 +251,19 @@ class PulseLayer {
   static void on_timer(lv_timer_t* t);
   void make_tile(Tile& t, lv_obj_t* parent, lv_point_t parent_origin);
   void size_tile(Tile& t, lv_point_t parent_origin);
+  /// The extra pieces' images, for a tile a later tile can overlap.
+  void make_piece_slots(Tile& t, lv_obj_t* parent);
+  /// Shows the tile through `n` pieces at `rects` (screen px, inside its area); hides the rest.
+  void layout_pieces(Tile& t, const lv_area_t* rects, std::size_t n);
+  /// Cuts every shown tile against the shown tiles drawn after it (update_visibility()).
+  void cut_tiles();
+  /// Points every piece of the cut at `frame` (a whole frame of the tile's set).
+  void point(Tile& t, const std::uint16_t* frame);
+  void set_src(Tile& t);
+  void invalidate_tile(Tile& t);
+  /// Removes the tile's pieces from the due list; true if any were there.
+  bool drop_due(Tile& t);
+  bool tile_shown(const Tile& t) const { return t.vis && t.pieces > 0 && t.pc[0].img != nullptr; }
   /// The aligned box, within the cell, of the strokes of the rooms through it that pulse (and
   /// of `with`, if it is one of them); the current area when none.
   lv_area_t cell_area(const Cell& c, std::size_t with) const;

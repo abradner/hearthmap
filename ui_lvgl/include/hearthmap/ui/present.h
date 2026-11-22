@@ -41,7 +41,7 @@ class NoPresenter final : public Presenter {
 enum class PresentBlock : std::uint8_t {
   Ok,
   NotImage,           ///< null, not an lv_image, or its source is not `dsc`
-  NotRgb565,          ///< the descriptor is not tightly packed RGB565
+  NotRgb565,          ///< the descriptor is not RGB565 with a stride of at least w * 2
   Refreshing,         ///< called from inside an LVGL refresh
   NotOnActiveScreen,  ///< not the active screen, or a screen-load animation is running
   Hidden,             ///< it or an ancestor is hidden
@@ -65,8 +65,9 @@ PresentBlock present_check(lv_obj_t* image, const lv_image_dsc_t& dsc);
 enum class TileShown : std::uint8_t { Presented, Invalidated };
 
 /// Shows the next frame of an animated opaque tile. `image` is an lv_image whose source is
-/// `dsc`, which the caller owns for the image's lifetime with a fixed header (RGB565, w, h,
-/// stride w * 2). Points `dsc.data` at `frame` (w * h pixels, stride w) without invalidating,
+/// `dsc`, which the caller owns for the image's lifetime with a fixed header (RGB565, w, h, and
+/// a stride of at least w * 2: a piece of a larger frame reads its rows at that frame's stride,
+/// D-070). Points `dsc.data` at `frame` (h rows of w pixels at that stride) without invalidating,
 /// then presents the frame when present_check() is Ok and the presenter succeeds; otherwise
 /// invalidates the image so LVGL's next refresh draws it. Either way any later LVGL repaint of
 /// that area draws `frame` too, so a stale frame never returns. Call from LVGL's thread (the main

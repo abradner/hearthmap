@@ -1920,8 +1920,9 @@ TEST_CASE("paused sprite builds start nothing; the sets already built keep playi
   CHECK_FALSE(c.builds_paused);
   CHECK(c.rooms_animated == 1);
   const char* why = "";
-  CHECK(rig.screen->verify_pulse_frames(&why));
-  INFO(why);
+  const bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
 }
 
 TEST_CASE("a room admitted while builds are paused does not take a playing ring's frames") {
@@ -1988,6 +1989,130 @@ TEST_CASE("a ring admitted from the waiting list is drawn into the tiles of ring
   CHECK(pc.rings_shown == 2);
   CHECK(pc.captures - before == 2);  // W's tile and B's
   const char* why = "";
-  CHECK(rig.screen->verify_pulse_frames(&why));
-  INFO(why);
+  const bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
+}
+
+namespace {
+
+/// Every shown pulse image (ring pieces in the map, outline pieces in their container), screen px.
+std::vector<std::pair<lv_obj_t*, lv_area_t>> shown_pulse_images(const ScreenWidgets& w) {
+  std::vector<std::pair<lv_obj_t*, lv_area_t>> out;
+  auto take = [&](lv_obj_t* parent) {
+    const std::uint32_t n = lv_obj_get_child_count(parent);
+    for (std::uint32_t i = 0; i < n; ++i) {
+      lv_obj_t* o = lv_obj_get_child(parent, static_cast<std::int32_t>(i));
+      if (lv_obj_is_hidden(o) || !lv_obj_check_type(o, &lv_image_class)) continue;
+      if (lv_image_get_src(o) == nullptr) continue;
+      lv_area_t a;
+      lv_obj_get_coords(o, &a);
+      out.emplace_back(o, a);
+    }
+  };
+  lv_obj_update_layout(w.root);
+  take(w.map);
+  take(w.outline_pulse);
+  return out;
+}
+
+/// Takes every frame it is offered.
+struct VerdictPresenter final : Presenter {
+  bool present(int, int, const View565&) override { return true; }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "a tile overlapped by a later one shows through pieces: nothing covers, nothing is lost") {
+  // Pin 1's ring overlaps pin 0's (pin 0 drawn first); pin 3 sits by the corner where the west,
+  // east and balcony walls meet, so its ring crosses the corners of pulsing rooms' outline cells.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.25, 0.33};
+  c.pins[3].position = MapPoint{0.53, 0.47};
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  auto danger = [&](std::size_t i, bool on) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = on ? Severity::Danger : Severity::Ok;
+  };
+  vm.rooms[0].pulse = Severity::Danger;
+  vm.rooms[1].pulse = Severity::Warn;
+  // Plants in danger would put a scaled photo in the HUD, which LVGL may draw over the map's east
+  // edge (its extra draw size): a cover the cut is not about. Pin 1 is the fern: no HUD here.
+  vm.hud = Hud{};
+  danger(0, true);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_area_t a0;
+  lv_obj_get_coords(rig.w().pin_pulse[0], &a0);  // pin 0's whole tile, nothing over it yet
+  danger(1, true);
+  danger(3, true);
+  rig.show(vm);
+  lv_area_t a1;
+  lv_obj_get_coords(rig.w().pin_pulse[1], &a1);
+  REQUIRE(overlap(a0, a1));  // the case under test
+
+  const auto shown = shown_pulse_images(rig.w());
+  // Every shown piece draws its own descriptor at its own size (an lv_image keeps the size it
+  // read when its source was set: a piece re-cut while showing must be told again).
+  bool sized = true;
+  for (const auto& s : shown) {
+    const auto* d = static_cast<const lv_image_dsc_t*>(lv_image_get_src(s.first));
+    sized = sized && lv_image_get_src_width(s.first) == lv_area_get_width(&s.second) &&
+            lv_image_get_src_height(s.first) == lv_area_get_height(&s.second) &&
+            static_cast<std::int32_t>(d->header.w) == lv_area_get_width(&s.second);
+  }
+  CHECK(sized);
+  // No two shown pulse images overlap.
+  bool disjoint = true;
+  for (std::size_t i = 0; i < shown.size(); ++i) {
+    for (std::size_t j = i + 1; j < shown.size(); ++j) {
+      disjoint = disjoint && !overlap(shown[i].second, shown[j].second);
+    }
+  }
+  CHECK(disjoint);
+  // Pin 0's tile is still drawn whole: every pixel of it lies in a shown pulse image (its own
+  // pieces, or pin 1's tile, which draws pin 0's ring where they overlap).
+  std::size_t holes = 0;
+  for (std::int32_t y = a0.y1; y <= a0.y2; ++y) {
+    for (std::int32_t x = a0.x1; x <= a0.x2; ++x) {
+      bool in = false;
+      for (const auto& s : shown) {
+        in = in || (x >= s.second.x1 && x <= s.second.x2 && y >= s.second.y1 && y <= s.second.y2);
+      }
+      holes += in ? 0U : 1U;
+    }
+  }
+  CHECK(holes == 0U);
+  CHECK(lv_area_get_size(&a0) > 0);
+
+  // Through three seconds of frames every one is presented: none refused as covered.
+  rig.screen->set_frames_deferred(true);
+  VerdictPresenter presenter;
+  Screen::ShownFrames tally;
+  const char* why = "";
+  bool ok = true;
+  for (std::uint32_t t = 16; t <= 3000; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+    rig.screen->show_due_frames(presenter, &tally);
+    ok = ok && rig.screen->verify_pulse_frames(&why);
+  }
+  INFO(std::string(why));
+  CHECK(ok);
+  CHECK(tally.presented > 100U);
+  CHECK(tally.blocked[static_cast<std::size_t>(PresentBlock::Covered)] == 0U);
+  CHECK(tally.invalidated == 0U);
+
+  // Pin 1 stops: pin 0's tile is whole again (one piece, its full area).
+  danger(1, false);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_area_t again;
+  lv_obj_get_coords(rig.w().pin_pulse[0], &again);
+  CHECK(again.x1 == a0.x1);
+  CHECK(again.y2 == a0.y2);
+  CHECK(lv_area_get_size(&again) == lv_area_get_size(&a0));
 }

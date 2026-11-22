@@ -348,6 +348,16 @@ TEST_CASE("perf proxy: the panel-shaped house on the temperature layer, rooms pu
   CHECK(r.counts.max_refresh_ms <= kBudgetRefreshMs);
 }
 
+TEST_CASE("perf proxy: pins next to walls of pulsing neighbours present without covered tiles") {
+  const Result r = run_steady("edge-heavy, soil layer", edge_heavy(), Layer::Soil, 10.0);
+  REQUIRE(r.pulsing_pins == 9);
+  REQUIRE(r.pulsing_rooms >= 3);
+  CHECK(r.counts.presented > 0);
+  CHECK(r.counts.blocked[static_cast<std::size_t>(ui::PresentBlock::Covered)] == 0U);
+  CHECK(r.counts.fallbacks * 10U <= r.counts.presented);
+  CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
+}
+
 TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budget") {
   const Result r =
       run_steady("example thirsty-many, soil layer", example_thirsty(), Layer::Soil, 10.0);
