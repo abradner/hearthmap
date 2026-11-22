@@ -632,9 +632,10 @@ struct Screen::Impl {
       return nullptr;
     auto it = round_photos.find(*pin.photo);
     if (it != round_photos.end()) return &it->second->dsc;
-    auto round = make_bulk<RoundPhoto>();
-    // Without memory for the cut copy the disc shows nothing new: the caller's fallback.
-    if (!round->px.resize(static_cast<std::size_t>(d) * static_cast<std::size_t>(d)))
+    // Made on first opening, long after start-up: without memory for the holder or the cut copy
+    // the disc shows the photo as it is (the caller's fallback), never an abort (D-064).
+    auto round = try_make_bulk<RoundPhoto>();
+    if (!round || !round->px.resize(static_cast<std::size_t>(d) * static_cast<std::size_t>(d)))
       return nullptr;
     const auto* src = reinterpret_cast<const std::uint16_t*>(photo->data);
     const std::uint16_t card = rgb565(theme::kCard);

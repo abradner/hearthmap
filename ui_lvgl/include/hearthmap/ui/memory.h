@@ -17,7 +17,8 @@
 //     those buffers. A vector cannot fail softly with exceptions off (D-002), so the allocator
 //     reports through the failure handler and aborts, as `new` would; keep such vectors to
 //     sizes known at construction.
-//   - make_bulk<T>(...): one object in port memory (BulkPtr<T>), with the same failure rule.
+//   - make_bulk<T>(...): one object in port memory (BulkPtr<T>), with the same failure rule;
+//     try_make_bulk<T>(...) returns an empty BulkPtr instead, for objects made after start-up.
 //
 // The port is process-wide (LVGL is too). Install it before the first bulk allocation, keep it
 // alive while anything holds its memory, and allocate from one task: set_bulk_memory() refuses
@@ -192,6 +193,15 @@ template <class T, class... Args>
 BulkPtr<T> make_bulk(Args&&... args) {
   void* m = bulk_allocate(sizeof(T), alignof(T));
   if (m == nullptr) bulk_exhausted(sizeof(T));
+  return BulkPtr<T>(new (m) T(std::forward<Args>(args)...));
+}
+
+/// One T in port memory, or an empty BulkPtr when the port refuses (counted, not aborted): for
+/// objects made after start-up, whose caller has a fallback.
+template <class T, class... Args>
+BulkPtr<T> try_make_bulk(Args&&... args) {
+  void* m = bulk_allocate(sizeof(T), alignof(T));
+  if (m == nullptr) return BulkPtr<T>();
   return BulkPtr<T>(new (m) T(std::forward<Args>(args)...));
 }
 

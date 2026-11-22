@@ -134,6 +134,18 @@ TEST_CASE("BulkVector and make_bulk allocate through the port") {
   CHECK(mem.held == 0);
 }
 
+TEST_CASE("try_make_bulk returns nothing when refused, and counts it") {
+  LimitedMemory mem(4);
+  Installed installed(&mem);
+  const std::uint32_t before = bulk_stats().failures;
+  BulkPtr<std::uint64_t> p = try_make_bulk<std::uint64_t>(7U);
+  CHECK_FALSE(p);
+  CHECK(bulk_stats().failures == before + 1);
+  BulkPtr<std::uint32_t> q = try_make_bulk<std::uint32_t>(9U);
+  REQUIRE(q);
+  CHECK(*q == 9U);
+}
+
 TEST_CASE("the port cannot be changed while its memory is held") {
   LimitedMemory a(1U << 20);
   LimitedMemory b(1U << 20);

@@ -1858,6 +1858,36 @@ TEST_CASE("building pulse sprites never grows a container the port could refuse"
   REQUIRE(set_bulk_memory(nullptr));
 }
 
+TEST_CASE("a plant overlay opened with the port refusing small blocks falls back, never aborts") {
+  // The round-cut overlay photo is made on first opening, long after start-up: its holder as
+  // well as its pixels must fail softly.
+  SmallRefusingMemory mem;
+  REQUIRE(set_bulk_memory(&mem));
+  {
+    Rig rig;
+    // The fern's photo at the overlay disc's size (128 px), so it would be cut round.
+    rig.photos.pixels.assign(128U * 128U * 2U, 0x55);
+    rig.photos.dsc.header.w = 128;
+    rig.photos.dsc.header.h = 128;
+    rig.photos.dsc.header.stride = 256;
+    rig.photos.dsc.data_size = static_cast<std::uint32_t>(rig.photos.pixels.size());
+    rig.photos.dsc.data = rig.photos.pixels.data();
+    mem.refuse_small = true;
+    ViewModel vm = test::temperature_vm(rig.config);
+    OverlayView ov;
+    ov.pin_index = 1;
+    ov.rows.push_back(test::row(
+        test::fresh(Role::Moisture, 0.5, Severity::Ok, default_band(Layer::Soil)), "%", 1000));
+    vm.overlay = ov;
+    rig.show(vm, 1000);  // aborted in make_bulk before the holder could fail softly
+    CHECK(mem.refused > 0);
+    CHECK(text(rig.w().overlay_title) == "Fern");
+    mem.refuse_small = false;
+  }
+  CHECK(bulk_stats().in_use == 0);
+  REQUIRE(set_bulk_memory(nullptr));
+}
+
 TEST_CASE("paused sprite builds start nothing; the sets already built keep playing") {
   Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
   ViewModel vm = test::temperature_vm(rig.config);
