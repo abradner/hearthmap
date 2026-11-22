@@ -1198,6 +1198,8 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
 TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") {
   Rig rig;
   const std::size_t timers_before = timer_count();
+  // Before any pulse: only the capture staging, held from the start (D-071).
+  const std::size_t idle_bytes = rig.screen->pulse_counters().tile_bytes;
   ViewModel vm = test::temperature_vm(rig.config);
   vm.pins[0].active_value = 33.0;
   vm.pins[0].active_severity = Severity::Danger;
@@ -1221,8 +1223,8 @@ TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") 
     rig.display.run_timers();
   }
   CHECK(g_invalidated == 0);  // nothing left moving
-  // The cleared pulses gave their memory back (the budget no longer counts them).
-  CHECK(rig.screen->pulse_counters().tile_bytes == 0);
+  // The cleared pulses gave their memory back (the budget counts only the staging again).
+  CHECK(rig.screen->pulse_counters().tile_bytes == idle_bytes);
   CHECK(timer_count() == timers_before);  // the clock stopped itself
   CHECK(hidden(w.pin_pulse[0]));          // and nothing came back
   CHECK(hidden(w.room_pulse[1]));
@@ -1424,10 +1426,11 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
 
 // One of small_config()'s top rooms' outline sprites fits, two do not, at the coarsest rate with
 // room for one replacement set (PulseLayer::need_at).
-constexpr std::size_t kOneRoomBudget = 500U * 1024U;
+// Both budgets include the 64 KiB of capture staging every layer holds (D-071).
+constexpr std::size_t kOneRoomBudget = 564U * 1024U;
 // Two ring tiles at an eighth of the frames, not three (two far apart hold about 560 KiB; each
 // tile also holds a distance table per ring reaching it).
-constexpr std::size_t kTwoRingBudget = 850U * 1024U;
+constexpr std::size_t kTwoRingBudget = 914U * 1024U;
 
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
@@ -2264,4 +2267,113 @@ TEST_CASE("a piece low in its tile claims no memory past its frame set, in the l
   const bool ok = rig.screen->verify_pulse_frames(&why);
   INFO(std::string(why));
   CHECK(ok);
+}
+
+namespace {
+
+/// The system heap, refusing allocations of exactly `size` bytes while armed.
+struct RefuseSize final : BulkMemory {
+  std::size_t size = 0;
+  bool armed = false;
+  std::uint32_t refused = 0;
+  void* allocate(std::size_t bytes, std::size_t align) override {
+    if (armed && bytes == size) {
+      ++refused;
+      return nullptr;
+    }
+    return system_bulk_memory().allocate(bytes, align);
+  }
+  void deallocate(void* p, std::size_t bytes) override {
+    system_bulk_memory().deallocate(p, bytes);
+  }
+};
+
+/// The largest pulse tile of a scene, in pixels (a ring's, whole: nothing over it).
+std::size_t largest_tile_px(const Config& c) {
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  std::size_t most = 0;
+  for (std::size_t i = 0; i < vm.pins.size(); ++i) {
+    ViewModel one = vm;
+    one.pins[i].on_active_layer = true;
+    one.pins[i].active_value = 33.0;
+    one.pins[i].active_severity = Severity::Danger;
+    one.hud = Hud{};
+    rig.show(one);
+    lv_obj_update_layout(rig.w().root);
+    most = std::max(most, static_cast<std::size_t>(lv_obj_get_width(rig.w().pin_pulse[i])) *
+                              static_cast<std::size_t>(lv_obj_get_height(rig.w().pin_pulse[i])));
+  }
+  return most;
+}
+
+}  // namespace
+
+TEST_CASE("the capture staging buffers count against the sprite budget") {
+  // Nothing pulses, so the only sprite memory is the staging the layer holds from the start.
+  Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
+  rig.show(test::temperature_vm(rig.config));
+  const std::size_t largest = largest_tile_px(test::small_config());
+  CHECK(rig.screen->pulse_counters().rings_shown == 0);
+  CHECK(rig.screen->pulse_counters().tile_bytes == 2U * largest * sizeof(std::uint16_t));
+}
+
+TEST_CASE("staging the port refused at start-up is asked for again at the next capture") {
+  const std::size_t largest = largest_tile_px(test::small_config());
+  RefuseSize mem;
+  mem.size = largest * sizeof(std::uint16_t);
+  REQUIRE(set_bulk_memory(&mem));
+  {
+    mem.armed = true;  // only while the Screen (and its pulse layer) is built
+    Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
+    mem.armed = false;
+    REQUIRE(mem.refused > 0);
+    ViewModel vm = test::temperature_vm(rig.config);
+    vm.pins[0].active_value = 33.0;
+    vm.pins[0].active_severity = Severity::Danger;
+    rig.show(vm);
+    CHECK(rig.screen->pulse_counters().rings_shown == 1);
+    const char* why = "";
+    CHECK(rig.screen->verify_pulse_frames(&why));
+  }
+  (void)set_bulk_memory(nullptr);
+}
+
+TEST_CASE("pulse invalidations stay under LVGL's area limit when tiles show through pieces") {
+  // Not deferred: every tile whose frame moves is invalidated in the tick, a call per piece.
+  // Rings by every room's corners cut many outline cells into pieces.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.52, 0.48};
+  c.pins[3].position = MapPoint{0.48, 0.52};
+  c.pins[4].position = MapPoint{0.02, 0.48};
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  for (auto& r : vm.rooms) r.pulse = Severity::Danger;
+  for (std::size_t i = 0; i < vm.pins.size(); ++i) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = Severity::Danger;
+  }
+  vm.hud = Hud{};
+  rig.show(vm);
+  rig.display.render();
+  lv_display_t* disp = rig.display.display();
+  // Invalidations asked for between two refreshes (LVGL keeps 32 and then repaints everything).
+  static std::uint32_t asked = 0;
+  asked = 0;
+  lv_display_add_event_cb(disp, [](lv_event_t*) { ++asked; }, LV_EVENT_INVALIDATE_AREA, nullptr);
+  std::uint32_t most = 0;
+  for (std::uint32_t t = 16; t <= 3200; t += 16) {
+    asked = 0;
+    rig.display.set_time_ms(t);
+    lv_timer_t* refr = lv_display_get_refr_timer(disp);
+    lv_timer_pause(refr);  // the pulse timer runs; the refresh waits, so its areas add up
+    rig.display.run_timers();
+    lv_timer_resume(refr);
+    most = std::max(most, asked);
+    rig.display.render();
+  }
+  MESSAGE("most areas asked for in one pulse tick: " << most);
+  CHECK(most > 0);
+  CHECK(most <= 20);  // PulseLayer::kMaxInvalidationsPerTick, counted in areas
 }

@@ -982,6 +982,9 @@ struct Rig {
   std::unique_ptr<Pipeline> p;
   std::vector<std::vector<Rgb565>> bufs;
   std::atomic<std::uint32_t> on_main{0}, off_main{0};
+  /// While `hold` is set, the next band on the worker waits in the hook until it is cleared, and
+  /// says so with `held`: the test then acts while the job is known to be mid-way.
+  std::atomic<bool> hold{false}, held{false};
   std::thread::id main_id = std::this_thread::get_id();
   explicit Rig(ui::Worker* worker) {
     Pipeline::Builder builder;
@@ -999,6 +1002,10 @@ struct Rig {
     // The hook says where each band of rows was drawn: the main loop or another thread.
     p->set_row_hook([this](Rgb565*, std::int32_t, std::int32_t, std::int32_t) {
       (std::this_thread::get_id() == main_id ? on_main : off_main).fetch_add(1);
+      if (hold.load() && std::this_thread::get_id() != main_id) {
+        held.store(true);
+        while (hold.load()) std::this_thread::yield();
+      }
       return true;
     }, [] { return true; });
   }
@@ -1051,18 +1058,15 @@ int main() {
   UiState soil = st;
   soil.active_layer = Layer::Soil;
   const std::uint32_t cancelled_before = worker.stats().cancelled;
-  int restarts = 0;
-  for (int round = 0; round < 20; ++round) {
-    const std::uint32_t bands = threaded.off_main.load();
-    threaded.p->update(rs, 1000, hum, 2000);
-    (void)threaded.p->heat_step(1, 2000);  // handed over
-    while (threaded.off_main.load() < bands + 2 && threaded.p->heat_in_flight()) std::this_thread::yield();
-    if (!threaded.p->heat_in_flight()) continue;  // it won the race: try again
-    threaded.p->update(rs, 1000, soil, 2000);  // mid-rebuild
-    ++restarts;
-    break;
-  }
-  CHECK(restarts == 1);
+  // The humidity rebuild is held in its first band on the worker, soil is chosen, and only then
+  // is the band let go: the cancel lands on a running job whatever the scheduling.
+  threaded.hold.store(true);
+  threaded.p->update(rs, 1000, hum, 2000);
+  (void)threaded.p->heat_step(1, 2000);  // handed over
+  while (!threaded.held.load()) std::this_thread::yield();
+  CHECK(threaded.p->heat_in_flight());
+  threaded.p->update(rs, 1000, soil, 2000);  // mid-rebuild: cancelled, soil waits for it
+  threaded.hold.store(false);
   (void)threaded.drain(2000);
   inline_rig.p->update(rs, 1000, soil, 2000);
   (void)inline_rig.drain(2000);
@@ -1111,6 +1115,72 @@ def test_heat_rebuilds_on_a_worker_thread_match_inline_and_cancel_cleanly(gen, s
                          env={**os.environ, "TSAN_OPTIONS": "halt_on_error=1"})
     assert run.returncode == 0, run.stdout[-4000:] + run.stderr[-4000:]
     assert "0 failures" in run.stdout, run.stdout
+
+
+BAKE_LATE_TEST = r"""
+#include <cstdio>
+#include <vector>
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+int main() {
+  hearthmap_gen::GeneratedConfigSource source;
+  Pipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  Pipeline p(builder, Palette{});
+  while (p.stage() != Pipeline::Stage::Ready && p.stage() != Pipeline::Stage::Refused) p.boot_step(4);
+  if (p.stage() != Pipeline::Stage::Ready) return 2;
+  const std::size_t n = p.rasterizer().pixel_count();
+  std::vector<std::vector<Rgb565>> bufs(5, std::vector<Rgb565>(n));
+  std::vector<Rgb565*> ptrs;
+  for (auto& b : bufs) ptrs.push_back(b.data());
+  p.set_heat_buffers(ptrs);
+  // The bake becomes ready while the first image is being built (handed over without the hook).
+  bool ready = false;
+  p.set_row_hook([&](Rgb565*, std::int32_t, std::int32_t, std::int32_t) { return ready; },
+                 [&] { return ready; });
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 21.0; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  UiState st = initial_ui_state(p.config());
+  p.update(rs, 1000, st, 0);
+  CHECK(!p.heat_step(1, 0));  // the first image is under way, without the walls
+  ready = true;
+  p.request_rebuild_all();   // the component asks once, when the bake is ready
+  for (int guard = 0; guard < 1000000 && !(p.heat_step(1, 0) && !p.heat_in_flight()); ++guard) {}
+  // Same samples, nothing else to trigger a rebuild: the request alone must bring the walls in.
+  for (int guard = 0; guard < 1000000 && !(p.heat_step(1, 0) && !p.heat_in_flight()); ++guard) {}
+  CHECK(p.front_baked());
+  std::printf("bake late: %u rebuilds, %d failures\n", p.heat_rebuilds(), failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_a_bake_request_during_the_first_image_is_not_lost(gen, schema, example, tmp_path):
+    """The bake can become ready while the first image is out without it; the request must
+    stay pending until a rebuild with the walls publishes (review of PR 36)."""
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(BAKE_LATE_TEST)
+    text = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/worker.cpp"), str(REPO / "ui_lvgl/src/memory.cpp"), *core],
+        [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
+    )
+    assert "0 failures" in text, text
 
 
 UNKNOWN_TEST = r"""

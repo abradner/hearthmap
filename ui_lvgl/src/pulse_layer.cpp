@@ -340,11 +340,16 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
   for (const Cell& c : cells_) {
     largest = std::max(largest, static_cast<std::size_t>(c.t.w) * static_cast<std::size_t>(c.t.h));
   }
-  if (!staged_full_.resize(largest) || !staged_below_.resize(largest)) {
-    staged_full_.release();  // no captures then: every tile starves, and says so
-    staged_below_.release();
-    ++stats_.alloc_failures;
-  }
+  staging_px_ = largest;
+  if (!ensure_staging()) ++stats_.alloc_failures;  // asked again at the first capture
+}
+
+bool PulseLayer::ensure_staging() {
+  if (staged_full_.size() == staging_px_ && staged_below_.size() == staging_px_) return true;
+  if (staged_full_.resize(staging_px_) && staged_below_.resize(staging_px_)) return true;
+  staged_full_.release();  // all or nothing: a capture needs both
+  staged_below_.release();
+  return false;
 }
 
 PulseLayer::~PulseLayer() {
@@ -532,7 +537,8 @@ std::size_t PulseLayer::tile_frame_bytes(const Tile& t, bool ring) const {
 std::size_t PulseLayer::bytes_in_use(bool with_rooms) const {
   // What the sprites hold now: captures, tables, frame sets, and the set being composed.
   auto held = [](const Tile& t) { return t.below.bytes() + t.full.bytes() + t.shown.px.bytes(); };
-  std::size_t n = job_.next.px.bytes() + job_.below.bytes() + job_.full.bytes();
+  std::size_t n = job_.next.px.bytes() + job_.below.bytes() + job_.full.bytes() +
+                  staged_full_.bytes() + staged_below_.bytes();
   for (const RingRef& ref : job_.rings) n += ref.distance.bytes();
   for (const RoomRef& ref : job_.rooms) n += ref.coverage.bytes() + ref.halo.bytes();
   for (const Ring& r : rings_) {
@@ -554,7 +560,8 @@ std::size_t PulseLayer::bytes_in_use(bool with_rooms) const {
 // coverage and keyline), the frames, and room for one replacement set (a set is recomposed while
 // the old one plays). An upper bound of bytes_in_use() whenever every set is at `div` or coarser.
 std::size_t PulseLayer::need_at(std::uint32_t div, bool with_rooms) const {
-  std::size_t n = 0, largest = 0;
+  // The two capture staging buffers, held whatever pulses (D-071).
+  std::size_t n = staging_px_ * 2U * sizeof(std::uint16_t), largest = 0;
   auto add = [&](const Tile& t, bool ring, std::size_t tables) {
     const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
     // The frames, their guard words and the row of padding after them (FrameSet::pad).
@@ -893,11 +900,13 @@ void PulseLayer::update_visibility() {
 // two is drawn over the pulses.
 bool PulseLayer::capture(Tile& t, bool with_pins) {
   const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  BulkBuffer<std::uint16_t>& out = with_pins ? staged_full_ : staged_below_;
-  if (out.size() < px) {
+  // Refused at construction (or since): asked again here, on the main loop; refused again, the
+  // tile waits for the next change under it (D-064).
+  if (!ensure_staging() || staging_px_ < px) {
     starve(t);
     return false;
   }
+  BulkBuffer<std::uint16_t>& out = with_pins ? staged_full_ : staged_below_;
   lv_display_t* disp = lv_obj_get_display(map_);
   lv_display_enable_invalidation(disp, false);  // a counter in LVGL 9.6: paired below
   // Pulses are never part of what lies under a pulse.
@@ -1556,7 +1565,9 @@ void PulseLayer::tick(std::uint32_t now_ms) {
   std::uint32_t invalidations = 0;
   auto step = [this, now_ms, &invalidations](Tile& t) {
     if (t.shown.count == 0 || t.hidden || !tile_shown(t)) return;
-    if (!defer_ && invalidations >= kMaxInvalidationsPerTick) return;
+    // An area per shown piece (D-070): a tile whose pieces do not all fit this tick waits, with
+    // its frame unchanged, for the next.
+    if (!defer_ && invalidations + t.pieces > kMaxInvalidationsPerTick) return;
     const std::uint32_t fm = t.shown.frame_ms;
     const int index = frame_index(t, now_ms);
     if (index < 0) {
@@ -1572,7 +1583,7 @@ void PulseLayer::tick(std::uint32_t now_ms) {
     t.shown_ms = now_ms;
     if (index == t.shown_index) return;  // whole cycles later: the same picture
     show_frame(t, index);
-    ++invalidations;
+    invalidations += defer_ ? 1U : static_cast<std::uint32_t>(t.pieces);
   };
   // Frames are counted per pulse (a ring, or a room's outline), not per tile.
   for (Ring& r : rings_) {
@@ -1615,7 +1626,10 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
     const std::uint16_t* f = q - offset;
     return f < b + t.shown.frame_words() && static_cast<std::size_t>(f - b) % px == 0;
   };
-  const std::uint16_t* shown_frame = nullptr;
+  // Every distinct frame a shown piece points at: pieces of one tile may point at different
+  // frames for a moment (a deferred piece waiting on LVGL's area limit while another was shown).
+  std::array<const std::uint16_t*, kMaxPieces> shown_frames{};
+  std::size_t distinct = 0;
   for (std::size_t k = 0; k < kMaxPieces; ++k) {
     Piece& pc = t.pc[k];
     if (pc.img == nullptr) continue;
@@ -1659,7 +1673,12 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
     if (last_start + pc.dsc.data_size / 2U > t.shown.px.data() + t.shown.px.size()) {
       return fail("a piece's descriptor claims memory past its set's allocation");
     }
-    if (shown_frame == nullptr) shown_frame = q - offset;
+    const std::uint16_t* f = q - offset;
+    if (std::find(shown_frames.begin(),
+                  shown_frames.begin() + static_cast<std::ptrdiff_t>(distinct),
+                  f) == shown_frames.begin() + static_cast<std::ptrdiff_t>(distinct)) {
+      shown_frames[distinct++] = f;
+    }
     for (const Due& d : due_) {
       if (d.dsc == &pc.dsc && !whole(d.frame, offset)) {
         return fail("a listed frame lies outside its set");
@@ -1668,13 +1687,16 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
   }
   // The frame shown equals that frame composed afresh from the tile's captures, unless the tile is
   // being recaptured (its old set plays meanwhile, from captures that are being replaced).
-  if (shown_frame != nullptr && !t.dirty && t.captures_match && job_.tile != &t &&
-      !t.below.empty() && !t.full.empty()) {
-    const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(shown_frame - b) / px);
+  if (distinct > 0 && !t.dirty && t.captures_match && job_.tile != &t && !t.below.empty() &&
+      !t.full.empty()) {
     if (!reference_.resize(px)) return fail("no memory to compose a reference frame");
-    compose_frame(tile_inputs(t), k, t.shown.frame_ms, reference_.data());
-    if (!std::equal(reference_.begin(), reference_.end(), shown_frame)) {
-      return fail("a shown frame differs from the same frame composed again");
+    for (std::size_t n = 0; n < distinct; ++n) {
+      const std::uint16_t* f = shown_frames[n];
+      const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(f - b) / px);
+      compose_frame(tile_inputs(t), k, t.shown.frame_ms, reference_.data());
+      if (!std::equal(reference_.begin(), reference_.end(), f)) {
+        return fail("a shown frame differs from the same frame composed again");
+      }
     }
   }
   return true;

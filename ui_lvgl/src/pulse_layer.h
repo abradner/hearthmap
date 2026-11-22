@@ -419,6 +419,11 @@ class PulseLayer {
   /// Captures land here first (the largest tile's size, taken at construction), so a recapture
   /// can be compared with the captures the playing set was built from (D-071).
   BulkBuffer<std::uint16_t> staged_full_, staged_below_;
+  /// Their size in pixels; counted in need_at() and bytes_in_use() whether or not the port has
+  /// granted them yet (a refusal at construction is asked again at the next capture).
+  std::size_t staging_px_ = 0;
+  /// Both staging buffers at staging_px_, allocating them if a refusal left them short.
+  bool ensure_staging();
   bool defer_ = false;
   bool frozen_ = false;
   bool paused_ = false;

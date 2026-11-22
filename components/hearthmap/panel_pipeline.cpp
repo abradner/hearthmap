@@ -272,6 +272,9 @@ void PanelPipeline::request_rebuild_all() {
     if (!(heat_valid_ && i == front_slot_)) slots_[i].valid = false;
   }
   force_ = heat_valid_;
+  // A rebuild in flight now (the first image, before anything is shown, or a background one) was
+  // handed over without the walls: it must not be the last word (finish_rebuild()).
+  bake_pending_ = true;
 }
 
 void PanelPipeline::request_rebuild(hm::Layer layer, std::uint32_t mono_ms) {
@@ -412,6 +415,20 @@ void PanelPipeline::finish_rebuild() {
     slots_[i].valid = false;
   }
   if (for_shown) show_slot(job_slot_, false);
+  // Drawn without the walls although they were asked for (the rebuild was handed over before the
+  // bake was ready): shown, it is redrawn once more; in the background, it is dropped and comes
+  // up again. Asked on the main loop; with the hook ready, the next rebuild carries the walls.
+  if (bake_pending_ && !job_baked_) {
+    const bool hook_now = row_hook_ && (!hook_ready_ || hook_ready_());
+    if (hook_now && for_shown) {
+      force_ = true;
+      bake_pending_ = false;  // one retry: the redraw starts with the hook
+    } else if (hook_now) {
+      done.valid = false;
+    }
+  } else if (for_shown && job_baked_) {
+    bake_pending_ = false;
+  }
   // Samples that moved on while this rebuild ran wait for the interval, like any other change.
   held_ = heat_valid_ && shown_layer_ == view_.active_layer &&
           !same_samples(latest_by_layer_[hm::index_of(view_.active_layer)],

@@ -966,7 +966,10 @@ at 128), against 0.84-1.23 ms through LVGL. **Default:** `ui_lvgl/include/hearth
 a `Presenter` port (`NoPresenter` on the host and by default) and `show_tile_frame()`, which
 points the tile image's descriptor at the new frame without invalidating, then presents it only
 when `present_check()` passes and otherwise invalidates. `present_check()` enforces in code: an
-lv_image whose source is that descriptor, tightly packed RGB565, not inside an LVGL refresh, on
+lv_image whose source is that descriptor, RGB565 (tightly packed when written; since D-070 any
+even stride of at least w * 2 bytes, because a tile's pieces read their rows out of the whole
+tile's frame at its stride, and `show_tile_frame()` hands that stride to the presenter, whose
+`View565` always carried one), not inside an LVGL refresh, on
 the active screen with no screen-load animation running, nothing hidden, full opacity with no
 recolour, and no layered opacity, blend mode or bitmap mask along its ancestry, no image or style
 transform, object area exactly the image (no padding, border, other size), wholly inside the
@@ -1417,7 +1420,9 @@ an lv_image whose descriptor points into the tile's own frame at its offset, wit
 stride (`PulseLayer::Piece`). Whenever visibility changes, each shown tile is cut to its area
 less the areas of the shown tiles drawn after it (later rings for a ring, any ring for a cell):
 no two shown pieces overlap, so none is ever covered by another, and nothing is lost, because
-the later tile composes the earlier one's pulse where they overlap (D-053). Cutting moves
+the later tile composes the earlier one's pulse where they overlap (D-053). Without a presenter each shown piece is one invalidated area, so the
+pulse clock's limit of 20 areas a tick counts pieces, not tiles (review: a tick asked for 21 in
+a test scene); a tile whose pieces do not fit waits a tick with its frame unchanged. Cutting moves
 objects and descriptors only: frames are composed for the whole tile as before, so a cut costs
 no recompose and no memory. A cut that would need more than four pieces keeps the tile whole, and
 it then falls back as `Covered`, as before: correct pixels (LVGL repaints it), the old perf cost.
@@ -1428,8 +1433,9 @@ more, smaller presents where tiles meet (four in the worst case instead of one p
 a piece's descriptor claims `stride * h` bytes, as LVGL requires, which for a piece on the
 bottom row of the last frame runs up to its x offset past the frames. That claim is kept true
 (review): every frame set is allocated one tile row longer, after its trailing guard words
-(`FrameSet::pad`, counted in the memory estimate), and `verify_pulse_frames()` checks each shown
-piece's claimed span, from the set's last frame, against the allocation (screen test "a piece
+(`FrameSet::pad`, counted in the memory estimate), and `verify_pulse_frames()` recomposes every distinct
+frame its pieces point at (they can differ for a moment when one piece waits on LVGL's area limit),
+and checks each shown piece's claimed span, from the set's last frame, against the allocation (screen test "a piece
 low in its tile claims no memory past its frame set" failed before the padding). **Found while building it:** an lv_image reads its source's size
 when the source is set, not when it draws, so a piece re-cut while showing drew its old size,
 centred (three goldens showed it); the source is set again after every re-cut, and
@@ -1460,7 +1466,8 @@ staged captures are copied to the tile and the set is built as before (D-069). A
 build was discarded holds captures newer than its playing set and never keeps on that basis
 (`captures_match`). The comparison is exact (every pixel, every input), not a hash, so a kept set
 is the set that would have been built (principle 1). **Cost:** 2 x (largest tile) x 2 bytes of
-staging (64 KiB at 128 x 128), two compares of the tile per recapture, and a copy of the captures
+staging (64 KiB at 128 x 128), counted in the sprite budget (`need_at()`, `bytes_in_use()`) from
+construction, and asked for again at the next capture if the port refused it then (review), two compares of the tile per recapture, and a copy of the captures
 when they differ. **Guard:** `host/tests/perf_proxy_test.cpp`, "a heat refresh that changes
 nothing under the sprites settles at once": panel-like, soil, 78 tiles: 155 preparation steps
 (two captures each), 78 sets kept, 0 built; with the keep switched off, 877 steps and 78 sets

@@ -217,6 +217,9 @@ class PanelPipeline {
   void finish_rebuild();
   bool job_baked_ = false;
   bool force_ = false;
+  /// request_rebuild_all() asked for the walls; an image published without them since (it was
+  /// handed over before the bake was ready) is drawn again (finish_rebuild()).
+  bool bake_pending_ = false;
   bool published_switch_ = false;
   void start_rebuild(hearthmap::Layer layer, std::uint32_t mono_ms);
   std::size_t slot_for(hearthmap::Layer layer) const;
