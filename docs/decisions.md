@@ -1382,3 +1382,29 @@ presented, the tile whole again when the later ring stops; with the cut off it f
 and 90 covered frames, with the source not set again after a re-cut it fails on size). Goldens
 unchanged. **Would change if:** the device still shows covered fallbacks (then name the object
 drawn after the tile: `present_block` in the perf line says only the reason).
+
+### D-071 A recaptured sprite whose scene did not change keeps its frames (provisional)
+
+**What happened:** every heat image (at most every 15 s on the shown layer, `heat_refresh_interval`)
+marks every sprite for recapture and, until now, for a whole new set of frames: on the busiest tab
+about 43 s of one-unit-per-pass preparation on the panel (3bcd667), so the tab never settled,
+and `prepare` cost 84-230 ms of main loop per 5 s window (372 ms in the 2026-11-22 observation
+of the new floor plan). Interpolation is room-local (core's heat field, D-005), so a changed
+reading changes the heat only in its own room, and a pin's pill only the tiles it reaches: most
+sprites' backgrounds are pixel for pixel what they were. **Default:** captures go to two staging
+buffers (the largest tile's size, taken once); after the second, if the tile's playing set was
+built from captures equal to them, with the same pulses reaching the tile in the same order and
+colours and at the same rate (exactly what `plan_ring()` / `plan_cell()` would list), the set
+stays: nothing is allocated or composed, and the tile steps back in at once. Otherwise the
+staged captures are copied to the tile and the set is built as before (D-069). A tile whose last
+build was discarded holds captures newer than its playing set and never keeps on that basis
+(`captures_match`). The comparison is exact (every pixel, every input), not a hash, so a kept set
+is the set that would have been built (principle 1). **Cost:** 2 x (largest tile) x 2 bytes of
+staging (64 KiB at 128 x 128), two compares of the tile per recapture, and a copy of the captures
+when they differ. **Guard:** `host/tests/perf_proxy_test.cpp`, "a heat refresh that changes
+nothing under the sprites settles at once": panel-like, soil, 78 tiles: 155 preparation steps
+(two captures each), 78 sets kept, 0 built; with the keep switched off, 877 steps and 78 sets
+built. Its positive control moves every reading and sees all 78 rebuilt. Screen tests whose
+point is "everything under the sprites changed" now really change the heat image (`Rig::new_heat()`);
+they had relied on any invalidation recomposing. **Would change if:** the device shows most
+recaptures differing anyway (then compare per row band and recompose only the changed rows).

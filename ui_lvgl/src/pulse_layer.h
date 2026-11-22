@@ -200,8 +200,11 @@ class PulseLayer {
     int shown_index = -1;
     std::uint32_t shown_ms = 0;
     std::uint32_t gen = 0;  ///< bumped whenever a set being built for it must not be adopted
-    bool dirty = true;      ///< needs a capture and new frames
-    bool hidden = false;    ///< step aside until new frames exist
+    /// `below` and `full` are the captures `shown` was built from (not those of a set that was
+    /// then discarded): only then may an equal recapture keep `shown` (D-071).
+    bool captures_match = false;
+    bool dirty = true;    ///< needs a capture and new frames
+    bool hidden = false;  ///< step aside until new frames exist
   };
   struct RingRef {
     std::size_t ring = 0;
@@ -326,7 +329,11 @@ class PulseLayer {
   void release(Tile& t);
   /// The memory port refused one of `t`'s buffers (D-064).
   void starve(Tile& t);
+  /// Renders what lies under `t` (with or without the pins) into the staging buffer.
   bool capture(Tile& t, bool with_pins);
+  /// The tile's set was built from exactly what it would be built from now (the same pulses
+  /// reaching it, colours and rate), and its captures equal the staged ones: nothing to rebuild.
+  bool unchanged(Tile& t) const;
   /// The job's lists of what reaches ring `i`'s tile, or cell `c`, with every table allocated
   /// (filled later, by the job). False when the memory port refused a table.
   bool plan_ring(std::size_t i);
@@ -406,6 +413,9 @@ class PulseLayer {
   BulkVector<Due> due_;  ///< reserved once: at most two per tile
   BulkVector<Due> due_out_;
   BulkBuffer<std::uint16_t> reference_;  ///< verify_shown()'s scratch frame
+  /// Captures land here first (the largest tile's size, taken at construction), so a recapture
+  /// can be compared with the captures the playing set was built from (D-071).
+  BulkBuffer<std::uint16_t> staged_full_, staged_below_;
   bool defer_ = false;
   bool frozen_ = false;
   bool paused_ = false;

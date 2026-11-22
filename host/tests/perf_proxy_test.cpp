@@ -358,6 +358,48 @@ TEST_CASE("perf proxy: pins next to walls of pulsing neighbours present without 
   CHECK(r.cost_ms_per_s() <= kBudgetMsPerS);
 }
 
+// After a heat refresh every sprite is recaptured. On the panel (3bcd667) a full recompose of
+// the busiest tab took about 43 s at one unit per loop pass, longer than the 15 s heat interval,
+// so the tab never settled. A refresh that leaves the map under a sprite as it was keeps that
+// sprite's frames (D-071): two captures per tile, nothing composed.
+TEST_CASE("perf proxy: a heat refresh that changes nothing under the sprites settles at once") {
+  const Scenario s = panel_like();
+  HeadlessDisplay display(1280, 800);
+  SizedPhotos photos;
+  App app(display.screen(), s.config, s.readings, s.now, 0, &photos, kRates.pulse_memory_bytes);
+  app.set_layer(Layer::Soil);
+  auto drain = [&] {
+    std::uint32_t steps = 0;
+    while (app.screen().prepare_step()) ++steps;
+    return steps;
+  };
+  (void)drain();
+  const ui::PulseCounters before = app.screen().pulse_counters();
+  REQUIRE(before.rings_shown == 9);
+  app.screen().invalidate_heat();  // the same image: nothing under any sprite moved
+  const std::uint32_t same_steps = drain();
+  const ui::PulseCounters same = app.screen().pulse_counters();
+  const std::uint32_t tiles = same.captures - before.captures;
+  // A changed image (every reading moved a little): sprites are composed again, the positive
+  // control that the comparison is not simply always "unchanged".
+  Readings moved = s.readings;
+  for (auto& [entity, r] : moved.by_entity) {
+    if (r.state == ReadingState::Value) r.value += 3.0;
+  }
+  app.set_readings(moved, s.now);  // rebuilds the image and drains preparation
+  const ui::PulseCounters changed = app.screen().pulse_counters();
+  std::printf(
+      "perf proxy [settle]: %u tiles recaptured; unchanged image: %u steps, %u sets kept, %u "
+      "built; changed image: %u sets built, %u kept\n",
+      tiles, same_steps, same.sets_kept - before.sets_kept, same.sets_built - before.sets_built,
+      changed.sets_built - same.sets_built, changed.sets_kept - same.sets_kept);
+  CHECK(tiles > 9U);
+  CHECK(same.sets_built == before.sets_built);  // nothing composed
+  CHECK(same.sets_kept - before.sets_kept == tiles);
+  CHECK(same_steps <= 2U * tiles + 1U);  // two captures each, then idle
+  CHECK(changed.sets_built - same.sets_built >= tiles / 2U);
+}
+
 TEST_CASE("perf proxy: the example flat, thirsty, stays inside its drawing budget") {
   const Result r =
       run_steady("example thirsty-many, soil layer", example_thirsty(), Layer::Soil, 10.0);

@@ -112,6 +112,12 @@ struct Rig {
     screen = std::make_unique<Screen>(display.screen(), config, &heat_dsc, deps);
   }
   const ScreenWidgets& w() const { return screen->widgets(); }
+  /// A different heat image in the same buffer, then the embedder's invalidate_heat(): every
+  /// sprite's background really changes (an unchanged one keeps its frames, D-071).
+  void new_heat() {
+    for (Rgb565& p : heat) p = static_cast<Rgb565>(p ^ 0x0821U);
+    screen->invalidate_heat();
+  }
   void show(const ViewModel& vm, Timestamp now = 1000) {
     screen->update(vm, header, now);
     while (screen->prepare_step()) {
@@ -1551,7 +1557,7 @@ void walk_pulses(std::size_t memory, std::uint32_t divisor, Worker* worker = nul
     rig.display.set_time_ms(t);
     // Something changes mid-cycle every 800 ms: a new heat image under every tile, another
     // layer's pulses, a ring starting and one stopping; preparation is sliced meanwhile.
-    if (k % 50 == 10) rig.screen->invalidate_heat();
+    if (k % 50 == 10) rig.new_heat();
     if (k % 50 == 20) {
       vm.rooms[1].pulse = vm.rooms[1].pulse == Severity::Ok ? Severity::Danger : Severity::Ok;
       vm.rooms[2].pulse = vm.rooms[2].pulse == Severity::Ok ? Severity::Warn : Severity::Ok;
@@ -1713,7 +1719,7 @@ TEST_CASE("pulse sprites stay inside their memory budget while frames are recomp
         peak = std::max(peak, rig.screen->pulse_counters().tile_bytes);
       }
       peak = std::max(peak, rig.screen->pulse_counters().tile_bytes);
-      rig.screen->invalidate_heat();  // every tile recomposed, the old sets kept meanwhile
+      rig.new_heat();  // every tile recomposed, the old sets kept meanwhile
       rig.display.set_time_ms(static_cast<std::uint32_t>(100 * (round + 1)));
       rig.display.run_timers();
     }
@@ -1868,7 +1874,7 @@ TEST_CASE("sprite buffers the memory port refuses stop the animation, never brea
     // Everything under the sprites changes while the port refuses: preparation ends (no tile
     // asks again at once), every tile steps aside, and no frame shown is anything but whole.
     mem.refuse = true;
-    rig.screen->invalidate_heat();
+    rig.new_heat();
     int steps = 0;
     while (rig.screen->prepare_step() && steps < 10000) ++steps;
     CHECK(steps < 10000);
@@ -1886,7 +1892,7 @@ TEST_CASE("sprite buffers the memory port refuses stop the animation, never brea
 
     // Memory again, and the next change under them brings the pulses back.
     mem.refuse = false;
-    rig.screen->invalidate_heat();
+    rig.new_heat();
     while (rig.screen->prepare_step()) {
     }
     c = rig.screen->pulse_counters();
