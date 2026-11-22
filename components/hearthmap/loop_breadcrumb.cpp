@@ -28,16 +28,46 @@ LoopBreadcrumb& breadcrumb() {
   return b;
 }
 
+Crumb write_crumb(Crumb c, std::uint32_t since_ms) {
+  LoopBreadcrumb& b = breadcrumb();
+  const std::uint32_t s = b.seq.load(std::memory_order_relaxed);
+  b.seq.store(s + 1U, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  const auto prev =
+      static_cast<Crumb>(b.crumb.exchange(static_cast<std::uint8_t>(c), std::memory_order_relaxed));
+  b.since_ms.store(since_ms, std::memory_order_relaxed);
+  b.seq.store(s + 2U, std::memory_order_release);
+  return prev;
+}
+
+CrumbSample read_crumb() {
+  // A few tries: the writer holds the lock for two stores, and only the loop task writes. Past
+  // them the last read is returned, marked as not a pair.
+  LoopBreadcrumb& b = breadcrumb();
+  CrumbSample out;
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    const std::uint32_t s1 = b.seq.load(std::memory_order_acquire);
+    out.crumb = static_cast<Crumb>(b.crumb.load(std::memory_order_relaxed));
+    out.since_ms = b.since_ms.load(std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    const std::uint32_t s2 = b.seq.load(std::memory_order_relaxed);
+    if (s1 == s2 && (s1 & 1U) == 0U) {
+      out.paired = true;
+      break;
+    }
+  }
+  return out;
+}
+
+// Only the loop task writes, so its own plain reads of the pair are consistent.
 CrumbScope::CrumbScope(Crumb c, std::uint32_t now_ms)
     : prev_(breadcrumb().crumb.load(std::memory_order_relaxed)),
       prev_since_(breadcrumb().since_ms.load(std::memory_order_relaxed)) {
-  breadcrumb().since_ms.store(now_ms, std::memory_order_relaxed);
-  breadcrumb().crumb.store(static_cast<std::uint8_t>(c), std::memory_order_relaxed);
+  (void)write_crumb(c, now_ms);
 }
 
 CrumbScope::~CrumbScope() {
-  breadcrumb().crumb.store(prev_, std::memory_order_relaxed);
-  breadcrumb().since_ms.store(prev_since_, std::memory_order_relaxed);
+  (void)write_crumb(static_cast<Crumb>(prev_), prev_since_);
 }
 
 StallJudge::Verdict StallJudge::step(std::uint32_t now_ms, std::uint32_t turn_ms,
@@ -54,10 +84,8 @@ StallJudge::Verdict StallJudge::step(std::uint32_t now_ms, std::uint32_t turn_ms
       return Verdict::Recovered;
     }
   }
-  // Unsigned, so wrap-safe; a difference past half the range means the heartbeat is ahead of
-  // `now_ms` (sampled in the wrong order), which is no stall rather than a 49-day one.
-  std::uint32_t stalled = now_ms - turn_ms;
-  if (stalled > 0x80000000u) stalled = 0;
+  // A heartbeat ahead of `now_ms` (sampled in the wrong order) is no stall, not a 49-day one.
+  const std::uint32_t stalled = elapsed_ms(now_ms, turn_ms);
   if (stalled > longest_) longest_ = stalled;
   if (stalled_ms != nullptr) *stalled_ms = stalled;
   if (!errored_ && stalled >= error_ms_) {

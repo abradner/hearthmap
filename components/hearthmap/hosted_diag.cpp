@@ -173,13 +173,18 @@ void diag_task(void* /*arg*/) {
     l.tx_out_age_ms = tx_out_age.update(now, l.tx_out);
 #endif
     l.api_connected = g_api.load(std::memory_order_relaxed);
-    l.loop_age_ms = now - breadcrumb().turn_ms.load(std::memory_order_relaxed);
     start_ping_once();
     l.ping_running = g_ping != nullptr;
     l.ping_ok = g_ping_ok.load(std::memory_order_relaxed);
     l.ping_lost = g_ping_lost.load(std::memory_order_relaxed);
+    // Stamps other tasks write, read before the clock they are aged against (`now` above is
+    // older than the memory line's printing; elapsed_ms() also clamps a stamp from after it).
+    const std::uint32_t turn = breadcrumb().turn_ms.load(std::memory_order_relaxed);
     const std::uint32_t reply = g_ping_reply_ms.load(std::memory_order_relaxed);
-    l.ping_age_ms = now - (reply != 0 ? reply : g_ping_started_ms);
+    const std::uint32_t ping_from = reply != 0 ? reply : g_ping_started_ms;
+    const std::uint32_t aged_at = millis();
+    l.loop_age_ms = elapsed_ms(aged_at, turn);
+    l.ping_age_ms = elapsed_ms(aged_at, ping_from);
     // A remote call to the co-processor, from this task: it may wait the whole RPC timeout, which
     // blocks only this report.
     wifi_ap_record_t ap{};

@@ -25,15 +25,17 @@ void monitor_task(void* arg) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(kPeriodMs));
     LoopBreadcrumb& b = breadcrumb();
-    // The heartbeat first, then the clock: the other way round, a loop turn between the two
-    // reads would look like a heartbeat from the future.
+    // Every stamp the loop writes first, then the clock: the other way round, a loop turn
+    // between the reads would look like a stamp from the future (elapsed_ms() also clamps it).
     const std::uint32_t turn = b.turn_ms.load(std::memory_order_relaxed);
+    const CrumbSample cs = read_crumb();
     const std::uint32_t now = millis();
     std::uint32_t stalled = 0;
     const StallJudge::Verdict v = judge.step(now, turn, &stalled);
     if (v == StallJudge::Verdict::None) continue;
-    const auto crumb = static_cast<Crumb>(b.crumb.load(std::memory_order_relaxed));
-    const std::uint32_t held = now - b.since_ms.load(std::memory_order_relaxed);
+    const Crumb crumb = cs.crumb;
+    // A crumb whose time could not be read with it (the loop was busy writing) gets no age.
+    const std::uint32_t held = cs.paired ? elapsed_ms(now, cs.since_ms) : 0U;
     // Written straight to the UART console: ESPHome queues another task's log lines for the main
     // loop to print, and the main loop is the thing that is stuck. The ESP_LOG line follows for
     // API log subscribers, and appears once the loop turns again.

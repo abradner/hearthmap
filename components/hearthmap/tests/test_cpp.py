@@ -1199,7 +1199,9 @@ def test_panel_rotation_matches_the_lvgl_component(tmp_path):
 
 
 STALL_TEST = r"""
+#include <atomic>
 #include <cstdio>
+#include <thread>
 #include "loop_breadcrumb.h"
 using namespace esphome::hearthmap_panel;
 int failures = 0;
@@ -1245,6 +1247,36 @@ int main() {
   CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Elsewhere));
   for (int c = 0; c <= static_cast<int>(Crumb::HmBoot); ++c)
     CHECK(crumb_name(static_cast<Crumb>(c))[0] != 'u');  // every crumb has a name
+  // Ages: a stamp stored after the clock was read is no age at all, not 49 days.
+  CHECK(elapsed_ms(10002, 10000) == 2);
+  CHECK(elapsed_ms(10000, 10002) == 0);
+  CHECK(elapsed_ms(0x00000010u, 0xFFFFFFF0u) == 0x20u);  // across the wrap
+  // The monitor reads a crumb and its time from another task while the loop marks them: the
+  // pair must be one the loop wrote together. Here each time's low nibble names its crumb.
+  {
+    std::atomic<bool> stop{false};
+    std::thread loop([&stop]() {
+      for (uint32_t k = 1; !stop.load(std::memory_order_relaxed); ++k) {
+        const auto c = static_cast<Crumb>(k % 4U);
+        mark_crumb(c, (k << 4) | static_cast<uint32_t>(c));
+        CrumbScope inner(static_cast<Crumb>(4U + k % 4U), (k << 4) | (4U + k % 4U));
+      }
+    });
+    int torn = 0, paired = 0;
+    for (int i = 0; i < 2000000; ++i) {
+      const CrumbSample s = read_crumb();
+      if (!s.paired) continue;  // the loop out-wrote every try: reported as unpaired
+      ++paired;
+      if ((s.since_ms & 0xFU) != static_cast<uint32_t>(s.crumb) && s.since_ms != 0) ++torn;
+    }
+    stop.store(true);
+    loop.join();
+    if (torn != 0) std::printf("torn crumb/time pairs: %d\n", torn);
+    CHECK(torn == 0);
+    CHECK(paired > 0);  // the check above judged something
+    const CrumbSample quiet = read_crumb();  // nothing writing: always a pair
+    CHECK(quiet.paired);
+  }
   std::printf("%d failures\n", failures);
   return failures;
 }

@@ -33,16 +33,36 @@ struct LoopBreadcrumb {
   std::atomic<std::uint8_t> crumb{0};
   std::atomic<std::uint32_t> turn_ms{0};   ///< millis() when hearthmap's loop() last started
   std::atomic<std::uint32_t> since_ms{0};  ///< millis() when the current crumb was set
+  /// Odd while the loop task is writing crumb and since_ms (one writer: a sequence lock), so
+  /// read_crumb() can take the two as a pair.
+  std::atomic<std::uint32_t> seq{0};
 };
 
+/// The loop task's write of a crumb and its time, as one pair (read_crumb()); returns the crumb
+/// it replaced.
+Crumb write_crumb(Crumb c, std::uint32_t since_ms);
+
 LoopBreadcrumb& breadcrumb();
+
+/// `now_ms - then_ms` on one wrapping millisecond clock; 0 when `then_ms` is ahead of `now_ms`
+/// (a timestamp another task stored after `now_ms` was read), never a 49-day age.
+inline std::uint32_t elapsed_ms(std::uint32_t now_ms, std::uint32_t then_ms) {
+  const std::uint32_t d = now_ms - then_ms;
+  return d > 0x80000000u ? 0U : d;
+}
+
+/// A crumb and the time it was set, read from another task.
+struct CrumbSample {
+  Crumb crumb = Crumb::Elsewhere;
+  std::uint32_t since_ms = 0;
+  bool paired = false;  ///< false: the loop kept writing; crumb and time may not belong together
+};
+CrumbSample read_crumb();
 
 /// Sets the crumb (for event pairs that are not one scope, such as LVGL's refresh and flush
 /// events) and returns the one it replaced.
 inline Crumb mark_crumb(Crumb c, std::uint32_t now_ms) {
-  breadcrumb().since_ms.store(now_ms, std::memory_order_relaxed);
-  return static_cast<Crumb>(
-      breadcrumb().crumb.exchange(static_cast<std::uint8_t>(c), std::memory_order_relaxed));
+  return write_crumb(c, now_ms);
 }
 
 /// Marks `c` for the scope's lifetime, then restores what was there. `now_ms` is the caller's
