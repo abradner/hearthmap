@@ -46,8 +46,14 @@ struct Canvas {
   std::int32_t height = 800;                         ///< Canvas pixels after rotation.
   Orientation orientation = Orientation::Landscape;  ///< Landscape requires width > height.
   /// Where map space is drawn; inside the canvas. When the config omits it, the source sets
-  /// the whole canvas: {0, 0, width, height} (docs/decisions.md D-023).
+  /// the whole canvas: {0, 0, width, height} (docs/decisions.md D-023). Canvas space, so it is
+  /// the on-screen rectangle whatever map_rotation says.
   CanvasRect map_area{0, 0, 1280, 800};
+  /// How far the floor plan is turned on the panel, in degrees clockwise: 0, 90, 180 or 270
+  /// (validate() errors otherwise). Rooms and pins are stored in the plan's own frame; a source
+  /// turns them into the map area's frame with apply_map_rotation() after validate() accepts
+  /// the config, and sets this back to 0 (docs/decisions.md D-080).
+  std::int32_t map_rotation = 0;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -298,15 +304,16 @@ struct ConfigIssue {
 ///
 /// Errors, schema ranges (schema/hearthmap.schema.json is the source of each number):
 ///   version != kSchemaVersion; canvas width or height outside 1..4096; map_area x or y < 0,
-///   width or height < 1, or not inside the canvas; no rooms, more than 64 rooms, more than 256
-///   pins; a room or pin id not matching ^[a-z][a-z0-9_]*$ or longer than 48 characters; a room
-///   or pin name that is not valid UTF-8, is empty, or is longer than 48 characters (counted in
-///   Unicode code points, as the schema's maxLength counts them); a polygon with fewer
-///   than 3 or more than 64 vertices; a polygon vertex or pin position with x or y outside 0..1
-///   (or non-finite); an entity id not matching ^[a-z0-9_]+\.[a-z0-9_]+$; a photo on a pin
-///   that is not a Plant, or a photo id not matching ^[a-z0-9][a-z0-9_-]{0,47}$; stale_after or
-///   a pin's stale_after < 1; grid_cols or grid_rows outside 2..256; idw_power not in (0, 8]
-///   (or non-finite); hud.max_items outside 1..20; a non-finite band value.
+///   width or height < 1, or not inside the canvas; map_rotation not 0, 90, 180 or 270; no
+///   rooms, more than 64 rooms, more than 256 pins; a room or pin id not matching
+///   ^[a-z][a-z0-9_]*$ or longer than 48 characters; a room or pin name that is not valid
+///   UTF-8, is empty, or is longer than 48 characters (counted in Unicode code points, as the
+///   schema's maxLength counts them); a polygon with fewer than 3 or more than 64 vertices; a
+///   polygon vertex or pin position with x or y outside 0..1 (or non-finite); an entity id not
+///   matching ^[a-z0-9_]+\.[a-z0-9_]+$; a photo on a pin that is not a Plant, or a photo id not
+///   matching ^[a-z0-9][a-z0-9_-]{0,47}$; stale_after or a pin's stale_after < 1; grid_cols or
+///   grid_rows outside 2..256; idw_power not in (0, 8] (or non-finite); hud.max_items outside
+///   1..20; a non-finite band value.
 /// Errors, semantic rules:
 ///   duplicate room or pin ids; a pin naming an unknown room; a polygon that is not simple
 ///   (edges cross or overlap, a zero-length edge, or zero area); a pin
@@ -320,7 +327,28 @@ struct ConfigIssue {
 ///   temperature_unit Fahrenheit while layers[Temperature].present != kAllBandFields, reported
 ///   once at "/layers/temperature" (the defaults are Celsius, D-011).
 /// Warnings: a pin whose position is outside its room's polygon; an enabled layer no pin feeds.
+/// validate() judges rooms and pins in the frame the config stores them in (the plan's own,
+/// before apply_map_rotation()), the frame the editor checks too, so the two agree on every
+/// verdict whatever the rotation.
 std::vector<ConfigIssue> validate(const Config& config);
+
+/// Turns a config from the plan's frame into the frame the panel draws (docs/decisions.md
+/// D-080): every room vertex and pin position goes through rotate_map_point() by
+/// canvas.map_rotation / 90 quarter turns, then map_rotation is set to 0, so applying it twice
+/// is applying it once. Nothing else changes: map_area is canvas space already, room and pin
+/// order is kept (the earlier room still owns overlaps), and text is never turned (labels and
+/// pins are drawn upright by ui_lvgl wherever they land). Everything downstream (heat field,
+/// view model, hit-testing, ui_lvgl) then needs no rotation of its own.
+///
+/// Every ConfigSource calls it once, after validate() reports no Error (ConfigSource below; the
+/// device's stepped boot, after its ConfigValidator). Called on a config whose map_rotation is
+/// not 0, 90, 180 or 270 it changes nothing: such a config is unusable anyway.
+///
+/// Turning rounds 1 - v (rotate_map_point()), so on rare input a vertex or pin exactly on an
+/// edge can land a rounding error to the other side of it, and the half-open boundary rule
+/// (geometry.h) assigns left/top and right/bottom edges differently once turned; validate()'s
+/// verdict on the plan frame is the one that counts (above).
+void apply_map_rotation(Config& config);
 
 /// validate(), one unit at a time, for callers that must not block (the device's boot,
 /// docs/decisions.md D-038). Each step() checks one unit: first the version, canvas and room
@@ -367,8 +395,10 @@ struct ConfigLoadResult {
 /// The seam between where a config comes from and the code that uses it. Implementations:
 /// host/ parses JSON; components/hearthmap returns generated static tables; tests build one
 /// in code. An implementation must apply schema defaults (map_area defaults to the whole
-/// canvas), record which band fields the config set (LayerConfig::present), and run
-/// validate(), returning no Config if validate() reports an Error. It must not re-implement
+/// canvas, map_rotation to 0), record which band fields the config set (LayerConfig::present),
+/// and run validate(), returning no Config if validate() reports an Error; a Config it returns
+/// has been through apply_map_rotation(), so its consumers see the panel's frame and
+/// map_rotation 0. It must not re-implement
 /// any rule validate() owns, the Fahrenheit rule included (D-011, D-017): enforcement lives in
 /// one place. Errors only a parser can see (malformed JSON, an unknown field, a wrong type)
 /// are the source's own.

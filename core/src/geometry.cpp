@@ -67,6 +67,17 @@ bool collinear(const Polygon& polygon) {
 // a zero-area polygon (all vertices collinear) is rejected explicitly before counting, because
 // its overlapping edges can round to different intersections and leave an odd crossing count.
 // NaN coordinates compare false everywhere and come out outside.
+// Clockwise on the panel, where y points down: the top-left corner (0, 0) goes to the top-right
+// (1, 0). One subtraction per coordinate and turn, so the only rounding is 1 - v's (geometry.h).
+MapPoint rotate_map_point(MapPoint p, int quarter_turns) {
+  switch (((quarter_turns % 4) + 4) % 4) {
+    case 1: return MapPoint{1.0 - p.y, p.x};
+    case 2: return MapPoint{1.0 - p.x, 1.0 - p.y};
+    case 3: return MapPoint{p.y, 1.0 - p.x};
+    default: return p;
+  }
+}
+
 bool point_in_polygon(const Polygon& polygon, MapPoint p) {
   const std::size_t n = polygon.size();
   if (n < 3 || detail::collinear(polygon)) return false;
