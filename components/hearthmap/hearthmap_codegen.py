@@ -835,6 +835,14 @@ HOSTED_RPC_TIMEOUT_DEFAULT_MS = 5000
 HOSTED_RPCS_PER_PASS = 3
 
 
+def yaml_off(value: Any) -> Any:
+    """A bare `off` for an option whose values include "off" (`pulse_sprites`, `heap_probe`).
+
+    ESPHome's YAML loader is YAML 1.1, which reads a bare `off` as false; an enum then refuses
+    it as an auto-converted boolean. Anything else is passed on for the enum to judge."""
+    return "off" if value is False else value
+
+
 def hosted_watchdog_floor_ms(full_config: dict) -> int | None:
     """The smallest task-watchdog timeout (ms) that a silent Wi-Fi co-processor cannot trip, or
     None when the device has no esp32_hosted link. D-061."""

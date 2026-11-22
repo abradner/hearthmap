@@ -419,3 +419,16 @@ def test_hosted_sdio_and_hidden_warnings(gen):
         cfg = {"esp32_hosted": {}, "esp32": {"framework": {"log_level": level}}}
         assert gen.hosted_warnings_hidden(cfg) is hidden, level
 
+
+
+# ---- YAML option values ----------------------------------------------------------------------
+
+
+def test_yaml_off_reads_a_bare_off_as_the_option_value(gen):
+    # YAML 1.1 (ESPHome's loader) reads a bare `off` as false, so `pulse_sprites: off` and
+    # `heap_probe: off` reached the enum as False and were refused ("Auto-converted this value
+    # to boolean"), though the README spells them that way.
+    assert gen.yaml_off(False) == "off"
+    assert gen.yaml_off("off") == "off"
+    assert gen.yaml_off("still") == "still"
+    assert gen.yaml_off(True) is True  # `on` is no option value: left for the enum to refuse

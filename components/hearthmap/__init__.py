@@ -162,13 +162,18 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_DISPLAY_ID): cv.use_id(display.Display),
             # A 10 s heap / SDIO / Wi-Fi / lwIP / task report on the UART (hosted_diag.h, D-063).
             cv.Optional(CONF_DIAGNOSTICS, default=False): cv.boolean,
-            cv.Optional(CONF_PULSE_SPRITES, default="animated"): cv.enum(PULSE_MODES, lower=True),
+            # A bare `off` is YAML false: read it as "off" (hearthmap_codegen.yaml_off).
+            cv.Optional(CONF_PULSE_SPRITES, default="animated"): cv.All(
+                gen.yaml_off, cv.enum(PULSE_MODES, lower=True)
+            ),
             # Internal RAM below this: a rate-limited warning, and pulse sprite builds pause so
             # the hosted Wi-Fi driver keeps its DMA frames (internal_ram_guard.h, D-064). 0: off.
             cv.Optional(CONF_INTERNAL_RAM_FLOOR, default="64kB"): cv.All(
                 cv.validate_bytes, cv.int_range(min=0, max=400_000)
             ),
-            cv.Optional(CONF_HEAP_PROBE, default="counters"): cv.enum(HEAP_PROBES, lower=True),
+            cv.Optional(CONF_HEAP_PROBE, default="counters"): cv.All(
+                gen.yaml_off, cv.enum(HEAP_PROBES, lower=True)
+            ),
             # Bisecting aids for the blue flash (D-067): `false` leaves esp-hosted's SDIO packet
             # pool at its own default (off); `system` keeps the UI's bulk storage on malloc.
             cv.Optional(CONF_HOSTED_PACKET_POOL, default=True): cv.boolean,
