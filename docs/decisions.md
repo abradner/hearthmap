@@ -1344,6 +1344,26 @@ and "worker: every shown pulse frame is whole when sets are built on a second th
 20 s walk of D-053's guard with a real thread, every frame checked after every step, under
 ThreadSanitizer in CI: clean); `host/tests/memory_budget_test.cpp` runs its walk again with a
 thread worker, with the same default-heap budget (jobs allocate nothing).
+**Client: heat images** (`PanelPipeline::HeatJob`, `PanelPipeline::set_worker()`). A rebuild's
+units (field rows, cell colours and the rasterizer's preparation, image rows with the row
+hook) are the job; `heat_step()` hands rebuilds over and adopts them, and with a threaded worker
+returns at once, so the main loop never runs or waits on a heat unit. While the job is out its
+working state (the samples it draws, the field, the cell colours, the row counters and the
+target buffer, which is never the one shown) is the worker's, and the main loop starts no other
+rebuild: a layer change restarts by cancelling the one in flight and starting the new one once
+it is back; giving way cancels; a rebuild that comes back cancelled, or of an older generation,
+is discarded. The cell colours are sized when a rebuild starts, on the main loop, so nothing in
+the job allocates. The row hook (the map bake, D-055) runs on the worker: `set_row_hook()` takes
+a `ready` check asked on the main loop at hand-over, and the hook is used for that rebuild only
+if it said yes; the bake's buffers never change once it is ready, so the hook reads nothing
+being written. Without a worker the units run inline as before, and every earlier pipeline test
+passes unchanged. **Guard:** `components/hearthmap/tests/test_cpp.py::
+test_heat_rebuilds_on_a_worker_thread_match_inline_and_cancel_cleanly`: the same images, pixel
+for pixel, as the inline path; every band drawn off the main thread with the worker and on it
+without; a soil tab chosen while humidity's first image is on the worker cancels it (counted)
+and publishes soil's image. Built with `HEARTHMAP_TSAN=1` it runs under ThreadSanitizer (CI's
+`tsan` job): clean; with the restart not waiting for the cancelled job it reports a race in
+`begin_heat_field`.
 
 ### D-070 A pulse tile overlapped by a later one shows through pieces of itself (provisional)
 

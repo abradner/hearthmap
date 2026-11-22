@@ -529,7 +529,7 @@ def _pipeline(gen, schema, doc, tmp_path) -> dict:
     (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
     (tmp_path / "driver.cpp").write_text(PIPELINE_DRIVER)
     sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), str(REPO / "ui_lvgl/src/worker.cpp"),
          str(REPO / "ui_lvgl/src/memory.cpp"), *core]
     exe = tmp_path / "pipeline"
     cmd = [_cxx(), *FLAGS, "-O2", f"-I{tmp_path}", f"-I{COMPONENT}", f"-I{REPO / 'core/include'}",
@@ -797,7 +797,7 @@ def test_heat_rebuild_policy_and_immediate_taps(gen, schema, example, tmp_path):
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), str(REPO / "ui_lvgl/src/worker.cpp"),
          str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
@@ -938,11 +938,161 @@ def test_layer_images_are_kept_and_shown_at_once(gen, schema, example, tmp_path)
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), str(REPO / "ui_lvgl/src/worker.cpp"),
          str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in text, text
+
+
+WORKER_PIPELINE_TEST = r"""
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <thread>
+#include <vector>
+#include "hearthmap/ui/worker_thread.h"
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+struct Rig {
+  hearthmap_gen::GeneratedConfigSource source;
+  std::unique_ptr<Pipeline> p;
+  std::vector<std::vector<Rgb565>> bufs;
+  std::atomic<std::uint32_t> on_main{0}, off_main{0};
+  std::thread::id main_id = std::this_thread::get_id();
+  explicit Rig(ui::Worker* worker) {
+    Pipeline::Builder builder;
+    builder.steps = source.build_steps();
+    builder.step = [this](Config& c, std::size_t k) { source.build_step(c, k); };
+    p = std::make_unique<Pipeline>(builder, Palette{});
+    while (p->stage() != Pipeline::Stage::Ready && p->stage() != Pipeline::Stage::Refused) p->boot_step(4);
+    const std::size_t n = p->rasterizer().pixel_count();
+    bufs.assign(5, std::vector<Rgb565>(n, 0));
+    std::vector<Rgb565*> ptrs;
+    for (auto& b : bufs) ptrs.push_back(b.data());
+    p->set_heat_buffers(ptrs);
+    p->set_heat_refresh_interval_ms(1000);
+    p->set_worker(worker);
+    // The hook says where each band of rows was drawn: the main loop or another thread.
+    p->set_row_hook([this](Rgb565*, std::int32_t, std::int32_t, std::int32_t) {
+      (std::this_thread::get_id() == main_id ? on_main : off_main).fetch_add(1);
+      return true;
+    }, [] { return true; });
+  }
+  // The main loop until nothing is in flight: never waits on the worker, only polls it.
+  int drain(std::uint32_t mono) {
+    int published = 0, calls = 0;
+    for (;;) {
+      const bool idle = p->heat_step(1, mono);
+      ++calls;
+      published += p->take_published() ? 1 : 0;
+      if (idle && !p->heat_in_flight()) break;
+      if (calls > 50000000) { std::printf("NEVER SETTLED\n"); break; }
+      std::this_thread::yield();
+    }
+    return published;
+  }
+};
+
+int main() {
+  ui::ThreadWorker worker;
+  Rig inline_rig(nullptr), threaded(&worker);
+  if (inline_rig.p->stage() != Pipeline::Stage::Ready) return 2;
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 20.0 + double(i % 5) * 0.4; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  UiState st = initial_ui_state(inline_rig.p->config());
+  st.active_layer = Layer::Temperature;
+  const std::size_t n = inline_rig.p->rasterizer().pixel_count();
+  auto same_front = [&] {
+    return std::memcmp(inline_rig.p->front(), threaded.p->front(), n * sizeof(Rgb565)) == 0;
+  };
+
+  // 1. The first image: the same pixels either way; inline every band is drawn on the main
+  //    loop, threaded none is.
+  for (Rig* r : {&inline_rig, &threaded}) r->p->update(rs, 1000, st, 0);
+  CHECK(inline_rig.drain(0) == 1);
+  CHECK(threaded.drain(0) == 1);
+  CHECK(same_front());
+  CHECK(inline_rig.on_main > 0 && inline_rig.off_main == 0);
+  CHECK(threaded.on_main == 0 && threaded.off_main > 0);
+  CHECK(!threaded.p->heat_behind());
+
+  // 2. Cancelled while building: humidity is chosen, and while its first image is on the
+  //    worker soil is chosen (neither kept yet). The humidity rebuild is stopped, and soil's
+  //    starts once it is back; what is published is soil's image, exactly as inline.
+  UiState hum = st;
+  hum.active_layer = Layer::Humidity;
+  UiState soil = st;
+  soil.active_layer = Layer::Soil;
+  const std::uint32_t cancelled_before = worker.stats().cancelled;
+  int restarts = 0;
+  for (int round = 0; round < 20; ++round) {
+    const std::uint32_t bands = threaded.off_main.load();
+    threaded.p->update(rs, 1000, hum, 2000);
+    (void)threaded.p->heat_step(1, 2000);  // handed over
+    while (threaded.off_main.load() < bands + 2 && threaded.p->heat_in_flight()) std::this_thread::yield();
+    if (!threaded.p->heat_in_flight()) continue;  // it won the race: try again
+    threaded.p->update(rs, 1000, soil, 2000);  // mid-rebuild
+    ++restarts;
+    break;
+  }
+  CHECK(restarts == 1);
+  (void)threaded.drain(2000);
+  inline_rig.p->update(rs, 1000, soil, 2000);
+  (void)inline_rig.drain(2000);
+  CHECK(worker.stats().cancelled > cancelled_before);  // the humidity rebuild really was stopped
+  CHECK(!threaded.p->heat_behind());
+  CHECK(same_front());                                  // soil, exactly as inline
+
+  // 3. A changed reading on the shown layer: rebuilt in the background of the main loop, the
+  //    same pixels as inline.
+  Readings rs2 = rs;
+  rs2.by_entity.begin()->second.value = 31.0;
+  for (Rig* r : {&inline_rig, &threaded}) {
+    r->p->update(rs2, 1000, soil, 5000);
+    (void)r->drain(5000);
+  }
+  CHECK(same_front());
+  CHECK(inline_rig.off_main == 0);
+  CHECK(threaded.on_main == 0);
+  std::printf("worker pipeline: %u bands on the worker, %u cancelled; %d failures\n",
+              threaded.off_main.load(), worker.stats().cancelled, failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_heat_rebuilds_on_a_worker_thread_match_inline_and_cancel_cleanly(gen, schema, example, tmp_path):
+    """D-069: with a worker the heat image is built off the main loop, pixel for pixel what the
+    inline path builds, and a rebuild cancelled mid-way is restarted for the layer now shown."""
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(WORKER_PIPELINE_TEST)
+    sources = [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+               str(REPO / "ui_lvgl/src/worker.cpp"), str(REPO / "ui_lvgl/src/memory.cpp"), *core]
+    exe = tmp_path / "t"
+    # HEARTHMAP_TSAN=1 builds it under ThreadSanitizer (where the compiler has it).
+    extra = ["-fsanitize=thread", "-g"] if os.environ.get("HEARTHMAP_TSAN") == "1" else []
+    cmd = [_cxx(), *FLAGS, "-O1", "-pthread", *extra, f"-I{tmp_path}", f"-I{COMPONENT}",
+           f"-I{REPO / 'core/include'}", f"-I{REPO / 'ui_lvgl/include'}", *sources, "-o", str(exe)]
+    build = subprocess.run(cmd, capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr[-4000:]
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=300,
+                         env={**os.environ, "TSAN_OPTIONS": "halt_on_error=1"})
+    assert run.returncode == 0, run.stdout[-4000:] + run.stderr[-4000:]
+    assert "0 failures" in run.stdout, run.stdout
 
 
 UNKNOWN_TEST = r"""

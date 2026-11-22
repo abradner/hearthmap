@@ -99,6 +99,17 @@ jobs:
           out=$(./build/ui_lvgl/tests/hearthmap_ui_tests --no-version -tc='worker:*')
           echo "$out"
           echo "$out" | grep -Eq 'test cases: +[1-9][0-9]* \| +[1-9]' || { echo "no threaded case ran"; exit 1; }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: The heat pipeline on a worker thread, under ThreadSanitizer
+        env:
+          CXX: clang++
+          HEARTHMAP_REQUIRE_CORE: "1"
+          HEARTHMAP_TSAN: "1"
+        run: |
+          python -m pip install --disable-pip-version-check -r components/hearthmap/tests/requirements.txt
+          python -m pytest -v components/hearthmap/tests/test_cpp.py -k worker_thread
 
   schema:
     runs-on: ubuntu-latest

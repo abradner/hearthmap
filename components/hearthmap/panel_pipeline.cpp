@@ -26,6 +26,16 @@ constexpr std::int32_t kPrepareUnits = static_cast<std::int32_t>(hm::kLayerCount
 
 }  // namespace
 
+PanelPipeline::~PanelPipeline() {
+  // A rebuild on the worker writes this pipeline's buffers: it comes back first (at most one unit
+  // later). Only at destruction, never in the running loop.
+  if (job_out_) {
+    worker_->cancel(hearthmap::ui::WorkLane::Heat);
+    while (worker_->poll(hearthmap::ui::WorkLane::Heat) == hearthmap::ui::Worker::Poll::Busy) {
+    }
+  }
+}
+
 const char* PanelPipeline::stage_name(Stage stage) {
   switch (stage) {
     case Stage::Build: return "build";
@@ -194,6 +204,9 @@ void PanelPipeline::start_rebuild(hm::Layer layer, std::uint32_t mono_ms) {
   job_layer_ = layer;
   job_baked_ = true;
   field_ok_ = hm::begin_heat_field(mask_, field_);
+  // Sized here, on the main loop, so nothing in the job allocates (D-069).
+  cell_colours_.resize(field_.cells.size());
+  ++heat_gen_;
   field_row_ = 0;
   image_row_ = -1;
   job_active_ = true;
@@ -238,16 +251,16 @@ void PanelPipeline::update(const hm::Readings& readings, hm::Timestamp now,
     // layer runs on with the samples it started from; changes since are picked up after it lands.
     if (job_layer_ != layer) {
       if (!layer_shown) {
-        start_rebuild(layer, mono_ms);
+        request_rebuild(layer, mono_ms);
       } else if (!image_current || job_slot_ == front_slot_) {
-        job_active_ = false;
+        abandon_rebuild();
       }
     }
     held_ = layer_shown && !image_current;
     return;
   }
   if (!layer_shown) {
-    start_rebuild(layer, mono_ms);  // the first image, or a layer never kept: never held back
+    request_rebuild(layer, mono_ms);  // the first image, or a layer never kept: never held back
     return;
   }
   held_ = !image_current;  // heat_step() starts it once the interval allows
@@ -262,7 +275,103 @@ void PanelPipeline::request_rebuild_all() {
   force_ = heat_valid_;
 }
 
+void PanelPipeline::request_rebuild(hm::Layer layer, std::uint32_t mono_ms) {
+  if (job_out_) {
+    worker_->cancel(hearthmap::ui::WorkLane::Heat);
+    if (worker_->poll(hearthmap::ui::WorkLane::Heat) != hearthmap::ui::Worker::Poll::Finished) {
+      // Still on the worker: it is stopped between two units, and heat_step() starts this one
+      // once it is back (its state is the worker's until then).
+      job_active_ = false;
+      restart_pending_ = true;
+      restart_layer_ = layer;
+      return;
+    }
+    job_out_ = false;
+  }
+  restart_pending_ = false;
+  start_rebuild(layer, mono_ms);
+}
+
+void PanelPipeline::abandon_rebuild() {
+  job_active_ = false;
+  restart_pending_ = false;
+  if (!job_out_) return;
+  worker_->cancel(hearthmap::ui::WorkLane::Heat);
+  // Inline the cancellation runs now; a threaded worker gives it back to a later heat_step().
+  if (worker_->poll(hearthmap::ui::WorkLane::Heat) == hearthmap::ui::Worker::Poll::Finished) {
+    job_out_ = false;
+  }
+}
+
+bool PanelPipeline::HeatJob::step() {
+  PanelPipeline& q = *p;
+  if (q.field_ok_ && q.field_row_ < q.mask_.rows) {
+    const std::int32_t end = q.field_row_ + rows;
+    hm::compute_heat_field_rows(q.config_, q.mask_, q.job_samples_, q.field_row_, end, q.field_);
+    q.field_row_ = end < q.mask_.rows ? end : q.mask_.rows;
+    if (q.field_row_ < q.mask_.rows) return true;
+  }
+  if (q.image_row_ < 0) {
+    hm::ui::colour_cells(q.field_, *lut, q.cell_colours_);
+    q.prepared_ = q.raster_->prepare(q.field_, q.cell_colours_);  // once per image, not per slice
+    q.image_row_ = 0;
+    return true;
+  }
+  const std::int32_t height = q.raster_->height();
+  if (q.image_row_ < height) {
+    const std::int32_t end = q.image_row_ + rows * kImageRowsPerFieldRow;
+    const std::int32_t stop = end < height ? end : height;
+    q.raster_->render_rows(q.prepared_, q.field_, q.cell_colours_, back, q.image_row_, stop);
+    const bool baked = use_hook ? q.row_hook_(back, q.raster_->width(), q.image_row_, stop) : false;
+    q.job_baked_ = q.job_baked_ && baked;
+    q.image_row_ = stop;
+  }
+  return q.image_row_ < height;
+}
+
+bool PanelPipeline::run_rebuild(std::int32_t rows) {
+  if (!job_out_) {
+    heat_job_.rows = rows < 1 ? 1 : rows;
+    heat_job_.back = slots_[job_slot_].px;
+    heat_job_.lut = &luts_[hm::index_of(job_layer_)];
+    // Asked here, on the main loop: from now on the hook reads only what `ready` vouched for.
+    heat_job_.use_hook = row_hook_ && (!hook_ready_ || hook_ready_());
+    job_gen_ = heat_gen_;
+    job_out_ = worker_->submit(hearthmap::ui::WorkLane::Heat, heat_job_);
+    if (!job_out_) return true;  // the lane is someone else's: nothing to run (a wiring error)
+  }
+  bool completed = false;
+  const hearthmap::ui::Worker::Poll poll = worker_->poll(hearthmap::ui::WorkLane::Heat, &completed);
+  return settle_rebuild(poll, completed);
+}
+
+bool PanelPipeline::settle_rebuild(hearthmap::ui::Worker::Poll poll, bool completed) {
+  // Busy: inline, more units remain for the next call; threaded, the worker has it and the main
+  // loop has nothing to wait for.
+  if (poll == hearthmap::ui::Worker::Poll::Busy) return worker_->threaded();
+  job_out_ = false;
+  if (completed && job_active_ && job_gen_ == heat_gen_) {
+    finish_rebuild();
+    return true;
+  }
+  return !job_active_ && !restart_pending_;
+}
+
 bool PanelPipeline::heat_step(std::int32_t rows, std::uint32_t mono_ms) {
+  if (job_out_) {
+    bool completed = false;
+    const hearthmap::ui::Worker::Poll poll =
+        worker_->poll(hearthmap::ui::WorkLane::Heat, &completed);
+    const bool done = settle_rebuild(poll, completed);
+    if (job_out_) return done;  // still on the worker (or, inline, units remain)
+    // Back: adopted (finish_rebuild() ended it) or discarded. A rebuild that waited for it
+    // starts now; otherwise this call is done.
+    if (restart_pending_) {
+      restart_pending_ = false;
+      start_rebuild(restart_layer_, mono_ms);
+    }
+    if (!job_active_) return true;
+  }
   if (!job_active_) {
     if (stage_ != Stage::Ready || slots_.size() < 2) return true;
     const bool interval_ok = !started_once_ || mono_ms - last_start_ms_ >= heat_interval_ms_;
@@ -282,30 +391,10 @@ bool PanelPipeline::heat_step(std::int32_t rows, std::uint32_t mono_ms) {
     }
     if (!job_active_) return true;
   }
-  if (rows < 1) rows = 1;
-  if (field_ok_ && field_row_ < mask_.rows) {
-    const std::int32_t end = field_row_ + rows;
-    hm::compute_heat_field_rows(config_, mask_, job_samples_, field_row_, end, field_);
-    field_row_ = end < mask_.rows ? end : mask_.rows;
-    if (field_row_ < mask_.rows) return false;
-  }
-  hm::Rgb565* back = slots_[job_slot_].px;
-  if (image_row_ < 0) {
-    hm::ui::colour_cells(field_, luts_[hm::index_of(job_layer_)], cell_colours_);
-    prepared_ = raster_->prepare(field_, cell_colours_);  // once per image, not per slice
-    image_row_ = 0;
-    return false;
-  }
-  const std::int32_t height = raster_->height();
-  if (image_row_ < height) {
-    const std::int32_t end = image_row_ + rows * kImageRowsPerFieldRow;
-    const std::int32_t stop = end < height ? end : height;
-    raster_->render_rows(prepared_, field_, cell_colours_, back, image_row_, stop);
-    const bool baked = row_hook_ ? row_hook_(back, raster_->width(), image_row_, stop) : false;
-    job_baked_ = job_baked_ && baked;
-    image_row_ = stop;
-    if (image_row_ < height) return false;
-  }
+  return run_rebuild(rows);
+}
+
+void PanelPipeline::finish_rebuild() {
   Slot& done = slots_[job_slot_];
   done.valid = true;
   done.layer = job_layer_;
@@ -325,7 +414,6 @@ bool PanelPipeline::heat_step(std::int32_t rows, std::uint32_t mono_ms) {
   held_ = heat_valid_ && shown_layer_ == view_.active_layer &&
           !same_samples(latest_by_layer_[hm::index_of(view_.active_layer)],
                         slots_[front_slot_].samples);
-  return true;
 }
 
 }  // namespace hearthmap_device
