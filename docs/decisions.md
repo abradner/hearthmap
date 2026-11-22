@@ -1297,7 +1297,6 @@ principle 1). The flash itself is answered by D-067's counters-only probing (gon
 shared, D-067); polling the bridge's raw interrupt status from a task (the driver's ISR clears
 it first). **Would change if:** ESP-IDF's DPI driver gains an underrun callback or counter.
 
-
 ### D-069 Pure computation may run on a worker, behind a port with one hand-off rule (provisional)
 
 **Question:** on the busiest tab (main, 3bcd667, 64 min soak) the main loop ran 39-45 times a
@@ -1503,3 +1502,41 @@ be read off the panel. **Would change if:** the ESP32-S3 port (about 8 MB of PSR
 needs the memory (then deltas, with the copy on that target's main loop or in its inline worker,
 and these numbers); the panel shows `rate /2` or coarser on a real tab (then a per-tile rate);
 `perf log` shows a cost near the gap (then log less often, or only with `diagnostics`).
+
+### D-080 The map is turned once, by core, as the config is loaded (provisional)
+
+**Question:** the owner's panel hangs so that the floor plan, drawn in its own frame, looks
+turned relative to the house, and the panel may move later. Where does a rotation of the whole
+map live? (Numbered from D-080 to avoid colliding with other PRs written the same night.)
+**Default:** one optional field, `canvas.map_rotation`: `0`, `90`, `180` or `270` degrees
+clockwise as seen on the panel, default `0` (schema, `config.h`). Rooms and pins stay stored in
+the plan's own frame; `canvas.map_area` stays canvas space, the on-screen rectangle, so at 90 or
+270 it carries the plan's proportions swapped. Core's `validate()` refuses any other value
+(D-017) and judges rooms and pins in the stored frame, the frame the editor checks too, so the
+two give the same verdicts at any rotation (D-040, D-048). Core's `apply_map_rotation()` turns
+every vertex and pin position ((x, y) -> (1 - y, x) per quarter turn, `rotate_map_point()`) and
+sets the field to 0; every `ConfigSource` calls it once after `validate()` accepts the config
+(the host's JSON source, the generated tables' `load()`, and the device's stepped boot, which
+validates with `ConfigValidator` and never calls `load()`). Everything downstream (heat field,
+room mask, view model, hit-testing, ui_lvgl, sprites, the baked walls and labels) sees the
+panel's frame and was not changed; text is never turned, because ui_lvgl draws labels and pin
+icons upright wherever they land. The ESPHome codegen emits the field as written and turns
+nothing: rotating at build time would put a second implementation of the turn in Python and
+leave core unable to check the value, which is the D-017 split this repo avoids. The editor
+turns only what it draws (`editor/src/lib/rotation.ts`: the same arithmetic as core, checked
+against core's cases), turns pointer positions back before any edit writes them, and turns its
+preview's config like core does; "Rotate plan" is one undo step that also refits `map_area` to
+the turned proportions. Like the editor's other copies of core rules (D-040) this is display,
+not enforcement. **Why:**
+the property asked for is that rotation is how the map is viewed, changed in one place: one
+field, never baked into coordinates. Applying it at the source boundary, in core, keeps one
+implementation and one enforcement point and leaves every consumer untouched. **Rejected:**
+a rotation inside `to_canvas()`/`to_map()` (the heat grid, the room mask and the rasterizer all
+walk map space in canvas-aligned rows and columns, so each would need its own turn); rotating
+in the editor's export (bakes the turn into every coordinate, the opposite of the ask);
+arbitrary angles (labels, the heat grid and the rectangular map area are axis-aligned).
+**Costs:** each turn rounds 1 - v once (four turns are exact on dyadic values and within 4e-16
+otherwise), so a pin or vertex exactly on an edge can land a rounding error to its other side,
+and the half-open edge rule assigns left/top and right/bottom edges differently once turned;
+validate()'s plan-frame verdict is the one that counts. **Would change if:** the panel gains
+free rotation or zoom/pan (then a view transform replaces the map area, D-001).

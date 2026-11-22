@@ -84,6 +84,7 @@ int main() {
   std::printf("  \"idw_power\": %.17g,\n", c.heat.idw_power);
   std::printf("  \"canvas_width\": %d,\n", static_cast<int>(c.canvas.width));
   std::printf("  \"canvas_height\": %d,\n", static_cast<int>(c.canvas.height));
+  std::printf("  \"map_rotation\": %d,\n", static_cast<int>(c.canvas.map_rotation));
   std::printf("  \"map_area\": [%d, %d, %d, %d]\n", static_cast<int>(c.canvas.map_area.x),
               static_cast<int>(c.canvas.map_area.y), static_cast<int>(c.canvas.map_area.width),
               static_cast<int>(c.canvas.map_area.height));

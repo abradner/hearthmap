@@ -86,6 +86,9 @@ PanelPipeline::Stage PanelPipeline::boot_step(std::int32_t rows) {
         validator_.reset();
         done_ = 0;
         stage_ = hm::usable(issues_) ? Stage::Prepare : Stage::Refused;
+        // The stepped boot never calls load(), so it hands over the panel's frame itself, as
+        // every ConfigSource does (core's config.h, D-080): one pass over vertices and pins.
+        if (stage_ == Stage::Prepare) hm::apply_map_rotation(config_);
       }
       break;
     }

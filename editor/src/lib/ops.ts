@@ -9,6 +9,7 @@ import {
   allowsPhoto,
   needsCalibration,
   DEFAULT_CANVAS,
+  defaultMapArea,
   MAX_PINS,
   MAX_ROOMS,
   MAX_VERTICES,
@@ -16,8 +17,9 @@ import {
   SCHEMA_URL,
 } from "./defaults";
 import { roomIndexAt, roundCoord, clamp01 } from "./geometry";
+import { mapRotationOf, swapsAxes } from "./rotation";
 import { slugId, slugPhotoId, uniqueId } from "./ids";
-import type { BandField, Calibration, Config, Kind, LayerBand, LayerName, MapPoint, Pin, Role, Room } from "./types";
+import type { BandField, Calibration, Config, Kind, LayerBand, LayerName, MapPoint, MapRotation, Pin, Role, Room } from "./types";
 
 const round = (p: MapPoint): MapPoint => [roundCoord(clamp01(p[0])), roundCoord(clamp01(p[1]))];
 
@@ -316,4 +318,31 @@ export function fitMapAreaToAspect(config: Config, imageWidth: number, imageHeig
   width = Math.min(maxW, Math.max(1, width));
   height = Math.min(maxH, Math.max(1, height));
   return { ...config, canvas: { ...config.canvas, map_area: { x, y, width, height } } };
+}
+
+
+/**
+ * Match plan shape, for a plan turned by canvas.map_rotation: `planWidth` x `planHeight` are the
+ * floor plan's own proportions (its image), swapped on a quarter turn, because map_area is the
+ * on-screen rectangle (schema/README.md, Coordinates).
+ */
+export function fitMapAreaToPlan(config: Config, planWidth: number, planHeight: number): Config {
+  return swapsAxes(mapRotationOf(config))
+    ? fitMapAreaToAspect(config, planHeight, planWidth)
+    : fitMapAreaToAspect(config, planWidth, planHeight);
+}
+
+/**
+ * Turn the whole plan a quarter turn right (90) or left (-90) on the panel (D-080): sets
+ * canvas.map_rotation (removed again at 0, the default) and fits map_area to the turned
+ * proportions, from the floor plan image when there is one, else by swapping the current map
+ * area's. Rooms and pins are not touched: they stay in the plan's frame. One edit, one undo step.
+ */
+export function rotatePlan(config: Config, delta: 90 | -90, plan?: { width: number; height: number }): Config {
+  const next = ((((mapRotationOf(config) + delta) % 360) + 360) % 360) as MapRotation;
+  const { map_rotation: _drop, ...canvas } = config.canvas;
+  const turned: Config = { ...config, canvas: next === 0 ? canvas : { ...canvas, map_rotation: next } };
+  if (plan) return fitMapAreaToPlan(turned, plan.width, plan.height);
+  const area = config.canvas.map_area ?? defaultMapArea(config.canvas);
+  return fitMapAreaToAspect(turned, area.height, area.width);
 }

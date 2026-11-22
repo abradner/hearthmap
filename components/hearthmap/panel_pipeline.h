@@ -8,7 +8,9 @@
 //
 // Boot, one unit per boot_step():
 //   Build     the generated tables into a Config, one room or pin per step (no validation yet)
-//   Validate  core's ConfigValidator: the header, then one room, then one pin per step
+//   Validate  core's ConfigValidator: the header, then one room, then one pin per step; its
+//             last step also turns the accepted config into the panel's frame
+//             (apply_map_rotation(), D-080: at most 64 x 64 vertices and 256 pins, once)
 //   Prepare   one layer's colour table per step, then the room scanner
 //   Mask      `rows` heat-grid rows per step (core's RoomScanner)
 //   Raster    `rows` rows per step (HeatRasterizer::build_rows())

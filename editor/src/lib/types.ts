@@ -50,11 +50,16 @@ export interface CanvasRect {
   height: number;
 }
 
+/** canvas.map_rotation: degrees clockwise as seen on the panel (docs/decisions.md D-080). */
+export const MAP_ROTATIONS = [0, 90, 180, 270] as const;
+export type MapRotation = (typeof MAP_ROTATIONS)[number];
+
 export interface Canvas {
   width: number;
   height: number;
   orientation: "landscape" | "portrait";
   map_area?: CanvasRect;
+  map_rotation?: MapRotation;
 }
 
 export interface Room {

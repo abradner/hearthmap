@@ -47,6 +47,13 @@ The default build needs no SDL and opens no window. There is no SDL target yet.
 | `overlay-climate` | all-ok | `--tap 220,292` (living-room climate pin) |
 | `layer-temperature`, `layer-humidity`, `layer-air` | thirsty-many | `--layer ...` |
 | `layer-soil` | all-ok | `--layer soil` |
+| `rotated-90`, `rotated-180`, `rotated-270` | thirsty-many | `--layer soil`, on the example turned by `canvas.map_rotation` (D-080) |
+| `rotated-90-overlay-plant` | thirsty-many | `--layer soil --tap 604,526` (basil, where the turned map draws it) |
+
+The rotated cases render configs CMake writes at configure time from `examples/flat/config.json`
+itself (`build/host/tests/rotated/flat-<deg>.json`), changing only `map_rotation` and
+`map_area`: at 90 and 270 the area is 600 x 720 at the example's corner, the plan's 864 x 720
+proportions swapped; at 180 it is the example's own.
 
 `ctest` renders each and compares it with the committed PNG **exactly**. On a mismatch the actual
 image and a diff (differences in magenta over the dimmed actual frame) are left in

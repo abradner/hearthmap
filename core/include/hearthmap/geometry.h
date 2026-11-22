@@ -68,6 +68,15 @@ inline MapPoint to_map(const CanvasRect& map_area, CanvasPoint p) {
   return MapPoint{(p.x - map_area.x) / map_area.width, (p.y - map_area.y) / map_area.height};
 }
 
+/// `p` turned clockwise about the centre of map space by `quarter_turns` x 90 degrees, as seen
+/// on the panel (y down): one quarter turn takes (x, y) to (1 - y, x), two to (1 - x, 1 - y),
+/// three to (y, 1 - x). Normalised map space needs no aspect ratio for this: the map area the
+/// result is drawn into carries the turned proportions (canvas.map_area, schema/README.md).
+/// `quarter_turns` is taken modulo 4; negative turns go anticlockwise. Exact for 0 turns and
+/// whenever 1 - v is exact (every v >= 0.5, and dyadic values); otherwise each turn rounds
+/// 1 - v once, to within half an ulp of 1, so four turns come back to within 4e-16 of `p`.
+MapPoint rotate_map_point(MapPoint p, int quarter_turns);
+
 /// True when `p` lies inside the map area. Edges: left/top inclusive, right/bottom exclusive.
 inline bool contains(const CanvasRect& r, CanvasPoint p) {
   return p.x >= r.x && p.y >= r.y && p.x < r.x + r.width && p.y < r.y + r.height;

@@ -7,6 +7,8 @@ host renderer consume: `config.json`, which must validate against
 ![The editor with the fictional flat loaded](../docs/img/editor-flat.png)
 
 ```sh
+mise run editor        # from anywhere in the repo: checks Node is 24, npm ci, dev server
+# or by hand:
 cd editor
 npm ci                 # exact versions from package-lock.json; Node 24 (.nvmrc)
 npm run dev            # http://127.0.0.1:5174
@@ -27,6 +29,16 @@ SCREENSHOTS=1 npm run e2e -- -g screenshots      # regenerate docs/img/editor-*.
   plan shape" sizes `canvas.map_area` to the image's proportions within the panel's map region
   (920 x 736 at x 0, y 64: below the top bar, left of the HUD), so the plan is not stretched
   (`schema/README.md`, Coordinates).
+- **Rotate plan.** For a panel that hangs turned relative to the house: "Left" and "Right" in
+  the toolbar turn the whole plan a quarter turn on the panel and show the angle
+  (`canvas.map_rotation`, 0/90/180/270 clockwise; D-080). Each click is one undo step and also
+  re-runs Match plan shape for the turned proportions (from the floor plan image if one is
+  loaded, else by swapping the current map area's), because `map_area` is the on-screen
+  rectangle. The editing canvas, the floor plan backdrop and the 1280 x 800 preview all show the
+  plan turned as the panel will; rooms and pins are still stored in the plan's own frame, so
+  drawing, dragging corners and dropping pins on a turned view write plan-frame coordinates, and
+  turning back to 0 removes the field. A config without it opens at 0. Moving the panel later
+  is two clicks, not a re-trace.
 - **Rooms.** Draw polygons corner by corner; drag corners; drag the dot on an edge (or
   double-click the edge) to add a corner; select a corner and press Delete to remove it. Snaps to
   existing corners and to horizontal/vertical from neighbouring corners (Alt suspends). Rename,
@@ -67,8 +79,9 @@ application state, `localStorage`, the exported config, a status message or the 
 
 ## Layout
 
-- `src/lib/`: pure TypeScript, unit-tested with Vitest: geometry, ids, edits (`ops.ts`), undo
-  history, validation, serialisation, export/import, entities, calibration import, autosave.
+- `src/lib/`: pure TypeScript, unit-tested with Vitest: geometry, the plan's rotation
+  (`rotation.ts`), ids, edits (`ops.ts`), undo history, validation, serialisation,
+  export/import, entities, calibration import, autosave.
 - `src/preview/scene.ts`: the preview's view model (pure, tested against the documented outcomes
   of `examples/flat/readings/*`).
 - `src/ui/`: thin DOM and canvas code over the above; `src/main.ts` wires it.
