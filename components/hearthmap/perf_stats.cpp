@@ -161,4 +161,22 @@ std::size_t PerfStats::format_memory(const PerfWindow& w, char* out, std::size_t
   return static_cast<std::size_t>(n) < size ? static_cast<std::size_t>(n) : size - 1;
 }
 
+std::size_t PerfStats::format_work(const PerfWork& w, char* out, std::size_t size) {
+  if (out == nullptr || size == 0) return 0;
+  const std::uint64_t pct =
+      w.window_ms == 0 ? 0 : (static_cast<std::uint64_t>(w.worker_busy_us) / 10U) / w.window_ms;
+  const int n = std::snprintf(
+      out, size,
+      "perf work: worker %s, busy %" PRIu32 " ms (%" PRIu64 "%%), %" PRIu32 " jobs, %" PRIu32
+      " cancelled, stack free %" PRIu32 " B | sprite sets %" PRIu32 " built, %" PRIu32
+      " kept, %" PRIu32 " discarded",
+      w.worker != nullptr ? w.worker : "inline", w.worker_busy_us / 1000U, pct, w.worker_jobs,
+      w.worker_cancelled, w.worker_stack_free, w.sets_built, w.sets_kept, w.sets_discarded);
+  if (n < 0) {
+    out[0] = '\0';
+    return 0;
+  }
+  return static_cast<std::size_t>(n) < size ? static_cast<std::size_t>(n) : size - 1;
+}
+
 }  // namespace hearthmap_device

@@ -15,6 +15,19 @@
 
 namespace hearthmap_device {
 
+/// The worker's and sprite preparation's share of one window (D-069, D-071): the third line.
+struct PerfWork {
+  std::uint32_t window_ms = 0;
+  const char* worker = "inline";        ///< "core N", or "inline" (and why)
+  std::uint32_t worker_busy_us = 0;     ///< inside job steps on the worker's core
+  std::uint32_t worker_jobs = 0;        ///< jobs run to their end
+  std::uint32_t worker_cancelled = 0;   ///< jobs stopped before their end
+  std::uint32_t worker_stack_free = 0;  ///< bytes of its stack never touched, since boot
+  std::uint32_t sets_built = 0;         ///< sprite frame sets composed and adopted
+  std::uint32_t sets_kept = 0;          ///< recaptures that changed nothing (no set rebuilt)
+  std::uint32_t sets_discarded = 0;     ///< sets built for inputs that changed meanwhile
+};
+
 /// One window's totals. Times in microseconds unless the name says ms.
 struct PerfWindow {
   std::uint32_t window_ms = 0;  ///< Length of the window this covers.
@@ -121,6 +134,9 @@ class PerfStats {
   /// The window's memory figures as a second line (D-064), kept apart so neither line passes
   /// ESPHome's logger buffer (512 bytes by default).
   static std::size_t format_memory(const PerfWindow& w, char* out, std::size_t size);
+  /// The worker line: `perf work: worker core 1, busy 812 ms (16%), 40 jobs, 2 cancelled, stack
+  /// free 5120 B | sprite sets 12 built, 60 kept, 1 discarded`.
+  static std::size_t format_work(const PerfWork& w, char* out, std::size_t size);
 
  private:
   std::uint32_t window_ms_;

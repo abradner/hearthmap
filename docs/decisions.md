@@ -1364,6 +1364,23 @@ without; a soil tab chosen while humidity's first image is on the worker cancels
 and publishes soil's image. Built with `HEARTHMAP_TSAN=1` it runs under ThreadSanitizer (CI's
 `tsan` job): clean; with the restart not waiting for the cancelled job it reports a race in
 `begin_heat_field`.
+**On the panel** (`components/hearthmap/task_worker.cpp`, YAML `worker`, default `true`): a
+FreeRTOS task, priority 1, pinned to the core `setup()` is not running on, with an 8 KiB
+internal-RAM stack (the one internal allocation the worker makes; the 64 kB internal-RAM floor
+of D-064 is unchanged and still has about 280 KiB of headroom at the last soak's figures). It
+waits on its task notification, runs queued lanes a step at a time, and gives its core away for
+a tick after every 10 ms of continuous work so that core's idle task still runs. `worker:
+false`, a single-core chip, or a failed task creation run everything inline as before; nothing
+requires a second core (the ESP32-S3 port, D-054). A third perf line, `perf work:`, says where
+jobs run, the worker's busy time, jobs completed and cancelled, its stack never touched, and the
+window's sprite sets built, kept (D-071) and discarded. **Not verified on the panel:** all of
+it; the task code has not been compiled here (the firmware build is the owner's). What would
+show it working: `perf work: worker core N` with busy time rising after a heat refresh, `hm
+heat` and `prepare` in the first perf line falling to the cost of hand-overs and captures, and
+the loop rate rising towards its idle 62/s; `stack free` well above 0. What would refute it: the
+loop rate unchanged (the cost was elsewhere), `cancelled` close to `jobs` (work thrown away
+faster than it lands), or blue flashes or Wi-Fi drops appearing with `worker: true` and not
+with `false` (PSRAM bandwidth taken by the second core).
 
 ### D-070 A pulse tile overlapped by a later one shows through pieces of itself (provisional)
 

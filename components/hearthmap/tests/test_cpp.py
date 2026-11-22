@@ -267,6 +267,23 @@ int main() {
   CHECK(std::strstr(line, "largest DMA block not probed |") != nullptr);
   CHECK(std::strstr(line, "heap probe max 4 us") != nullptr);
   char tiny[8];
+  {
+    hearthmap_device::PerfWork k;
+    k.window_ms = 5000;
+    k.worker = "core 1";
+    k.worker_busy_us = 812000;
+    k.worker_jobs = 40;
+    k.worker_cancelled = 2;
+    k.worker_stack_free = 5120;
+    k.sets_built = 12;
+    k.sets_kept = 60;
+    k.sets_discarded = 1;
+    PerfStats::format_work(k, line, sizeof(line));
+    std::printf("%s\n", line);
+    CHECK(std::strstr(line, "perf work: worker core 1, busy 812 ms (16%), 40 jobs, 2 cancelled, "
+                            "stack free 5120 B | sprite sets 12 built, 60 kept, 1 discarded") != nullptr);
+    CHECK(PerfStats::format_work(k, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
+  }
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   CHECK(PerfStats::format_memory(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   std::printf("perf checks done, %d failures\n", failures);

@@ -12,6 +12,8 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "heap_watch.h"
 #include "hearthmap/ui/fonts.h"
 #include "hearthmap/ui/format.h"
@@ -167,12 +169,25 @@ void HearthmapComponent::setup() {
       this->presenter_name_ = "off (no internal RAM for the rotation buffer)";
     }
   }
+  // Heat rebuilds and sprite frames on the core this loop does not use (D-069); inline on a
+  // single-core chip, with `worker: false`, or when the task cannot be made.
+  if (this->worker_enabled_ && portNUM_PROCESSORS > 1) {
+    auto worker = std::make_unique<TaskWorker>();
+    const int other = xPortGetCoreID() == 0 ? 1 : 0;
+    if (worker->start(other)) {
+      this->worker_ = std::move(worker);
+      this->worker_name_ = other == 0 ? "core 0" : "core 1";
+    } else {
+      this->worker_name_ = "inline (task not created)";
+    }
+  }
   hearthmap_device::PanelPipeline::Builder builder;
   builder.steps = this->source_.build_steps();
   builder.step = [this](hm::Config& c, std::size_t k) { this->source_.build_step(c, k); };
   this->pipeline_ = std::make_unique<hearthmap_device::PanelPipeline>(std::move(builder),
                                                                       hm::ui::theme::kHeatPalette);
   this->pipeline_->set_heat_refresh_interval_ms(this->heat_refresh_interval_ms_);
+  this->pipeline_->set_worker(this->worker_.get());
   hook_lvgl_log();  // after the lvgl component's setup, whose callback this takes over
   this->hook_perf_();
   this->subscribe_();
@@ -367,6 +382,7 @@ bool HearthmapComponent::start_screen_() {
   deps.sink = this;
   deps.photos = &this->photos_;
   deps.micros = [] { return static_cast<std::uint32_t>(micros()); };
+  deps.worker = this->worker_.get();
   // Pulse sprites hold every frame of every pulse (D-053): three quarters of the PSRAM left once
   // kPsramReserve and the map bake (3 bytes a map pixel) are set aside, at least 256 KiB.
   // Past it they take fewer frames per cycle, then fewer pulses animate (D-054).
@@ -385,10 +401,13 @@ bool HearthmapComponent::start_screen_() {
   this->screen_->set_pulse_mode(this->pulse_mode_);
   this->screen_->set_sprite_builds_paused(this->sprites_paused_);
   // Rows of each new heat image get the walls and labels once the bake is ready (D-055).
+  // With a worker the hook runs on it: it is used for a rebuild only when the bake was already
+  // ready at hand-over, asked here on the main loop, and the bake never changes once ready.
   this->pipeline_->set_row_hook(
       [this](hm::Rgb565* image, std::int32_t stride, std::int32_t begin, std::int32_t end) {
-        return this->screen_ != nullptr && this->screen_->bake_rows(image, stride, begin, end);
-      });
+        return this->screen_->bake_rows(image, stride, begin, end);
+      },
+      [this] { return this->screen_ != nullptr && this->screen_->bake_ready(); });
   ESP_LOGI(TAG, "boot: screen done in %u ms (heat image %dx%d, 2 x %u bytes; rasterizer %u bytes)",
            static_cast<unsigned>(millis() - start), static_cast<int>(raster.width()),
            static_cast<int>(raster.height()), static_cast<unsigned>(raster.pixel_count() * 2U),
@@ -502,13 +521,15 @@ void HearthmapComponent::frame_slice_() {
     this->rebake_requested_ = true;
     this->pipeline_->request_rebuild_all();
   }
+  // With a worker heat_step() only hands rebuilds over and adopts them, returning at once: this
+  // loop then runs once and never waits on the worker.
   bool idle = false;
   do {
     {
       const CrumbScope crumb(Crumb::HmHeat, millis());
       idle = this->pipeline_->heat_step(kFieldRowsPerStep, millis());
     }
-    if (!idle && !this->heat_active_) {
+    if (this->pipeline_->heat_in_flight() && !this->heat_active_) {
       this->heat_active_ = true;
       this->heat_started_ms_ = millis();
     }
@@ -516,8 +537,8 @@ void HearthmapComponent::frame_slice_() {
   } while (!idle &&
            millis() - start < (this->first_heat_logged_ ? kHeatSliceBudgetMs : kSliceBudgetMs));
   if (!idle) return;
-  this->heat_active_ = false;
-  this->handle_publish_();
+  this->handle_publish_();  // reads heat_started_ms_ for its timing line
+  if (!this->pipeline_->heat_in_flight()) this->heat_active_ = false;
 }
 
 void HearthmapComponent::handle_publish_() {
@@ -733,6 +754,30 @@ void HearthmapComponent::log_perf_() {
   ESP_LOGD(TAG, "%s", line);
   hearthmap_device::PerfStats::format_memory(w, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
+  // The worker and what sprite preparation did (D-069, D-071): a third line, so neither of the
+  // first two grows past the logger's buffer.
+  hearthmap_device::PerfWork k;
+  k.worker = this->worker_name_;
+  if (this->worker_) {
+    const hm::ui::Worker::Stats ws = this->worker_->stats();
+    k.worker_busy_us = ws.busy_us - this->last_worker_.busy_us;
+    k.worker_jobs = ws.completed - this->last_worker_.completed;
+    k.worker_cancelled = ws.cancelled - this->last_worker_.cancelled;
+    k.worker_stack_free = this->worker_->stack_free();
+    this->last_worker_ = ws;
+  }
+  if (this->screen_) {
+    const hm::ui::PulseCounters c = this->screen_->pulse_counters();
+    k.sets_built = c.sets_built - this->last_sets_built_;
+    k.sets_kept = c.sets_kept - this->last_sets_kept_;
+    k.sets_discarded = c.sets_discarded - this->last_sets_discarded_;
+    this->last_sets_built_ = c.sets_built;
+    this->last_sets_kept_ = c.sets_kept;
+    this->last_sets_discarded_ = c.sets_discarded;
+  }
+  k.window_ms = w.window_ms;
+  hearthmap_device::PerfStats::format_work(k, line, sizeof(line));
+  ESP_LOGD(TAG, "%s", line);
 }
 
 void HearthmapComponent::show_status_(const char* text) {
@@ -771,6 +816,7 @@ void HearthmapComponent::dump_config() {
                 this->ui_storage_psram_ ? "PSRAM through the memory port"
                                         : "malloc, as before D-064 (bisecting aid)",
                 static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
+  ESP_LOGCONFIG(TAG, "  Worker: %s (heat rebuilds and sprite frames, D-069)", this->worker_name_);
   ESP_LOGCONFIG(TAG, "  Heap probe: %s (D-067)",
                 this->heap_probe_ == HeapProbe::Counters ? "counters"
                 : this->heap_probe_ == HeapProbe::Walk   ? "walk, once a second (bisecting aid)"
