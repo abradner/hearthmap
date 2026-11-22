@@ -18,6 +18,7 @@ set(HEARTHMAP_UI_SOURCES
   src/pulse_layer.cpp
   src/screen.cpp
   src/sprites.cpp
+  src/worker.cpp
 )
 if(HEARTHMAP_UI_BUILTIN_FONTS)
   list(APPEND HEARTHMAP_UI_SOURCES src/fonts_builtin.cpp)

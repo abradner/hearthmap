@@ -1294,3 +1294,34 @@ principle 1). The flash itself is answered by D-067's counters-only probing (gon
 shared, D-067); polling the bridge's raw interrupt status from a task (the driver's ISR clears
 it first). **Would change if:** ESP-IDF's DPI driver gains an underrun callback or counter.
 
+
+### D-069 Pure computation may run on a worker, behind a port with one hand-off rule (provisional)
+
+**Question:** on the busiest tab (main, 3bcd667, 64 min soak) the main loop ran 39-45 times a
+second against 62 idle, heat slices took up to 28 ms each, and sprite preparation ran one unit
+per loop pass, so after a heat image every tile took about 43 s to recompose: longer than the
+15 s heat interval, so the tab never settled. The ESP32-P4 has a second core the loop does not
+use. How may work move there without making the UI depend on two cores or on ESP-IDF?
+**Default:** `ui_lvgl/include/hearthmap/ui/worker.h`, a `Worker` port with a fixed number of
+lanes (sprites, heat), each holding one `WorkJob` that runs in bounded `step()`s. The lane logic
+(submit, cancel, poll) is portable C++17 atomics in ui_lvgl; a platform supplies only a thread
+and its wake-up. `InlineWorker` runs one step per `poll()` on the caller: the host's worker, a
+single-core target's (an ESP32-S3 port must not need a second core), and the panel's with the
+worker turned off. **The hand-off, the one rule every client follows:** while a lane is queued,
+the job and everything its caller lent it belong to the worker, and the main loop neither reads
+nor writes them (sizes set before submitting, which the worker never changes, excepted); the
+worker touches nothing else. `submit()` publishes with a release store, the worker's last step
+with a release store of Done, `poll()` reads both with acquire loads, so a job's writes are
+visible once `poll()` says Finished. `cancel()` only asks: the job is stopped between two steps
+and still comes back through `poll()` before anything lent is freed or reused, and a client
+whose inputs changed meanwhile discards the result by its own generation counter. A job never
+touches LVGL (not thread-safe) and never allocates through the memory port (D-064's port
+allocates from one task): its caller sizes and allocates every buffer before submitting. No lock
+is held while a step runs, and no interrupts are disabled: lane states are atomics, and the
+thread's wake-up is its only blocking primitive. **Guard:** `ui_lvgl/tests/worker_test.cpp` on
+a real `std::thread` (`worker_thread.h`, header-only, never in the library): every write
+visible after 200 hand-offs, a job cancelled while building returned before its buffer is
+rewritten, two lanes side by side; a mutant `poll()` that reports Finished while the job is
+still queued fails three of its four threaded cases. CI's `tsan` job runs every `worker:*` case
+under ThreadSanitizer; with the lane's release/acquire weakened to relaxed it reports 14 races.
+**Would change if:** a client needs more than one job in flight per lane.

@@ -75,6 +75,31 @@ jobs:
           path: build/golden-out/
           if-no-files-found: ignore
 
+  # The worker hand-off (D-069) on a real second thread under ThreadSanitizer: every test case
+  # whose name starts "worker:" runs a std::thread worker. A race report fails the job
+  # (halt_on_error), as does a zero-case run.
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON
+          -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+      - name: Build
+        run: cmake --build build --parallel --target hearthmap_ui_tests
+      - name: Threaded cases
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          out=$(./build/ui_lvgl/tests/hearthmap_ui_tests --no-version -tc='worker:*')
+          echo "$out"
+          echo "$out" | grep -Eq 'test cases: +[1-9][0-9]* \| +[1-9]' || { echo "no threaded case ran"; exit 1; }
+
   schema:
     runs-on: ubuntu-latest
     steps:
