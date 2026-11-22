@@ -35,9 +35,11 @@ inline constexpr std::size_t kPanelPulseMemory = 8U * 1024U * 1024U;
 class App final : public ui::EventSink {
  public:
   /// Builds the Screen under `parent`. `config` and `readings` are copied. `pulse_memory_bytes`
-  /// is the pulse sprites' budget (0: the Screen's default, a small target's).
+  /// is the pulse sprites' budget (0: the Screen's default, a small target's). `worker`
+  /// (optional) computes sprite frames off the calling thread (D-069); nullptr: inline.
   App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int utc_offset_minutes,
-      const ui::ImageProvider* photos, std::size_t pulse_memory_bytes = 0);
+      const ui::ImageProvider* photos, std::size_t pulse_memory_bytes = 0,
+      ui::Worker* worker = nullptr);
 
   /// ui::EventSink: queue only (LVGL is mid-callback).
   void on_ui_event(const UiEvent& event) override { pending_.push_back(event); }

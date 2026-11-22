@@ -15,6 +15,8 @@
 #include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/ui/theme.h"
+#include "hearthmap/ui/worker.h"
+#include "hearthmap/ui/worker_thread.h"
 #include "src/core/lv_refr_private.h"        // lv_refr_get_top_obj(), for the cover test
 #include "src/display/lv_display_private.h"  // invalidated areas, for the fallback test
 
@@ -84,11 +86,12 @@ struct Rig {
 
   std::size_t pulse_memory = 0;
   std::uint32_t pulse_min_divisor = 1;
+  Worker* worker = nullptr;
 
   Rig() { init(); }
   explicit Rig(Config c) : config(std::move(c)) { init(); }
-  Rig(Config c, std::size_t memory, std::uint32_t min_divisor)
-      : config(std::move(c)), pulse_memory(memory), pulse_min_divisor(min_divisor) {
+  Rig(Config c, std::size_t memory, std::uint32_t min_divisor, Worker* w = nullptr)
+      : config(std::move(c)), pulse_memory(memory), pulse_min_divisor(min_divisor), worker(w) {
     init();
   }
   void init() {
@@ -105,6 +108,7 @@ struct Rig {
     deps.photos = &photos;
     deps.pulse_memory_bytes = pulse_memory;
     deps.pulse_min_divisor = pulse_min_divisor;
+    deps.worker = worker;
     screen = std::make_unique<Screen>(display.screen(), config, &heat_dsc, deps);
   }
   const ScreenWidgets& w() const { return screen->widgets(); }
@@ -1525,10 +1529,10 @@ struct ReadingPresenter final : Presenter {
 };
 
 // Every tile, every shown frame, through cycles and the moments that rebuild or free frame sets.
-void walk_pulses(std::size_t memory, std::uint32_t divisor) {
+void walk_pulses(std::size_t memory, std::uint32_t divisor, Worker* worker = nullptr) {
   CAPTURE(memory);
   CAPTURE(divisor);
-  Rig rig(test::small_config(), memory, divisor);
+  Rig rig(test::small_config(), memory, divisor, worker);
   ViewModel vm = test::temperature_vm(rig.config);
   vm.pins[0].active_value = 33.0;
   vm.pins[0].active_severity = Severity::Danger;
@@ -1565,6 +1569,11 @@ void walk_pulses(std::size_t memory, std::uint32_t divisor) {
     }
     rig.display.run_timers();
     for (int i = 0; i < 40; ++i) (void)rig.screen->prepare_step();  // a device slice's worth
+    // A second thread works in real time, which the simulated clock outruns: give it about a
+    // tick's worth of its own (on the panel a ring's set takes well under one heat interval).
+    for (int i = 0; worker != nullptr && i < 20000 && rig.screen->prepare_step(); ++i) {
+      std::this_thread::yield();
+    }
     ok = ok && rig.screen->verify_pulse_frames(&why);
     rig.screen->show_due_frames(presenter);
     ok = ok && rig.screen->verify_pulse_frames(&why);
@@ -1578,7 +1587,8 @@ void walk_pulses(std::size_t memory, std::uint32_t divisor) {
   CHECK(presenter.uncomposed == 0);
   const PulseCounters c = rig.screen->pulse_counters();
   MESSAGE("divisor " << c.frame_divisor << ", " << presenter.calls << " frames handed over, "
-                     << c.not_ready << " not ready");
+                     << c.not_ready << " not ready; sets built " << c.sets_built << ", discarded "
+                     << c.sets_discarded);
   if (divisor > 1 || memory > 8U * 1024U * 1024U) CHECK(c.frame_divisor == divisor);
   CHECK(c.not_ready == 0);  // every index the clock asks for exists in its set
 }
@@ -1589,6 +1599,101 @@ TEST_CASE("every shown pulse frame is a whole composed frame, at every rate and 
   for (std::uint32_t divisor : {1U, 2U, 4U, 8U}) walk_pulses(64U * 1024U * 1024U, divisor);
   // Memory pressure: rings take memory from outlines, which wait and come back.
   walk_pulses(1536U * 1024U, 1U);  // the divisor is memory's choice here
+}
+
+TEST_CASE("worker: every shown pulse frame is whole when sets are built on a second thread") {
+  // The same walk, with tables and frames composed on a real thread while the main loop keeps
+  // capturing, changing and showing: changes land while sets are out (cancelled, or discarded by
+  // generation), and every check after every step still holds. ThreadSanitizer runs it in CI.
+  ThreadWorker worker;
+  for (std::uint32_t divisor : {1U, 4U}) walk_pulses(64U * 1024U * 1024U, divisor, &worker);
+  walk_pulses(1536U * 1024U, 1U, &worker);
+}
+
+namespace {
+
+/// A threaded worker whose "thread" is the test: jobs run only when run_all() is called, so the
+/// test decides exactly what the main loop does while a job is out.
+class ManualWorker final : public Worker {
+ public:
+  ManualWorker() : Worker(true, nullptr, 0) {}
+  void run_all() { run_pending(); }
+};
+
+}  // namespace
+
+TEST_CASE("a set whose tile changes while it is out is discarded, never adopted") {
+  ManualWorker worker;
+  Rig rig(test::small_config(), 64U * 1024U * 1024U, 1, &worker);
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  // The map bake first (no worker involved), so the next steps are the ring's.
+  for (int i = 0; i < 1000 && !rig.screen->bake_ready(); ++i) (void)rig.screen->prepare_step();
+  REQUIRE(rig.screen->bake_ready());
+  rig.screen->update(vm, rig.header, 1000);
+  auto go_out = [&] {
+    // Two captures on the main loop, then the job goes out; it stays out until the test runs it.
+    CHECK(rig.screen->prepare_step());
+    CHECK(rig.screen->prepare_step());
+    CHECK(rig.screen->prepare_step());  // out: busy, nothing adopted
+  };
+  const char* why = "";
+
+  // 1. Cancelled while out: the map changes before the worker gets to it. It comes back
+  //    unfinished at the next poll, is freed, and the tile is built again from new captures.
+  go_out();
+  CHECK(rig.screen->pulse_counters().rings_shown == 0);
+  CHECK(rig.screen->pulse_counters().tile_bytes > 0);  // what the job holds is still counted
+  rig.screen->invalidate_heat();
+  worker.run_all();
+  (void)rig.screen->prepare_step();
+  PulseCounters c = rig.screen->pulse_counters();
+  CHECK(c.sets_discarded == 1);
+  CHECK(c.sets_built == 0);
+  CHECK(c.rings_shown == 0);
+
+  // 2. Finished, then stale: the worker builds the whole set, and the map changes before the
+  //    main loop polls it back. It ran to the end but for the old captures: by its generation it
+  //    is thrown away, not adopted.
+  for (int i = 0; i < 4 && !worker.busy(WorkLane::Sprites); ++i) (void)rig.screen->prepare_step();
+  REQUIRE(worker.busy(WorkLane::Sprites));
+  worker.run_all();  // complete
+  rig.screen->invalidate_heat();
+  (void)rig.screen->prepare_step();
+  c = rig.screen->pulse_counters();
+  CHECK(c.sets_discarded == 2);
+  CHECK(c.sets_built == 0);
+  CHECK(c.rings_shown == 0);
+
+  // 3. Left alone, the next one is adopted.
+  for (int i = 0; i < 50 && c.rings_shown == 0; ++i) {
+    (void)rig.screen->prepare_step();
+    worker.run_all();
+    c = rig.screen->pulse_counters();
+  }
+  CHECK(c.sets_built == 1);
+  CHECK(c.rings_shown == 1);
+  bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
+
+  // 4. A pause drops the set being built; resumed, it is built whole.
+  vm.rooms[0].pulse = Severity::Danger;
+  rig.screen->update(vm, rig.header, 1000);
+  for (int i = 0; i < 4 && !worker.busy(WorkLane::Sprites); ++i) (void)rig.screen->prepare_step();
+  REQUIRE(worker.busy(WorkLane::Sprites));
+  rig.screen->set_sprite_builds_paused(true);
+  worker.run_all();
+  (void)rig.screen->prepare_step();
+  c = rig.screen->pulse_counters();
+  CHECK(c.sets_discarded == 3);
+  CHECK(c.rooms_animated == 0);
+  rig.screen->set_sprite_builds_paused(false);
+  for (int i = 0; i < 400 && rig.screen->prepare_step(); ++i) worker.run_all();
+  CHECK(rig.screen->pulse_counters().rooms_animated == 1);
+  ok = rig.screen->verify_pulse_frames(&why);
+  CHECK(ok);
 }
 
 TEST_CASE("pulse sprites stay inside their memory budget while frames are recomposed") {

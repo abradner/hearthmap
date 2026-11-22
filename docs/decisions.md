@@ -1325,6 +1325,25 @@ rewritten, two lanes side by side; a mutant `poll()` that reports Finished while
 still queued fails three of its four threaded cases. CI's `tsan` job runs every `worker:*` case
 under ThreadSanitizer; with the lane's release/acquire weakened to relaxed it reports 14 races.
 **Would change if:** a client needs more than one job in flight per lane.
+**Client: pulse sprites** (`PulseLayer::Job`, `ScreenDeps::worker`). Captures stay in
+`prepare_step()` on the main loop (they render through LVGL); everything after them, the
+distance and coverage tables and every frame of the set, is the job. At submit the tile's two
+captures and its lists of tables are swapped into the job (their reserved capacity travels with
+them, D-064), every table and the new set are allocated, and what the main loop may change
+meanwhile is copied in (room colours into each table's entry, the frame rate, the tile's size
+and place). Every opacity table is now filled at construction instead of lazily, since the job
+reads them. Everything that used to drop the set being built (a change under the tile, a
+release, a pause, a coarser rate) bumps the tile's generation and cancels the lane; back from
+the worker, the captures and lists return to the tile and the set is adopted only when it ran
+to the end for the generation the tile still has, else freed. Without a worker the job runs a
+step per `prepare_step()`, as before (the goldens and every earlier sprite test run that way,
+unchanged). **Guard:** `ui_lvgl/tests/screen_test.cpp`, "a set whose tile changes while it is
+out is discarded, never adopted" (a test-driven worker: cancelled while out; finished and then
+made stale before it is polled back, which adopting regardless of generation fails; a pause),
+and "worker: every shown pulse frame is whole when sets are built on a second thread" (the
+20 s walk of D-053's guard with a real thread, every frame checked after every step, under
+ThreadSanitizer in CI: clean); `host/tests/memory_budget_test.cpp` runs its walk again with a
+thread worker, with the same default-heap budget (jobs allocate nothing).
 
 ### D-070 A pulse tile overlapped by a later one shows through pieces of itself (provisional)
 

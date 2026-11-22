@@ -34,6 +34,7 @@
 #include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/sprite_composer.h"
 #include "hearthmap/ui/theme.h"
+#include "hearthmap/ui/worker.h"
 #include "lvgl.h"
 #include "sprites.h"
 
@@ -45,6 +46,8 @@ struct PulseBudget {
   std::size_t memory_bytes = 2U * 1024U * 1024U;  ///< frames, captures and tables, all pulses
   std::uint32_t (*micros)() = nullptr;  ///< a microsecond clock to time captures and composing
   std::uint32_t min_divisor = 1;        ///< keep at most 1/N of the frames (1, 2, 4 or 8)
+  /// Where tables and frames are computed (D-069); nullptr: inline, in prepare_step() slices.
+  Worker* worker = nullptr;
 };
 
 struct PulseStats {
@@ -61,6 +64,9 @@ struct PulseStats {
   std::uint64_t prepare_us = 0;      ///< Time in prepare_step() (captures and composing frames).
   std::uint32_t alloc_failures = 0;  ///< Buffers the memory port refused (D-064).
   bool paused = false;               ///< set_paused(): no new sets are being built.
+  std::uint32_t sets_built = 0;      ///< frame sets composed and adopted
+  std::uint32_t sets_discarded = 0;  ///< sets whose inputs changed while being built (D-069)
+  std::uint32_t sets_kept = 0;       ///< recaptures that found nothing changed (no new set)
 };
 
 class PulseLayer {
@@ -193,8 +199,9 @@ class PulseLayer {
     std::uint32_t phase_ms = 0;             ///< a whole number of frames
     int shown_index = -1;
     std::uint32_t shown_ms = 0;
-    bool dirty = true;    ///< needs a capture and new frames
-    bool hidden = false;  ///< step aside until new frames exist
+    std::uint32_t gen = 0;  ///< bumped whenever a set being built for it must not be adopted
+    bool dirty = true;      ///< needs a capture and new frames
+    bool hidden = false;    ///< step aside until new frames exist
   };
   struct RingRef {
     std::size_t ring = 0;
@@ -203,6 +210,7 @@ class PulseLayer {
   };
   struct RoomRef {
     std::size_t room = 0;
+    std::uint16_t colour = 0;  ///< the room's colour when the tables were planned
     BulkBuffer<std::uint8_t> coverage;
     BulkBuffer<std::uint8_t> halo;  ///< the dark keyline under the stroke
     TileBox box;
@@ -236,16 +244,51 @@ class PulseLayer {
     std::uint16_t colour = 0;
     lv_area_t extent{};  // screen px, the outline with its keyline
   };
-  /// The tile being prepared: which, and how far.
-  struct Job {
-    Tile* tile = nullptr;
+  /// The tile being prepared: which, and how far. Captures happen on the main loop (they render
+  /// through LVGL); the tables and every frame are then computed by a WorkJob, on the worker
+  /// when there is one (D-069).
+  ///
+  /// Hand-off (worker.h's rule, applied here): at submit the tile's captures and its lists of
+  /// tables are swapped into the job (`below`, `full`, `rings`, `rooms`), every table and the new
+  /// set (`next`) are allocated, and the inputs that can change on the main loop (room colours,
+  /// the frame rate, the tile's size and place) are copied in. While `out`, the job owns all of
+  /// that and the main loop touches none of it; it reads only sizes, for accounting. Anything
+  /// that would have dropped the set being built (a change under the tile, a release, a pause, a
+  /// coarser rate) now bumps the tile's `gen` and cancels the lane. When the job is back, its
+  /// captures and lists are swapped back into the tile, and the set is adopted only if it ran to
+  /// the end and the tile's `gen` is still the one it was built for; otherwise it is freed.
+  /// Nothing the job reads besides is ever written after construction (the ring and keyline
+  /// tables, every opacity table, phases, ring centres, room segments).
+  struct Job final : WorkJob {
+    const PulseLayer* layer = nullptr;
+    Tile* tile = nullptr;  ///< identity only: never dereferenced by step()
+    std::uint32_t gen = 0;
     enum class Stage : std::uint8_t {
       CaptureFull,
       CaptureBelow,
-      Compose
+      Work  ///< tables and frames, in step()
     } stage = Stage::CaptureFull;
+    bool out = false;  ///< submitted, not yet polled back
+    // Owned by the job while out:
+    BulkBuffer<std::uint16_t> below, full;
+    BulkVector<RingRef> rings;
+    BulkVector<RoomRef> rooms;
     FrameSet next;
+    std::int32_t x0 = 0, y0 = 0, w = 0, h = 0;
+    std::uint32_t phase_ms = 0;
+    std::size_t table = 0;  ///< tables filled so far (rings, then rooms)
+    bool filled = false;    ///< `next` holds the uncomposed marker
     std::uint32_t frame = 0;
+    bool step() override;
+  };
+  /// What composing a frame reads. Every pointer is the job's while it runs, the tile's after.
+  struct ComposeIn {
+    const std::uint16_t* below;
+    const std::uint16_t* full;
+    std::int32_t w, h;
+    std::uint32_t phase_ms;
+    const BulkVector<RingRef>* rings;
+    const BulkVector<RoomRef>* rooms;
   };
 
   static void on_timer(lv_timer_t* t);
@@ -284,10 +327,25 @@ class PulseLayer {
   /// The memory port refused one of `t`'s buffers (D-064).
   void starve(Tile& t);
   bool capture(Tile& t, bool with_pins);
-  /// False when the memory port refused a table (the tile's tables are then incomplete).
-  bool rebuild_ring_geometry(std::size_t i);
-  bool rebuild_cell_geometry(Cell& c);
-  void compose_frame(Tile& t, std::uint32_t k, std::uint32_t frame_ms, std::uint16_t* out);
+  /// The job's lists of what reaches ring `i`'s tile, or cell `c`, with every table allocated
+  /// (filled later, by the job). False when the memory port refused a table.
+  bool plan_ring(std::size_t i);
+  bool plan_cell(const Cell& c);
+  void reset_job();
+  /// Frame k (of `frame_ms` each) of a tile's cycle. Reads only `in` and tables fixed at
+  /// construction, so it runs on the worker (D-069).
+  void compose_frame(const ComposeIn& in, std::uint32_t k, std::uint32_t frame_ms,
+                     std::uint16_t* out) const;
+  ComposeIn tile_inputs(Tile& t);
+  /// After the captures: plans the tile's tables, allocates them and the new set, and hands the
+  /// job to the worker. False when the memory port refused (the tile starves).
+  bool submit_job();
+  /// The job is back from the worker: its captures and lists return to the tile, and its set is
+  /// adopted (finish_job()) or freed.
+  void collect_job(bool completed);
+  /// Drops the set being built for `t` (or any tile, with nullptr): at once on the main loop's
+  /// stages; while out, by cancelling it and bumping the tile's generation.
+  void drop_job(Tile* t);
   void finish_job();
   void cancel_stale_job();
   void update_visibility();
@@ -301,7 +359,7 @@ class PulseLayer {
   std::size_t bytes_in_use(bool with_rooms = true) const;
   int ring_frame_at(std::size_t ring, std::uint32_t t_ms) const;
   std::uint8_t room_opa_at(std::size_t room, std::uint32_t t_ms) const;
-  const std::uint8_t* opa_lut(std::uint8_t opa);
+  const std::uint8_t* opa_lut(std::uint8_t opa) const { return opa_luts_[opa].data(); }
   bool is_ring_tile(const Tile* t) const;
   Ring* ring_of(const Tile* t);
   Cell* cell_of(const Tile* t);
@@ -338,9 +396,12 @@ class PulseLayer {
   BulkVector<BulkBuffer<std::uint8_t>> ring_alpha_;
   BulkVector<BulkBuffer<std::uint8_t>> ring_halo_;
   std::array<std::uint8_t, kCycleMs / kRoomStepMs> room_opa_{};  ///< per room step
-  std::array<std::array<std::uint8_t, 256>, 256> opa_luts_{};    ///< coverage -> alpha, per opa
-  std::array<bool, 256> opa_lut_ready_{};
+  /// coverage -> alpha, per opa; all filled at construction (read by the worker).
+  std::array<std::array<std::uint8_t, 256>, 256> opa_luts_{};
   std::uint32_t divisor_ = 1;
+  InlineWorker inline_worker_;
+  Worker* worker_ = nullptr;
+  BulkVector<RingRef> no_rings_;  ///< a cell's (empty) ring list, for tile_inputs()
   Job job_;
   BulkVector<Due> due_;  ///< reserved once: at most two per tile
   BulkVector<Due> due_out_;

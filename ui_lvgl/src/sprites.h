@@ -50,6 +50,11 @@ void opaque_tiles_cover_cb(lv_event_t* e);
 [[nodiscard]] bool distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h,
                                   float cx, float cy, BulkBuffer<std::uint16_t>& out);
 
+/// distance_table() into `out`, which holds w * h values already: never allocates, so a worker
+/// may run it (D-069).
+void fill_distance(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
+                   float cy, std::uint16_t* out);
+
 /// Alpha (0..255) by distance in 1/16 px for an anti-aliased ring of `radius` and `width` at
 /// opacity `opa`; `size` entries. False (and `out` empty) when the memory port refuses.
 [[nodiscard]] bool ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
@@ -62,5 +67,10 @@ void opaque_tiles_cover_cb(lv_event_t* e);
 [[nodiscard]] bool add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w,
                                         std::int32_t h, float ax, float ay, float bx, float by,
                                         float width, BulkBuffer<std::uint8_t>& cov);
+
+/// add_segment_coverage() into `cov`, which holds w * h values already (zero them first for a
+/// new mask): never allocates, so a worker may run it (D-069).
+void accumulate_segment(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float ax,
+                        float ay, float bx, float by, float width, std::uint8_t* cov);
 
 }  // namespace hearthmap::ui::detail

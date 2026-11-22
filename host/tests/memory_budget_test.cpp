@@ -33,6 +33,7 @@
 #include "app.h"
 #include "headless.h"
 #include "hearthmap/ui/memory.h"
+#include "hearthmap/ui/worker_thread.h"
 #include "scenarios.h"
 
 namespace {
@@ -217,7 +218,9 @@ using namespace hearthmap;
 using namespace hearthmap::host;
 using namespace hearthmap::host::test;
 
-TEST_CASE("memory: the UI's bulk storage stays off the default heap through a long walk") {
+namespace {
+
+void long_walk(hearthmap::ui::Worker* worker) {
   HeapCounter& heap = counter();
   heap.trace = std::getenv("HEARTHMAP_HEAP_TRACE") != nullptr;
   CountingBulk bulk;
@@ -226,7 +229,7 @@ TEST_CASE("memory: the UI's bulk storage stays off the default heap through a lo
     Scenario s = panel_like();
     HeadlessDisplay display(1280, 800);
     SizedPhotos photos;
-    App app(display.screen(), s.config, s.readings, s.now, 0, &photos, kPanelPulseMemory);
+    App app(display.screen(), s.config, s.readings, s.now, 0, &photos, kPanelPulseMemory, worker);
     app.screen().set_frames_deferred(true);
     Accepting presenter;
     std::uint32_t t = 0;
@@ -238,6 +241,10 @@ TEST_CASE("memory: the UI's bulk storage stays off the default heap through a lo
         display.run_timers();
         app.screen().show_due_frames(presenter);
         for (int i = 0; i < 40 && app.screen().prepare_step(); ++i) {
+        }
+        // A second thread works in real time: let it keep up with the simulated clock.
+        for (int i = 0; worker != nullptr && i < 20000 && app.screen().prepare_step(); ++i) {
+          std::this_thread::yield();
         }
       }
     };
@@ -344,4 +351,18 @@ TEST_CASE("memory: the UI's bulk storage stays off the default heap through a lo
   }
   ui::set_bulk_memory(nullptr);
   CHECK(bulk.in_use == 0);  // everything taken from the port was given back to it
+}
+
+}  // namespace
+
+TEST_CASE("memory: the UI's bulk storage stays off the default heap through a long walk") {
+  long_walk(nullptr);
+}
+
+// The same with sprite tables and frames built on a second thread (D-069): its jobs allocate
+// nothing (their caller sized every buffer through the port), so the budget is the same. The
+// thread itself is made before the counted window, as the panel makes its task at boot.
+TEST_CASE("memory: with sprites built on a worker thread, the default heap's budget still holds") {
+  hearthmap::ui::ThreadWorker worker;
+  long_walk(&worker);
 }

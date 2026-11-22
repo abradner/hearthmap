@@ -146,6 +146,14 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
   // Tiles live inside the aligned part of the map (a pulse within kTileAlign px of an unaligned
   // map edge is cut there).
   tile_area_ = align_in(map_area_);
+  worker_ = budget.worker != nullptr ? budget.worker : &inline_worker_;
+  job_.layer = this;
+  // Every opacity table now: the worker reads them, so none is filled lazily (D-069).
+  for (std::uint32_t opa = 0; opa < 256; ++opa) {
+    for (std::uint32_t c = 0; c < 256; ++c) {
+      opa_luts_[opa][c] = static_cast<std::uint8_t>((c * opa + 127U) / 255U);
+    }
+  }
   // Ring frames: radius 26 -> 52 px, opacity 1 -> 0, linearly over the cycle (the UI spec's
   // ripple); room steps: opacity 0.35 -> 1 -> 0.35 on a cosine ease.
   ring_alpha_.resize(kRingFrames);
@@ -328,6 +336,13 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
 
 PulseLayer::~PulseLayer() {
   if (timer_ != nullptr && alive_) lv_timer_delete(timer_);
+  // A job still out holds this layer's buffers and reads its tables: it comes back (at most one
+  // step later) before anything is freed. Only at destruction, never in the running loop.
+  if (job_.out) {
+    worker_->cancel(WorkLane::Sprites);
+    while (worker_->poll(WorkLane::Sprites) == Worker::Poll::Busy) {
+    }
+  }
 }
 
 void PulseLayer::forget_objects() {
@@ -473,10 +488,7 @@ bool PulseLayer::drop_due(Tile& t) {
 }
 
 void PulseLayer::release(Tile& t) {
-  if (job_.tile == &t) {
-    job_.next.px.release();
-    job_ = Job{};
-  }
+  drop_job(&t);
   if (alive_) {
     for (Piece& p : t.pc) {
       if (p.img == nullptr) continue;
@@ -506,7 +518,9 @@ std::size_t PulseLayer::tile_frame_bytes(const Tile& t, bool ring) const {
 std::size_t PulseLayer::bytes_in_use(bool with_rooms) const {
   // What the sprites hold now: captures, tables, frame sets, and the set being composed.
   auto held = [](const Tile& t) { return t.below.bytes() + t.full.bytes() + t.shown.px.bytes(); };
-  std::size_t n = job_.next.px.bytes();
+  std::size_t n = job_.next.px.bytes() + job_.below.bytes() + job_.full.bytes();
+  for (const RingRef& ref : job_.rings) n += ref.distance.bytes();
+  for (const RoomRef& ref : job_.rooms) n += ref.coverage.bytes() + ref.halo.bytes();
   for (const Ring& r : rings_) {
     if (!r.allocated) continue;
     n += held(r.t);
@@ -697,10 +711,37 @@ void PulseLayer::mark_dirty(const lv_area_t& area) {
 
 void PulseLayer::cancel_stale_job() {
   // A set being composed from captures that are now out of date is dropped and started again.
-  if (job_.tile != nullptr && job_.tile->dirty) {
-    job_.next.px.release();
-    job_ = Job{};
+  if (job_.tile != nullptr && job_.tile->dirty) drop_job(job_.tile);
+}
+
+void PulseLayer::reset_job() {
+  job_.tile = nullptr;
+  job_.stage = Job::Stage::CaptureFull;
+  job_.out = false;
+  job_.next.px.release();
+  job_.next.count = 0;
+  job_.next.complete = false;
+  job_.table = 0;
+  job_.filled = false;
+  job_.frame = 0;
+}
+
+void PulseLayer::drop_job(Tile* t) {
+  if (job_.tile == nullptr || (t != nullptr && job_.tile != t)) return;
+  if (job_.out) {
+    // The worker holds it: it is stopped between two steps and freed when polled back, and the
+    // bumped generation stops it being adopted if it finished first (D-069).
+    ++job_.tile->gen;
+    worker_->cancel(WorkLane::Sprites);
+    // Inline, the cancellation runs in this poll, so the set goes now, as it always did; a
+    // threaded worker gives it back within a step, to a later prepare_step().
+    bool completed = false;
+    if (worker_->poll(WorkLane::Sprites, &completed) == Worker::Poll::Finished) {
+      collect_job(completed);
+    }
+    return;
   }
+  reset_job();  // still at the main loop's captures: nothing is lent
 }
 
 void PulseLayer::mark_all_dirty(bool hide) {
@@ -869,9 +910,10 @@ bool PulseLayer::capture(Tile& t, bool with_pins) {
   return ok;
 }
 
-bool PulseLayer::rebuild_ring_geometry(std::size_t i) {
-  Ring& r = rings_[i];
-  r.rings.clear();
+bool PulseLayer::plan_ring(std::size_t i) {
+  const Ring& r = rings_[i];
+  const std::size_t px = static_cast<std::size_t>(r.t.w) * static_cast<std::size_t>(r.t.h);
+  job_.rings.clear();
   // Its own ring first, so a cap on layers can only drop another ring's overlap.
   for (std::size_t n = 0; n < rings_.size(); ++n) {
     const std::size_t j = n == 0 ? i : (n <= i ? n - 1 : n);
@@ -884,30 +926,24 @@ bool PulseLayer::rebuild_ring_geometry(std::size_t i) {
     RingRef ref;
     ref.ring = j;
     ref.box = local_box(reach, r.t.area);
-    if (!distance_table(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, o.cx, o.cy, ref.distance)) {
-      return false;
-    }
-    r.rings.push_back(std::move(ref));
+    if (!ref.distance.resize(px)) return false;
+    job_.rings.push_back(std::move(ref));
   }
-  r.rooms.clear();
+  job_.rooms.clear();
   for (std::size_t k = 0; k < rooms_.size(); ++k) {
     const Room& room = rooms_[k];
     if (!room.on || !room.allocated || !intersects(room.extent, r.t.area)) continue;
     RoomRef ref;
     ref.room = k;
+    ref.colour = room.colour;
+    bool any = false;
     for (const Segment& e : room.segments) {
-      const lv_area_t seg{static_cast<std::int32_t>(std::min(e.ax, e.bx)) - kRoomHaloWidth,
-                          static_cast<std::int32_t>(std::min(e.ay, e.by)) - kRoomHaloWidth,
-                          static_cast<std::int32_t>(std::max(e.ax, e.bx)) + kRoomHaloWidth,
-                          static_cast<std::int32_t>(std::max(e.ay, e.by)) + kRoomHaloWidth};
-      if (!intersects(seg, r.t.area)) continue;
-      if (!add_segment_coverage(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, e.ax, e.ay, e.bx, e.by,
-                                static_cast<float>(kRoomWidth), ref.coverage) ||
-          !add_segment_coverage(r.t.area.x1, r.t.area.y1, r.t.w, r.t.h, e.ax, e.ay, e.bx, e.by,
-                                static_cast<float>(kRoomHaloWidth), ref.halo)) {
-        return false;
-      }
-      lv_area_t b = seg;
+      lv_area_t b{static_cast<std::int32_t>(std::min(e.ax, e.bx)) - kRoomHaloWidth,
+                  static_cast<std::int32_t>(std::min(e.ay, e.by)) - kRoomHaloWidth,
+                  static_cast<std::int32_t>(std::max(e.ax, e.bx)) + kRoomHaloWidth,
+                  static_cast<std::int32_t>(std::max(e.ay, e.by)) + kRoomHaloWidth};
+      if (!intersects(b, r.t.area)) continue;
+      any = true;
       if (clip(b, r.t.area)) {
         const TileBox lb = local_box(b, r.t.area);
         if (ref.box.x1 == ref.box.x0) {
@@ -920,36 +956,161 @@ bool PulseLayer::rebuild_ring_geometry(std::size_t i) {
         }
       }
     }
-    if (!ref.coverage.empty()) r.rooms.push_back(std::move(ref));
+    if (!any) continue;
+    if (!ref.coverage.resize(px) || !ref.halo.resize(px)) return false;
+    job_.rooms.push_back(std::move(ref));
   }
   return true;
 }
 
-bool PulseLayer::rebuild_cell_geometry(Cell& c) {
-  c.refs.clear();
+bool PulseLayer::plan_cell(const Cell& c) {
+  const std::size_t px = static_cast<std::size_t>(c.t.w) * static_cast<std::size_t>(c.t.h);
+  job_.rings.clear();
+  job_.rooms.clear();
   // Only rooms listed for the cell can reach it: their strokes are what made it a cell.
   for (std::size_t k : c.rooms) {
     const Room& room = rooms_[k];
     if (!room.on || !room.allocated) continue;
-    RoomRef ref;
-    ref.room = k;
+    bool any = false;
     for (const Segment& seg : room.segments) {
       const lv_area_t box{static_cast<std::int32_t>(std::min(seg.ax, seg.bx)) - kRoomHaloWidth,
                           static_cast<std::int32_t>(std::min(seg.ay, seg.by)) - kRoomHaloWidth,
                           static_cast<std::int32_t>(std::max(seg.ax, seg.bx)) + kRoomHaloWidth,
                           static_cast<std::int32_t>(std::max(seg.ay, seg.by)) + kRoomHaloWidth};
-      if (!intersects(box, c.t.area)) continue;
-      if (!add_segment_coverage(c.t.area.x1, c.t.area.y1, c.t.w, c.t.h, seg.ax, seg.ay, seg.bx,
-                                seg.by, static_cast<float>(kRoomWidth), ref.coverage) ||
-          !add_segment_coverage(c.t.area.x1, c.t.area.y1, c.t.w, c.t.h, seg.ax, seg.ay, seg.bx,
-                                seg.by, static_cast<float>(kRoomHaloWidth), ref.halo)) {
-        return false;
-      }
+      any = any || intersects(box, c.t.area);
     }
+    if (!any) continue;
+    RoomRef ref;
+    ref.room = k;
+    ref.colour = room.colour;
     ref.box = TileBox{0, 0, c.t.w, c.t.h};
-    if (!ref.coverage.empty()) c.refs.push_back(std::move(ref));
+    if (!ref.coverage.resize(px) || !ref.halo.resize(px)) return false;
+    job_.rooms.push_back(std::move(ref));
   }
   return true;
+}
+
+// One unit of the tile's tables and frames. Runs on the worker (or inline): it touches only what
+// the job owns, plus tables fixed at construction (see Job in pulse_layer.h).
+bool PulseLayer::Job::step() {
+  const std::size_t px = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+  if (!filled) {
+    // A pattern no frame holds, so a frame shown before it is composed shows (tests look).
+    std::fill_n(next.frames(), next.frame_words(), kUncomposed);
+    filled = true;
+    return true;
+  }
+  if (table < rings.size()) {
+    RingRef& ref = rings[table++];
+    const Ring& o = layer->rings_[ref.ring];
+    fill_distance(x0, y0, w, h, o.cx, o.cy, ref.distance.data());
+    return true;
+  }
+  if (table < rings.size() + rooms.size()) {
+    RoomRef& ref = rooms[table++ - rings.size()];
+    std::fill_n(ref.coverage.data(), px, std::uint8_t{0});
+    std::fill_n(ref.halo.data(), px, std::uint8_t{0});
+    const lv_area_t area{x0, y0, x0 + w - 1, y0 + h - 1};
+    for (const Segment& e : layer->rooms_[ref.room].segments) {
+      const lv_area_t b{static_cast<std::int32_t>(std::min(e.ax, e.bx)) - kRoomHaloWidth,
+                        static_cast<std::int32_t>(std::min(e.ay, e.by)) - kRoomHaloWidth,
+                        static_cast<std::int32_t>(std::max(e.ax, e.bx)) + kRoomHaloWidth,
+                        static_cast<std::int32_t>(std::max(e.ay, e.by)) + kRoomHaloWidth};
+      if (!intersects(b, area)) continue;
+      accumulate_segment(x0, y0, w, h, e.ax, e.ay, e.bx, e.by, static_cast<float>(kRoomWidth),
+                         ref.coverage.data());
+      accumulate_segment(x0, y0, w, h, e.ax, e.ay, e.bx, e.by, static_cast<float>(kRoomHaloWidth),
+                         ref.halo.data());
+    }
+    return true;
+  }
+  if (frame >= next.count) return false;
+  const ComposeIn in{below.data(), full.data(), w, h, phase_ms, &rings, &rooms};
+  layer->compose_frame(in, frame, next.frame_ms,
+                       next.frames() + static_cast<std::size_t>(frame) * px);
+  return ++frame < next.count;
+}
+
+bool PulseLayer::submit_job() {
+  Tile& t = *job_.tile;
+  Ring* ring = ring_of(&t);
+  Cell* cell = ring == nullptr ? cell_of(&t) : nullptr;
+  // Lend the captures and the lists (their reserved capacity travels with them, D-064).
+  job_.below.swap(t.below);
+  job_.full.swap(t.full);
+  if (ring != nullptr) {
+    job_.rings.swap(ring->rings);
+    job_.rooms.swap(ring->rooms);
+  } else if (cell != nullptr) {
+    job_.rooms.swap(cell->refs);
+  }
+  bool ok = true;
+  if (ring != nullptr) {
+    ok = plan_ring(static_cast<std::size_t>(ring - rings_.data()));
+  } else if (cell != nullptr) {
+    ok = plan_cell(*cell);
+  }
+  const std::uint32_t base = ring != nullptr ? kRingFrameMs : kRoomStepMs;
+  job_.next.frame_ms = base * divisor_;
+  job_.next.count = kCycleMs / job_.next.frame_ms;
+  job_.next.complete = false;
+  const std::size_t words =
+      static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * job_.next.count;
+  ok = ok && job_.next.px.resize(words + 2 * kGuardWords);
+  if (!ok) {
+    collect_job(false);  // gives everything back; the caller starves the tile
+    return false;
+  }
+  std::fill_n(job_.next.px.begin(), kGuardWords, kCanary);
+  std::fill_n(job_.next.px.end() - static_cast<std::ptrdiff_t>(kGuardWords), kGuardWords, kCanary);
+  job_.x0 = t.area.x1;
+  job_.y0 = t.area.y1;
+  job_.w = t.w;
+  job_.h = t.h;
+  job_.phase_ms = t.phase_ms;
+  job_.gen = t.gen;
+  job_.table = 0;
+  job_.filled = false;
+  job_.frame = 0;
+  job_.stage = Job::Stage::Work;
+  job_.out = true;
+  (void)worker_->submit(WorkLane::Sprites, job_);  // the lane is ours, and idle here
+  return true;
+}
+
+void PulseLayer::collect_job(bool completed) {
+  Tile& t = *job_.tile;
+  job_.out = false;
+  Ring* ring = ring_of(&t);
+  Cell* cell = ring == nullptr ? cell_of(&t) : nullptr;
+  t.below.swap(job_.below);
+  t.full.swap(job_.full);
+  if (ring != nullptr) {
+    ring->rings.swap(job_.rings);
+    ring->rooms.swap(job_.rooms);
+  } else if (cell != nullptr) {
+    cell->refs.swap(job_.rooms);
+  }
+  if (completed && job_.gen == t.gen) {
+    ++stats_.sets_built;
+    finish_job();
+    return;
+  }
+  if (job_.stage == Job::Stage::Work) ++stats_.sets_discarded;
+  // Not wanted any more (released while out): its captures and tables go back too.
+  const bool needed =
+      ring != nullptr ? (ring->on && ring->allocated) : (cell != nullptr && cell_live(*cell));
+  if (!needed) {
+    t.below.release();
+    t.full.release();
+    if (ring != nullptr) {
+      ring->rings.clear();
+      ring->rooms.clear();
+    } else if (cell != nullptr) {
+      cell->refs.clear();
+    }
+  }
+  reset_job();
 }
 
 bool PulseLayer::cell_active(const Cell& c) const {
@@ -1052,16 +1213,6 @@ void PulseLayer::drop_room(std::size_t room) {
   mark_dirty(r.extent);
 }
 
-const std::uint8_t* PulseLayer::opa_lut(std::uint8_t opa) {
-  if (!opa_lut_ready_[opa]) {
-    for (std::uint32_t c = 0; c < 256; ++c) {
-      opa_luts_[opa][c] = static_cast<std::uint8_t>((c * opa + 127U) / 255U);
-    }
-    opa_lut_ready_[opa] = true;
-  }
-  return opa_luts_[opa].data();
-}
-
 int PulseLayer::ring_frame_at(std::size_t ring, std::uint32_t t_ms) const {
   return static_cast<int>(((t_ms + rings_[ring].t.phase_ms) % kCycleMs) / kRingFrameMs);
 }
@@ -1094,49 +1245,56 @@ PulseLayer::Cell* PulseLayer::cell_of(const Tile* t) {
 
 // Frame k of the tile's next set: the moment it stands for is k frames after the tile's phase,
 // and every pulse in the tile is drawn as it is at that moment.
-void PulseLayer::compose_frame(Tile& t, std::uint32_t k, std::uint32_t frame_ms,
-                               std::uint16_t* out) {
-  const std::uint32_t t_ms = (k * frame_ms + kCycleMs - t.phase_ms % kCycleMs) % kCycleMs;
+void PulseLayer::compose_frame(const ComposeIn& in, std::uint32_t k, std::uint32_t frame_ms,
+                               std::uint16_t* out) const {
+  const std::uint32_t t_ms = (k * frame_ms + kCycleMs - in.phase_ms % kCycleMs) % kCycleMs;
   const std::uint16_t dark = rgb565(theme::kBackground);
   Overlay overlays[32];
   RingLayer layers[32];
   std::size_t no = 0, nr = 0;
-  auto add_rooms = [&](const BulkVector<RoomRef>& refs) {
-    for (const RoomRef& ref : refs) {
-      if (no + 2 > 32) break;
-      const Room& room = rooms_[ref.room];
-      const std::uint8_t opa = room_opa_at(ref.room, t_ms);
-      overlays[no++] = Overlay{ref.halo.data(), opa_lut(halo_opa(opa)), dark, ref.box};
-      overlays[no++] = Overlay{ref.coverage.data(), opa_lut(opa), room.colour, ref.box};
-    }
-  };
-  if (Ring* r = ring_of(&t)) {
-    add_rooms(r->rooms);
-    const std::uint16_t danger = rgb565(theme::kDanger);
-    for (const RingRef& ref : r->rings) {
-      if (nr + 2 > 32) break;
-      const auto f = static_cast<std::size_t>(ring_frame_at(ref.ring, t_ms));
-      // A dark keyline, then the ring: it reads on a red room as well as on neutral heat.
-      layers[nr++] =
-          RingLayer{ref.distance.data(), ring_halo_[f].data(), ring_halo_[f].size(), dark, ref.box};
-      layers[nr++] = RingLayer{ref.distance.data(), ring_alpha_[f].data(), ring_alpha_[f].size(),
-                               danger, ref.box};
-    }
-  } else if (Cell* c = cell_of(&t)) {
-    add_rooms(c->refs);
+  for (const RoomRef& ref : *in.rooms) {
+    if (no + 2 > 32) break;
+    const std::uint8_t opa = room_opa_at(ref.room, t_ms);
+    overlays[no++] = Overlay{ref.halo.data(), opa_lut(halo_opa(opa)), dark, ref.box};
+    overlays[no++] = Overlay{ref.coverage.data(), opa_lut(opa), ref.colour, ref.box};
+  }
+  const std::uint16_t danger = rgb565(theme::kDanger);
+  for (const RingRef& ref : *in.rings) {
+    if (nr + 2 > 32) break;
+    const auto f = static_cast<std::size_t>(ring_frame_at(ref.ring, t_ms));
+    // A dark keyline, then the ring: it reads on a red room as well as on neutral heat.
+    layers[nr++] =
+        RingLayer{ref.distance.data(), ring_halo_[f].data(), ring_halo_[f].size(), dark, ref.box};
+    layers[nr++] = RingLayer{ref.distance.data(), ring_alpha_[f].data(), ring_alpha_[f].size(),
+                             danger, ref.box};
   }
   ComposeJob job;
-  job.below = t.below.data();
-  job.full = t.full.data();
+  job.below = in.below;
+  job.full = in.full;
   job.out = out;
-  job.stride = t.w;
-  job.w = t.w;
-  job.h = t.h;
+  job.stride = in.w;
+  job.w = in.w;
+  job.h = in.h;
   job.overlays = overlays;
   job.overlay_count = no;
   job.rings = layers;
   job.ring_count = nr;
   ops_->compose(job);
+}
+
+PulseLayer::ComposeIn PulseLayer::tile_inputs(Tile& t) {
+  if (Ring* r = ring_of(&t)) {
+    return ComposeIn{t.below.data(), t.full.data(), t.w, t.h, t.phase_ms, &r->rings, &r->rooms};
+  }
+  Cell* c = cell_of(&t);
+  static const BulkVector<RoomRef>* none = nullptr;
+  return ComposeIn{t.below.data(),
+                   t.full.data(),
+                   t.w,
+                   t.h,
+                   t.phase_ms,
+                   &no_rings_,
+                   c != nullptr ? &c->refs : none};
 }
 
 void PulseLayer::show_frame(Tile& t, int index) {
@@ -1177,8 +1335,7 @@ void PulseLayer::finish_job() {
   // The new set replaces the old whole; the descriptor moves to it before the old is freed.
   job_.next.complete = true;
   std::swap(t.shown, job_.next);
-  job_.next.px.release();
-  job_ = Job{};
+  reset_job();
   t.hidden = false;
   int index = frame_index(t, frozen_ ? 0U : lv_tick_get());
   if (index < 0) {
@@ -1213,8 +1370,7 @@ void PulseLayer::set_paused(bool paused) {
   if (paused && job_.tile != nullptr) {
     // The set being composed is given back; its tile is built again once resumed.
     job_.tile->dirty = true;
-    job_.next.px.release();
-    job_ = Job{};
+    drop_job(job_.tile);
   }
   if (!paused) {
     choose_divisor();  // a coarser rate held back while paused
@@ -1223,7 +1379,7 @@ void PulseLayer::set_paused(bool paused) {
 }
 
 bool PulseLayer::prepare_step() {
-  if (!alive_ || paused_) return false;
+  if (!alive_) return false;
   struct Timed {
     PulseLayer& self;
     std::uint32_t t0;
@@ -1232,6 +1388,14 @@ bool PulseLayer::prepare_step() {
     }
   } timed{*this, budget_.micros != nullptr ? budget_.micros() : 0U};
 
+  if (job_.out) {
+    // The worker has the tables and frames (or, inline, one more step runs here now).
+    bool completed = false;
+    if (worker_->poll(WorkLane::Sprites, &completed) == Worker::Poll::Busy) return true;
+    collect_job(completed);
+    return stats().pending;
+  }
+  if (paused_) return false;
   if (job_.tile == nullptr) {
     // The next tile that needs new frames: rings first (the plants), then outlines.
     for (Ring& r : rings_) {
@@ -1256,48 +1420,17 @@ bool PulseLayer::prepare_step() {
   Tile& t = *job_.tile;
   if (job_.stage == Job::Stage::CaptureFull) {
     if (!capture(t, true)) {
-      job_ = Job{};  // waits for the next change under the tile
+      reset_job();  // waits for the next change under the tile
       return stats().pending;
     }
     job_.stage = Job::Stage::CaptureBelow;
     return true;
   }
-  if (job_.stage == Job::Stage::CaptureBelow) {
-    if (!capture(t, false)) {
-      job_ = Job{};
-      return stats().pending;
-    }
-    const bool ring = is_ring_tile(&t);
-    bool tables = true;
-    if (ring) {
-      for (std::size_t i = 0; i < rings_.size(); ++i) {
-        if (&rings_[i].t == &t) tables = rebuild_ring_geometry(i);
-      }
-    } else if (Cell* c = cell_of(&t)) {
-      tables = rebuild_cell_geometry(*c);
-    }
-    const std::uint32_t base = ring ? kRingFrameMs : kRoomStepMs;
-    job_.next.frame_ms = base * divisor_;
-    job_.next.count = kCycleMs / job_.next.frame_ms;
-    // Filled with a pattern no frame holds, so a frame shown before it is composed shows.
-    const std::size_t words =
-        static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * job_.next.count;
-    if (!tables || !job_.next.px.assign(words + 2 * kGuardWords, kUncomposed)) {
-      starve(t);
-      return stats().pending;
-    }
-    std::fill_n(job_.next.px.begin(), kGuardWords, kCanary);
-    std::fill_n(job_.next.px.end() - static_cast<std::ptrdiff_t>(kGuardWords), kGuardWords,
-                kCanary);
-    job_.next.complete = false;
-    job_.frame = 0;
-    job_.stage = Job::Stage::Compose;
-    return true;
+  if (!capture(t, false)) {
+    reset_job();
+    return stats().pending;
   }
-  const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-  compose_frame(t, job_.frame, job_.next.frame_ms,
-                job_.next.frames() + static_cast<std::size_t>(job_.frame) * px);
-  if (++job_.frame >= job_.next.count) finish_job();
+  if (!submit_job()) starve(t);
   return stats().pending;
 }
 
@@ -1426,7 +1559,7 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
       !t.full.empty()) {
     const auto k = static_cast<std::uint32_t>(static_cast<std::size_t>(shown_frame - b) / px);
     if (!reference_.resize(px)) return fail("no memory to compose a reference frame");
-    compose_frame(t, k, t.shown.frame_ms, reference_.data());
+    compose_frame(tile_inputs(t), k, t.shown.frame_ms, reference_.data());
     if (!std::equal(reference_.begin(), reference_.end(), shown_frame)) {
       return fail("a shown frame differs from the same frame composed again");
     }
