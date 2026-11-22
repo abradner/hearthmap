@@ -421,7 +421,7 @@ def test_both_device_paths_hand_over_the_turned_config(gen, schema, minimal, tmp
     (tmp_path / "driver.cpp").write_text(ROTATION_DRIVER)
     sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
                str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
-               str(REPO / "ui_lvgl/src/memory.cpp"), *core]
+               str(REPO / "ui_lvgl/src/worker.cpp"), str(REPO / "ui_lvgl/src/memory.cpp"), *core]
     stdout = _build_and_run(tmp_path, sources,
                             [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"])
     for tag in ("LOAD", "PIPELINE"):
