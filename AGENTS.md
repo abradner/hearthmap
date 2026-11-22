@@ -180,7 +180,7 @@ conversation context, only what's written down.
 Needs CMake >= 3.21, a C++17 compiler (Apple clang and GCC are both exercised), Python >= 3.10,
 and network access on first configure (doctest is fetched at a pinned commit).
 
-`mise.toml` installs the local toolchain (Python 3.13, clang-format 19.1.7, CMake 4, Ninja and
+`mise.toml` installs the local toolchain (Python 3.13, clang-format 19.1.7, CMake 4 and
 Node 24, the same major as `editor/.nvmrc`) and names the common commands as tasks: `mise trust && mise install`
 once per checkout, `mise run setup` for the Python test dependencies, `mise tasks` for the rest.
 The C++ compiler is the system's. CI does not read `mise.toml`: it pins its own tools in
@@ -235,8 +235,8 @@ add rather than rewrite.
   in an agent's shell: `mise exec` and `mise run` put the pinned tools *after* `/opt/homebrew/bin`
   on `PATH`, so `npm` ran Homebrew's Node 26 and the editor task failed, while the same task
   passed from a clean environment (`env -i HOME=$HOME PATH=/opt/homebrew/bin:/usr/bin:/bin mise run
-  editor:check`). If a task reports the wrong version, print `PATH` inside `mise exec -- sh -c`
-  before blaming `mise.toml`.
+  editor:check`). The editor tasks now check Node's major first and say so. If any task reports
+  the wrong version, print `PATH` inside `mise exec -- sh -c` before blaming `mise.toml`.
 - **CMake 4 refuses projects that declare `cmake_minimum_required` below 3.5**, which includes
   some third-party CMakeLists. doctest is consumed header-only for that reason
   (`SOURCE_SUBDIR` in `cmake/HearthmapDoctest.cmake` keeps its CMakeLists out of the build); do

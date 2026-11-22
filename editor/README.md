@@ -7,7 +7,7 @@ host renderer consume: `config.json`, which must validate against
 ![The editor with the fictional flat loaded](../docs/img/editor-flat.png)
 
 ```sh
-mise run editor        # from anywhere in the repo: Node from .nvmrc, npm ci, dev server
+mise run editor        # from anywhere in the repo: checks Node is 24, npm ci, dev server
 # or by hand:
 cd editor
 npm ci                 # exact versions from package-lock.json; Node 24 (.nvmrc)

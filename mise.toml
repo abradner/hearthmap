@@ -15,9 +15,9 @@ python = "3.13"
 # ci.yml, format job: clang-format==19.1.7. Another major formats differently (AGENTS.md §6).
 clang-format = "19.1.7"
 # CI uses the runner's CMake; the floor is cmake_minimum_required(VERSION 3.21). CMake 4 is what
-# the committed golden images were rendered with.
+# the committed golden images were rendered with. No generator is pinned: the tasks use
+# CMake's default, as CI and AGENTS.md's commands do, so they work on an existing build/.
 cmake = "4"
-ninja = "1"
 
 [env]
 # One virtualenv for the Python sides (schema, calibrate, component codegen tests).
@@ -36,7 +36,7 @@ run = [
 [tasks.build]
 description = "Configure and build core, ui_lvgl and the host renderer (Debug)"
 run = [
-  "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON",
+  "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON",
   "cmake --build build --parallel",
 ]
 
@@ -68,9 +68,22 @@ run = [
 [tasks.editor]
 description = "Run the config editor at http://127.0.0.1:5174"
 dir = "editor"
-run = ["npm ci", "npm run dev"]
+run = [
+  # Another Node ahead of mise's on PATH makes npm ci fail with EBADENGINE; say why first.
+  "node -e \"if(process.versions.node.split('.')[0]!=='24'){console.error('node '+process.version+' is ahead of the pinned Node 24 on PATH (AGENTS.md 6.1)');process.exit(1)}\"",
+  "npm ci",
+  "npm run dev",
+]
 
 [tasks."editor:check"]
 description = "Editor lint, typecheck, unit tests and production build"
 dir = "editor"
-run = ["npm ci", "npm run lint", "npm run typecheck", "npm test", "npm run build"]
+run = [
+  # Another Node ahead of mise's on PATH makes npm ci fail with EBADENGINE; say why first.
+  "node -e \"if(process.versions.node.split('.')[0]!=='24'){console.error('node '+process.version+' is ahead of the pinned Node 24 on PATH (AGENTS.md 6.1)');process.exit(1)}\"",
+  "npm ci",
+  "npm run lint",
+  "npm run typecheck",
+  "npm test",
+  "npm run build",
+]
