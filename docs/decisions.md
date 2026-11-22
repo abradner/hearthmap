@@ -1125,7 +1125,7 @@ SDIO `rx in` kept counting while `rx out` froze; gateway pings were lost; a Wi-F
 `ESP_FAIL`. The fix chosen: D-064 (the UI's bulk storage leaves internal RAM, and a guard) and
 D-065 (esp-hosted's packet pool). The switches here stay as supported options.
 
-### D-064 The UI's bulk storage goes through one memory port, PSRAM on the panel; a guard keeps internal RAM above a floor (provisional)
+### D-064 The UI's bulk storage goes through one memory port, PSRAM on the panel; below an internal-RAM floor a guard warns and pauses sprite builds (provisional)
 
 **Question:** the pulse sprites exhausted the panel's internal RAM and killed the hosted Wi-Fi
 link (D-063, found). How should the UI hold memory so that cannot recur, on this target or the

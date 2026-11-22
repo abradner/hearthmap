@@ -25,7 +25,16 @@ freezes the device until the task watchdog resets it.
 
 There is a second way to lose the completion (section 2), which this wait also cannot survive.
 
-Proposed change (minimal, behaviour unchanged on success):
+A timeout alone is not a fix, and an earlier draft of this section proposed one: returning after
+a timed-out wait lets ESPHome call `lv_display_flush_ready()`, so LVGL may rewrite the source
+buffer while a copy that is merely late is still reading it; and a late completion still gives
+`io_lock_` (and ESP-IDF's `draw_sem`), so the next transfer's wait consumes the previous
+transfer's signal and returns before its own copy is done. A late completion and a lost one
+need different handling, and from the caller's side they look the same until the late one
+arrives.
+
+Proposed change (behaviour unchanged on success): wait with a timeout, and on a timeout stop
+rather than carry on.
 
 ```diff
 --- a/esphome/components/mipi_dsi/mipi_dsi.cpp
@@ -36,33 +45,24 @@ Proposed change (minimal, behaviour unchanged on success):
 -    xSemaphoreTake(this->io_lock_, portMAX_DELAY);
 -
 +    if (err == ESP_OK && xSemaphoreTake(this->io_lock_, pdMS_TO_TICKS(MIPI_DSI_DRAW_TIMEOUT_MS)) != pdTRUE) {
-+      this->lost_completions_++;
-+      err = ESP_ERR_TIMEOUT;
++      this->draw_timed_out_();  // never returns the buffer: see below
++      return;
 +    }
    } else {
-     // draw line by line
-     for (int y = 0; y != h; y++) {
-       err = esp_lcd_panel_draw_bitmap(this->handle_, x_start, y + y_start, x_start + w, y + y_start + 1, ptr);
-       if (err != ESP_OK)
-         break;
-       ptr += stride;  // next line
--      xSemaphoreTake(this->io_lock_, portMAX_DELAY);
-+      if (xSemaphoreTake(this->io_lock_, pdMS_TO_TICKS(MIPI_DSI_DRAW_TIMEOUT_MS)) != pdTRUE) {
-+        this->lost_completions_++;
-+        err = ESP_ERR_TIMEOUT;
-+        break;
-+      }
-     }
-   }
+     // draw line by line (each row's wait the same way)
 ```
 
-with `MIPI_DSI_DRAW_TIMEOUT_MS` about 100 ms (a full-screen copy takes about 15 ms on this
-panel) and `lost_completions_` reported in `dump_config` or as a diagnostic sensor. A timed-out
-copy leaves `draw_sem` taken inside ESP-IDF, so every later draw then fails at once with
-`ESP_ERR_INVALID_STATE` instead of hanging: the screen stops updating but the device stays up,
-logs, and can be reached. Recovering the panel after a lost completion needs an ESP-IDF API that
-does not exist in 5.5.6 (resetting the DPI panel's `draw_sem`); until then a logged
-`mark_failed()` and a restart from a higher level is the honest outcome.
+where `draw_timed_out_()` logs, counts, and marks the display failed (`mark_failed()`), and the
+flush path then never calls `lv_display_flush_ready()` for that buffer and starts no further
+transfer: LVGL stops drawing into a buffer a copy may still read (it waits for the flush that
+never completes; with ESPHome's LVGL that freezes the screen, not the device), and no later
+wait can be satisfied by the stale completion. `MIPI_DSI_DRAW_TIMEOUT_MS` about 100 ms (a
+full-screen copy takes about 15 ms on this panel). The device stays up, logs, and can be reached
+or restarted from a higher level. Resuming drawing safely needs one of: a way to cancel the copy
+(ESP-IDF 5.5.6's `esp_async_fbcpy` has none), or a late completion observed (the semaphore given
+after the timeout) followed by draining `io_lock_` back to empty before the next transfer; a lost
+completion (section 2) never gives it, so only the fail-stop is safe for both. The two cases
+should be tested separately: a completion delayed past the timeout, and one never delivered.
 
 ## 2. ESP-IDF DMA2D: the completion callback is skipped when a transfer ends in error
 

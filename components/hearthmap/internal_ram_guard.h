@@ -1,4 +1,6 @@
-// internal_ram_guard.h — keeps the panel's internal RAM above a floor (docs/decisions.md D-064).
+// internal_ram_guard.h — warns, and pauses sprite builds, when the panel's internal RAM falls
+// below a floor (docs/decisions.md D-064). It cannot hold RAM above the floor: anything else may
+// keep taking it.
 //
 // On the ESP32-P4 the hosted Wi-Fi driver takes a DMA-capable frame from internal RAM for every
 // packet it sends or receives. When internal RAM runs out the link dies with nothing in the log,
