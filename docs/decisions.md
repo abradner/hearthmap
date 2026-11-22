@@ -1229,3 +1229,37 @@ setting stays where the owner sees it. **Trades:** a larger firmware (WARN strin
 ESP-IDF component) and ESP-IDF warnings in the runtime log that were hidden before. **Would
 change if:** ESPHome raises its default, or the warnings prove too noisy to read.
 
+### D-067 Periodic heap checks read counters only; the panel's underruns are counted (provisional)
+
+**Symptom:** after D-064..D-066 the whole screen flashed a uniform light blue for an instant, a
+few times about a second apart, then nothing for 30-60 s, on every screen including the boot
+"Waiting for time" status, with LVGL idle (0 refreshes, 0 presents) and nothing failing.
+**Found** (ESP-IDF 5.5.6 source): `esp_lcd_panel_dpi.c` restarts the frame DMA from its
+interrupt at the end of every frame (`mipi_dsi_dma_trans_done_cb`), and its bridge ISR says of
+an underrun "the LCD display may already becomes blue"; the bridge's `dpi_rsv_data` (default
+0x3FFF, nearly all blue in 10-bit RGB) is what it sends while its FIFO is empty. The message goes
+out with `ESP_DRAM_LOGE`, `esp_rom_printf` to the console, so ESPHome's log never shows it.
+`heap_caps_get_largest_free_block` calls `heap_caps_get_info`, which for each matching heap takes
+the heap's spinlock (`portENTER_CRITICAL_SAFE`: interrupts off on this core) and walks every
+block (`tlsf_walk_pool`). D-064's guard did four such walks once a second from the main loop
+(internal, DMA-capable internal, DMA-capable, PSRAM), and D-064 itself moved many small UI
+buffers into PSRAM, lengthening the PSRAM walk. **Inferred** (not measured on the panel yet): a
+walk that overlaps the end of a frame by more than the vertical blanking delays the DMA restart
+and blanks that frame. The rhythm is the beat between a once-a-second sampler driven by loop
+ticks and the panel's frame clock: while their phase drifts through the danger window
+consecutive samples hit, a second apart; then they drift out. **Default:** the once-a-second
+check reads `heap_caps_get_free_size` and `heap_caps_get_minimum_free_size` only (per-heap
+counters, no lock), which is all the internal-RAM floor needs; the perf mem line reuses that
+sample and says "largest DMA block not probed"; walks remain at boot, in the rare low-RAM warning
+with `heap_probe: walk`, in `diagnostics: true`'s 10 s report, and on the PSRAM-exhausted abort
+path. The perf mem line adds the longest heap sample of the window (`heap probe max N us`) and
+the DSI underruns counted in it, by a tap on the ROM console's second channel that matches the
+driver's message (`dsi_underrun_tap.h`; off when a secondary console owns the channel).
+**Bisecting switches** (one flash each; defaults as shipped): `heap_probe: walk` (the old walks,
+should bring the flash back), `heap_probe: off`, `hosted_packet_pool: false` (D-065 not applied),
+`ui_storage: system` (D-064's port not installed; the UI back on malloc). **Rejected:** keeping
+the walks at a lower rate (still a dice roll per sample); a second interrupt on the DSI bridge
+to count underruns (the driver's is not shared). **Would change if:** the panel shows underruns
+with `heap_probe: counters` (then the cause is elsewhere: PSRAM bandwidth, another
+interrupts-off section), or `heap_probe: walk` does not bring them back.
+

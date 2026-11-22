@@ -276,6 +276,15 @@ add rather than rewrite.
   cells or pulses goes through the memory port (D-064); `host/tests/memory_budget_test.cpp`
   fails if it does not. And no reset is not a live link: a quiet panel with no watchdog resets
   can still have lost its network (D-061's correction).
+- **A largest-free-block query can flash the whole panel blue.** `heap_caps_get_largest_free_block`
+  (and `heap_caps_get_info`) walk every block of every matching heap with that heap's spinlock
+  held: interrupts off on the calling core for the whole walk, which on the PSRAM heap means
+  thousands of headers through the cache. ESP-IDF 5.5.6's DPI panel re-arms its frame DMA from an
+  interrupt at the end of every frame (`mipi_dsi_dma_trans_done_cb`); held off past the vertical
+  blanking, the DSI bridge's FIFO runs dry and it sends its reserved pixel (a blue) for the frame.
+  The driver reports it only with `esp_rom_printf` ("underrun happens"), never in ESPHome's log.
+  Read free bytes with `heap_caps_get_free_size` / `heap_caps_get_minimum_free_size` (counters,
+  no lock); keep walks out of anything periodic (D-067). The perf mem line counts underruns.
 
 ## 7. CI & Deployment
 
