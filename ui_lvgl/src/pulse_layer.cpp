@@ -458,6 +458,10 @@ void PulseLayer::choose_divisor() {
   while (div < kMaxDivisor && need_at(div, true) > budget_.memory_bytes) div *= 2;
   if (div == divisor_) return;
   const bool coarser = div > divisor_;
+  // Paused, nothing can be rebuilt: coarsening now would only take every playing set away. The
+  // pulse that asked for it gets nothing meanwhile (nothing is built), so memory does not grow;
+  // set_paused(false) chooses again.
+  if (coarser && paused_) return;
   divisor_ = div;
   if (coarser) {
     for (Ring& r : rings_) {
@@ -499,13 +503,7 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
     fit_cells_under(r.t.area);  // the cells it covered draw their strokes again
     admit_waiting();
   }
-  // Neighbours' tiles show this ring (or stop showing it): recompose those it reaches.
-  const lv_area_t reach{
-      static_cast<std::int32_t>(r.cx) - kRingReach, static_cast<std::int32_t>(r.cy) - kRingReach,
-      static_cast<std::int32_t>(r.cx) + kRingReach, static_cast<std::int32_t>(r.cy) + kRingReach};
-  for (Ring& x : rings_) {
-    if (&x != &r && x.allocated && intersects(x.t.area, reach)) x.t.dirty = true;
-  }
+  mark_ring_neighbours(r);
   choose_divisor();
   update_visibility();
   ensure_timer();
@@ -541,6 +539,17 @@ void PulseLayer::set_room(std::size_t room, bool on, std::uint32_t colour) {
   ensure_timer();
 }
 
+void PulseLayer::mark_ring_neighbours(const Ring& r) {
+  // Neighbours' tiles show this ring (or stop showing it): recompose those it reaches.
+  const lv_area_t reach{
+      static_cast<std::int32_t>(r.cx) - kRingReach, static_cast<std::int32_t>(r.cy) - kRingReach,
+      static_cast<std::int32_t>(r.cx) + kRingReach, static_cast<std::int32_t>(r.cy) + kRingReach};
+  for (Ring& x : rings_) {
+    if (&x != &r && x.allocated && intersects(x.t.area, reach)) x.t.dirty = true;
+  }
+  cancel_stale_job();
+}
+
 void PulseLayer::admit_waiting() {
   // Memory came free: pulses waiting for it get it, rings first, then rooms, in config order.
   for (Ring& x : rings_) {
@@ -549,6 +558,7 @@ void PulseLayer::admit_waiting() {
     if (fits_at_coarsest(true)) {
       x.t.dirty = true;
       fit_cells_under(x.t.area);
+      mark_ring_neighbours(x);  // as set_ring() does: their opaque frames must show it
     } else {
       x.allocated = false;
     }
@@ -997,6 +1007,10 @@ void PulseLayer::set_paused(bool paused) {
     job_.tile->dirty = true;
     job_.next.px.release();
     job_ = Job{};
+  }
+  if (!paused) {
+    choose_divisor();  // a coarser rate held back while paused
+    update_visibility();
   }
 }
 

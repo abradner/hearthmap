@@ -125,7 +125,9 @@ class PulseLayer {
   /// (Screen::set_pulse_mode, PulseMode::Still).
   void set_frozen(bool frozen) { frozen_ = frozen; }
   /// Paused: prepare_step() starts nothing new (a set being composed is dropped), and the sets
-  /// already built keep playing. The embedder pauses it when memory runs short (D-064).
+  /// already built keep playing; a coarser frame rate that a newly admitted pulse needs waits
+  /// until resumed, since coarsening gives every set up. The embedder pauses it when memory
+  /// runs short (D-064).
   void set_paused(bool paused);
   struct Due {
     lv_obj_t* image;
@@ -261,6 +263,8 @@ class PulseLayer {
   void update_visibility();
   void ensure_timer();
   void admit_waiting();
+  /// The rings whose tiles `r` reaches must be recomposed (it started, stopped or was admitted).
+  void mark_ring_neighbours(const Ring& r);
   void choose_divisor();
   std::size_t tile_frame_bytes(const Tile& t, bool ring) const;
   /// Without rooms: what rings (and the set being composed) hold alone.

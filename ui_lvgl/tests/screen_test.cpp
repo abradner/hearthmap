@@ -1415,6 +1415,9 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
 // One of small_config()'s top rooms' outline sprites fits, two do not, at the coarsest rate with
 // room for one replacement set (PulseLayer::need_at).
 constexpr std::size_t kOneRoomBudget = 500U * 1024U;
+// Two ring tiles at an eighth of the frames, not three (two far apart hold about 560 KiB; each
+// tile also holds a distance table per ring reaching it).
+constexpr std::size_t kTwoRingBudget = 850U * 1024U;
 
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
@@ -1886,6 +1889,74 @@ TEST_CASE("paused sprite builds start nothing; the sets already built keep playi
   const PulseCounters c = rig.screen->pulse_counters();
   CHECK_FALSE(c.builds_paused);
   CHECK(c.rooms_animated == 1);
+  const char* why = "";
+  CHECK(rig.screen->verify_pulse_frames(&why));
+  INFO(why);
+}
+
+TEST_CASE("a room admitted while builds are paused does not take a playing ring's frames") {
+  // Room for one ring at the full frame rate; a room outline as well needs a coarser rate, and
+  // coarsening gives every set up. Paused, nothing could be rebuilt, so the ring would vanish.
+  constexpr std::size_t kBudget = 4U * 1024U * 1024U;
+  Rig rig(test::small_config(), kBudget, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].on_active_layer = true;
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  rig.show(vm);
+  REQUIRE(rig.screen->pulse_counters().rings_shown == 1);
+  REQUIRE(rig.screen->pulse_counters().frame_divisor == 1);
+
+  rig.screen->set_sprite_builds_paused(true);
+  vm.rooms[0].pulse = Severity::Danger;
+  rig.screen->update(vm, rig.header, 1000);
+  CHECK_FALSE(rig.screen->prepare_step());
+  CHECK(rig.screen->pulse_counters().rings_shown == 1);  // still playing
+  CHECK(rig.screen->pulse_counters().frame_divisor == 1);
+  const char* why = "";
+  CHECK(rig.screen->verify_pulse_frames(&why));
+  INFO(why);
+
+  // Resumed: the rate drops to fit both, and both are built.
+  rig.screen->set_sprite_builds_paused(false);
+  while (rig.screen->prepare_step()) {
+  }
+  const PulseCounters c = rig.screen->pulse_counters();
+  CHECK(c.frame_divisor > 1);
+  CHECK(c.rings_shown == 1);
+  CHECK(c.rooms_animated == 1);
+  CHECK(c.tile_bytes <= kBudget);
+  CHECK(rig.screen->verify_pulse_frames(&why));
+}
+
+TEST_CASE("a ring admitted from the waiting list is drawn into the tiles of rings it overlaps") {
+  // Room for two rings, not three, at a fixed rate (min divisor 8: the rate never changes, so
+  // nothing else recomposes every tile). The fern's ring overlaps the west pin's.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.25, 0.33};
+  Rig rig(c, kTwoRingBudget, 8);
+  ViewModel vm = test::temperature_vm(rig.config);
+  auto danger = [&](std::size_t i, bool on) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = on ? Severity::Danger : Severity::Ok;
+  };
+  danger(0, true);  // B, overlapped by the waiting ring
+  danger(3, true);  // D, far from both
+  rig.show(vm);
+  REQUIRE(rig.screen->pulse_counters().rings_shown == 2);
+  danger(1, true);  // W: over budget, waits
+  rig.show(vm);
+  REQUIRE(rig.screen->pulse_counters().rings_shown == 2);
+
+  // D stops; W gets its memory. B's tile must be recomposed too, or its opaque frames keep
+  // painting over the part of W's ring that crosses it.
+  const std::uint32_t before = rig.screen->pulse_counters().captures;
+  danger(3, false);
+  rig.show(vm);
+  const PulseCounters pc = rig.screen->pulse_counters();
+  CHECK(pc.rings_shown == 2);
+  CHECK(pc.captures - before == 2);  // W's tile and B's
   const char* why = "";
   CHECK(rig.screen->verify_pulse_frames(&why));
   INFO(why);
