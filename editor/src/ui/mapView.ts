@@ -1,12 +1,16 @@
 // The map editor canvas: backdrop, rooms, pins, and the pointer gestures that edit them.
+// The view shows the plan turned by canvas.map_rotation, as the panel will (D-080): world space is
+// the turned map area, and every position a gesture writes goes back through worldToPlan(), so
+// the config only ever holds plan-frame coordinates.
 // Pointer Events cover mouse, trackpad, pen and touch alike. Two fingers pan and pinch-zoom;
 // a trackpad pinch arrives as a ctrl+wheel event and zooms; a plain wheel/two-finger scroll pans.
 
 import { MAX_VERTICES, defaultMapArea } from "../lib/defaults";
-import { bounds, dist, mapToWorld, nearestEdge, pointInPolygon, snap, worldToMap, type Size, type Vec } from "../lib/geometry";
+import { bounds, dist, mapToWorld, nearestEdge, pointInPolygon, snap, type Size, type Vec } from "../lib/geometry";
 import * as ops from "../lib/ops";
+import { mapRotationOf, planToView, planToWorld, swapsAxes, worldToPlan } from "../lib/rotation";
 import { issueTarget } from "../lib/validate";
-import type { Config, MapPoint } from "../lib/types";
+import type { Config, MapPoint, MapRotation } from "../lib/types";
 import type { Store } from "./store";
 
 const KIND_COLOUR: Record<string, string> = {
@@ -79,6 +83,10 @@ export class MapView {
     return worldSize(this.store.config);
   }
 
+  private get rotation(): MapRotation {
+    return mapRotationOf(this.store.config);
+  }
+
   private toScreen(w: Vec): Vec {
     const v = this.store.state.view;
     return { x: w.x * v.scale + v.ox, y: w.y * v.scale + v.oy };
@@ -139,8 +147,14 @@ export class MapView {
     return e?.pointerType === "touch" ? 20 : 10;
   }
 
+  /** A stored (plan-frame) point, where the turned view draws it. */
   private worldOf(p: MapPoint): Vec {
-    return mapToWorld(p, this.size);
+    return planToWorld(p, this.size, this.rotation);
+  }
+
+  /** The stored (plan-frame) point under a world position, clamped and rounded. */
+  private planOf(w: Vec): MapPoint {
+    return worldToPlan(w, this.size, this.rotation);
   }
 
   private hitPin(s: Vec, tol: number): number {
@@ -179,7 +193,7 @@ export class MapView {
   }
 
   private hitRoom(w: Vec): number {
-    const p = worldToMap(w, this.size);
+    const p = this.planOf(w);
     const rooms = this.store.config.rooms;
     // Topmost drawn (last) first, matching what the eye sees under the pointer.
     for (let i = rooms.length - 1; i >= 0; i--) {
@@ -242,7 +256,7 @@ export class MapView {
       return;
     }
     if (st.tool === "pin") {
-      const p = worldToMap(w, this.size);
+      const p = this.planOf(w);
       if (this.store.edit((c) => ops.addPin(c, st.pinKind, p))) {
         this.store.set({ selection: { type: "pin", index: this.store.config.pins.length - 1 }, tool: "select", sidebarTab: "item" });
       }
@@ -303,7 +317,7 @@ export class MapView {
       return;
     }
     if (draft.length >= MAX_VERTICES) return;
-    const p = worldToMap(this.snapped(w, undefined, e), this.size);
+    const p = this.planOf(this.snapped(w, undefined, e));
     const last = draft[draft.length - 1];
     if (last && last[0] === p[0] && last[1] === p[1]) return;
     this.store.set({ draft: [...draft, p] });
@@ -347,10 +361,10 @@ export class MapView {
     }
     const w = this.toWorld(s);
     if (d.kind === "vertex") {
-      const p = worldToMap(this.snapped(w, { room: d.room, vertex: d.vertex }, e), this.size);
+      const p = this.planOf(this.snapped(w, { room: d.room, vertex: d.vertex }, e));
       this.store.live((c) => ops.moveVertex(c, d.room, d.vertex, p));
     } else {
-      const p = worldToMap({ x: w.x + d.offset.x, y: w.y + d.offset.y }, this.size);
+      const p = this.planOf({ x: w.x + d.offset.x, y: w.y + d.offset.y });
       this.store.live((c) => ops.movePin(c, d.pin, p));
     }
   }
@@ -377,7 +391,7 @@ export class MapView {
     const w = this.toWorld(this.local(e));
     const edge = nearestEdge(room.polygon.map((p) => this.worldOf(p)), w);
     if (edge.distance * this.store.state.view.scale > 12) return;
-    const p = worldToMap(edge.point, this.size);
+    const p = this.planOf(edge.point);
     if (this.store.edit((c) => ops.insertVertex(c, sel.index, edge.edge + 1, p))) {
       this.store.set({ selection: { type: "room", index: sel.index, vertex: edge.edge + 1 } });
     }
@@ -411,9 +425,17 @@ export class MapView {
     ctx.fillStyle = "#12161b";
     ctx.fillRect(tl.x, tl.y, width * scale, height * scale);
     if (st.backdrop) {
+      // The floor plan image is in the plan's frame: turn it with the rooms, about the map
+      // area's centre, so its plan-frame rectangle (sides swapped on a quarter turn) fills it.
+      const w = width * scale;
+      const hgt = height * scale;
+      const [iw, ih] = swapsAxes(this.rotation) ? [hgt, w] : [w, hgt];
+      ctx.save();
       ctx.globalAlpha = st.backdrop.opacity;
-      ctx.drawImage(st.backdrop.image, tl.x, tl.y, width * scale, height * scale);
-      ctx.globalAlpha = 1;
+      ctx.translate(tl.x + w / 2, tl.y + hgt / 2);
+      ctx.rotate((this.rotation * Math.PI) / 180);
+      ctx.drawImage(st.backdrop.image, -iw / 2, -ih / 2, iw, ih);
+      ctx.restore();
     }
     // A light 10% grid so a blank project has a sense of scale.
     ctx.strokeStyle = "rgba(255,255,255,0.05)";
@@ -449,9 +471,10 @@ export class MapView {
       ctx.strokeStyle = bad.has(`room:${ri}`) ? "#e5484d" : selected ? "#e6edf3" : "#6b7a88";
       ctx.stroke();
       ctx.setLineDash([]);
-      // Name at the room's top-left, as on the panel, so it does not sit under centred pins.
-      const bb = bounds(room.polygon);
-      const c = this.toScreen(this.worldOf([bb.minX, bb.minY]));
+      // Name at the room's top-left on screen (after the turn), upright, as on the panel, so it
+      // does not sit under centred pins.
+      const bb = bounds(room.polygon.map((p) => planToView(p, this.rotation)));
+      const c = this.toScreen(mapToWorld([bb.minX, bb.minY], this.size));
       ctx.fillStyle = "#9aa4af";
       ctx.font = "13px system-ui, sans-serif";
       ctx.textAlign = "left";

@@ -5,6 +5,7 @@ import { loadConfig } from "./lib/autosave";
 import { exportFiles, openFiles, staleExportedPhotos, zipFiles } from "./lib/files";
 import * as ops from "./lib/ops";
 import { canRedo, canUndo } from "./lib/history";
+import { mapRotationOf } from "./lib/rotation";
 import { checkImportedConfig, hasErrors, validateConfig } from "./lib/validate";
 import { KINDS, LAYERS, type Config, type Kind } from "./lib/types";
 import { buildScene, parseReadings, sampleReadings } from "./preview/scene";
@@ -189,6 +190,16 @@ async function loadBackdrop(file: File | undefined): Promise<void> {
   store.set({ backdrop: { image, url, width: image.naturalWidth, height: image.naturalHeight, opacity: old?.opacity ?? 0.6 } });
 }
 
+/**
+ * Turn the whole plan a quarter turn on the panel (canvas.map_rotation, D-080): one undo step,
+ * with map_area refitted to the turned proportions (from the floor plan image if one is loaded).
+ * Then the view is refitted, because the map area's shape changed.
+ */
+function rotate(delta: 90 | -90): void {
+  const b = store.state.backdrop;
+  if (store.edit((c) => ops.rotatePlan(c, delta, b ? { width: b.width, height: b.height } : undefined))) map.fit();
+}
+
 // ---- toolbar ------------------------------------------------------------------------------------
 
 const TOOLS: [Tool, string, string][] = [
@@ -277,6 +288,14 @@ function renderToolbar(): void {
     ),
     h(
       "div",
+      { class: "group", role: "group", "aria-label": "Rotate plan" },
+      h("span", { class: "muted" }, "Rotate plan"),
+      h("button", { title: "Turn the whole plan a quarter turn anticlockwise on the panel", "data-testid": "rotate-left", onclick: () => rotate(-90) }, "Left"),
+      h("span", { "data-testid": "map-rotation", title: "canvas.map_rotation: how far the panel shows the plan turned, clockwise" }, `${mapRotationOf(store.config)}\u00b0`),
+      h("button", { title: "Turn the whole plan a quarter turn clockwise on the panel", "data-testid": "rotate-right", onclick: () => rotate(90) }, "Right"),
+    ),
+    h(
+      "div",
       { class: "group" },
       h(
         "label",
@@ -301,7 +320,7 @@ function renderToolbar(): void {
                 title: "Make the map area the floor plan's shape, so it is not stretched",
                 onclick: () => {
                   const b = store.state.backdrop;
-                  if (b && store.edit((c) => ops.fitMapAreaToAspect(c, b.width, b.height))) map.fit();
+                  if (b && store.edit((c) => ops.fitMapAreaToPlan(c, b.width, b.height))) map.fit();
                 },
               },
               "Match plan shape",

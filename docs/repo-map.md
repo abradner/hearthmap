@@ -66,7 +66,8 @@ private configuration repository, never from this one (`AGENTS.md` §7).
    pins travel in the floor plan's own frame all the way to the source; every `ConfigSource`
    (the host's JSON source, the generated tables' `load()`, the device's stepped boot) turns
    them by `canvas.map_rotation` with core's `apply_map_rotation()` once `validate()` accepts
-   them, and nothing after that point knows a rotation exists (D-080).
+   them, and nothing after that point knows a rotation exists (D-080). The editor draws the same
+   turn itself, in TypeScript, for display and drag only; it never writes turned coordinates.
 3. **Tap.** LVGL event -> `UiEvent` -> `apply()` -> `UiState` -> `build_view_model()` -> diffed
    redraw, in the same device `loop()` call as the tap, whatever the heat image is doing (D-047).
    Invariant: `UiState` is the only UI state; nothing in `ui_lvgl` remembers anything core would

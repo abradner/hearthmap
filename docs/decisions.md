@@ -1313,7 +1313,12 @@ room mask, view model, hit-testing, ui_lvgl, sprites, the baked walls and labels
 panel's frame and was not changed; text is never turned, because ui_lvgl draws labels and pin
 icons upright wherever they land. The ESPHome codegen emits the field as written and turns
 nothing: rotating at build time would put a second implementation of the turn in Python and
-leave core unable to check the value, which is the D-017 split this repo avoids. **Why:**
+leave core unable to check the value, which is the D-017 split this repo avoids. The editor
+turns only what it draws (`editor/src/lib/rotation.ts`: the same arithmetic as core, checked
+against core's cases), turns pointer positions back before any edit writes them, and turns its
+preview's config like core does; "Rotate plan" is one undo step that also refits `map_area` to
+the turned proportions. Like the editor's other copies of core rules (D-040) this is display,
+not enforcement. **Why:**
 the property asked for is that rotation is how the map is viewed, changed in one place: one
 field, never baked into coordinates. Applying it at the source boundary, in core, keeps one
 implementation and one enforcement point and leaves every consumer untouched. **Rejected:**

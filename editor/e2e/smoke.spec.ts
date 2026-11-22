@@ -159,6 +159,50 @@ test.describe("editor smoke", () => {
     await expect(page.getByTestId("entity-list")).toContainText("Bound:");
   });
 
+  test("rotates the plan in one undo step, and edits on the turned view store plan coordinates", async ({ page }) => {
+    await fresh(page);
+    await page.getByTestId("load-example").click();
+    const cfg = () => page.evaluate(() => (window as unknown as { __hearthmap: { config: () => Config } }).__hearthmap.config());
+    await expect(page.getByTestId("map-rotation")).toHaveText("0°");
+    await page.getByTestId("rotate-right").click();
+    await expect(page.getByTestId("map-rotation")).toHaveText("90°");
+    let c = await cfg();
+    expect(c.canvas.map_rotation).toBe(90);
+    // Match plan shape, turned: the example's 864 x 720 becomes 720:864 inside the panel region.
+    expect(c.canvas.map_area).toEqual({ x: 0, y: 64, width: 613, height: 736 });
+    expect(c.pins.find((p) => p.id === "plant_basil")?.position).toEqual([0.625, 0.06]); // untouched
+
+    // Drop a pin where the turned view shows (0.5, 0.25) of the map area. The view was refitted
+    // to the new area (MapView.fit(): 24 px margin, centred), so that is computable from the box.
+    const b = await canvasBox(page);
+    const { width: w, height: hgt } = c.canvas.map_area!;
+    const scale = Math.min((b.width - 48) / w, (b.height - 48) / hgt);
+    const ox = (b.width - w * scale) / 2;
+    const oy = (b.height - hgt * scale) / 2;
+    await page.getByTestId("pin-kind-tool").selectOption("temperature");
+    await page.mouse.click(b.x + ox + 0.5 * w * scale, b.y + oy + 0.25 * hgt * scale);
+    c = await cfg();
+    const dropped = c.pins[c.pins.length - 1]!.position;
+    // On a quarter turn clockwise, view (x, y) is plan (y, 1 - x): (0.25, 0.5).
+    expect(dropped[0]).toBeCloseTo(0.25, 2);
+    expect(dropped[1]).toBeCloseTo(0.5, 2);
+
+    // The preview opens on the turned map without errors.
+    await page.getByTestId("open-preview").click();
+    await expect(page.getByTestId("preview-canvas")).toBeVisible();
+    await page.getByTestId("close-preview").click();
+
+    // Undo: the pin, then the rotation (one step, map area and all).
+    await page.getByTestId("undo").click();
+    await page.getByTestId("undo").click();
+    c = await cfg();
+    expect(c.canvas.map_rotation).toBeUndefined();
+    expect(c.canvas.map_area).toEqual({ x: 40, y: 76, width: 864, height: 720 });
+    await expect(page.getByTestId("map-rotation")).toHaveText("0°");
+    await page.getByTestId("rotate-left").click();
+    await expect(page.getByTestId("map-rotation")).toHaveText("270°");
+  });
+
   test("screenshots of the fictional flat", async ({ page }) => {
     test.skip(!process.env.SCREENSHOTS, "set SCREENSHOTS=1 to regenerate docs/img");
     const out = resolve(repo, "docs", "img");
