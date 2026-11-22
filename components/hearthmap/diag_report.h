@@ -34,6 +34,7 @@ struct MemorySample {
   std::uint32_t failed_dma_allocs = 0;  ///< of those, ones that asked for DMA-capable memory
   std::size_t last_failed_size = 0;
   std::uint32_t last_failed_caps = 0;
+  bool walked = false;  ///< the *_largest fields were measured (a heap walk), not left at 0
 };
 
 /// The co-processor link as seen from the P4.

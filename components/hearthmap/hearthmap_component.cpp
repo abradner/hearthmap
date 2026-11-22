@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 
+#include "dsi_underrun_tap.h"
 #include "esp_heap_caps.h"
 #include "esphome/components/api/api_server.h"
 #include "esphome/core/hal.h"
@@ -131,12 +132,15 @@ void HearthmapComponent::setup() {
   // First, before anything of the UI's is allocated: its bulk storage comes from PSRAM through
   // the memory port, never from internal RAM (D-064).
   start_heap_watch();
-  if (!hm::ui::set_bulk_memory(&psram_memory())) {
+  if (this->ui_storage_psram_ && !hm::ui::set_bulk_memory(&psram_memory())) {
     ESP_LOGE(TAG, "memory port: UI storage was allocated before setup; it stays where it is");
   }
   hm::ui::set_bulk_failure_handler(report_bulk_exhausted);
+  if (this->count_dsi_underruns_) this->dsi_tap_ = start_dsi_underrun_tap();
   {
+    // One heap walk, at boot, before the panel shows anything that matters (heap_watch.h).
     const MemorySample m = sample_memory();
+    this->last_memory_ = m;
     ESP_LOGI(TAG,
              "memory at boot: internal free %u KiB (lowest %u KiB), largest DMA-capable block %u "
              "KiB, PSRAM free %u KiB; internal RAM floor %u KiB",
@@ -303,7 +307,8 @@ bool HearthmapComponent::start_screen_() {
   const uint32_t start = millis();
   ESP_LOGI(TAG, "boot: screen started");
   const hm::ui::HeatRasterizer& raster = this->pipeline_->rasterizer();
-  // From the memory port: PSRAM only (ESPHome's RAMAllocator would fall back to internal RAM).
+  // From the memory port: PSRAM only (ESPHome's RAMAllocator would fall back to internal RAM),
+  // or malloc with `ui_storage: system`, which puts blocks this large in PSRAM too.
   const std::size_t bytes = raster.pixel_count() * sizeof(hm::Rgb565);
   auto allocate = [bytes] {
     return static_cast<hm::Rgb565*>(hm::ui::bulk_allocate(bytes, alignof(hm::Rgb565)));
@@ -639,11 +644,17 @@ void HearthmapComponent::check_sprite_canaries_() {
 // degrades, the Wi-Fi driver keeps its DMA frames) and a warning says how low, what failed, and
 // what hearthmap did meanwhile; the UI's own bulk storage is in PSRAM, so it is a witness here,
 // not a suspect, unless the port's counters say otherwise.
+// It reads heap counters only (heap_probe: counters, D-067): a largest-block walk holds
+// interrupts off on this core long enough to make the panel's frame DMA miss its restart, and
+// once a second that flashed the whole screen blue. `heap_probe: walk` brings the walk back.
 void HearthmapComponent::check_memory_() {
+  if (this->heap_probe_ == HeapProbe::Off) return;
   const uint32_t now = millis();
   if (now - this->last_memory_check_ms_ < 1000U) return;
   this->last_memory_check_ms_ = now;
-  const MemorySample m = sample_memory();
+  const MemorySample m =
+      this->heap_probe_ == HeapProbe::Walk ? sample_memory() : sample_memory_counters();
+  this->last_memory_ = m;
   const InternalRamGuard::Verdict v = this->ram_guard_.update(now, m.internal_free);
   const uint32_t captures = this->screen_ ? this->screen_->pulse_counters().captures : 0U;
   if (v.pause != this->sprites_paused_) {
@@ -652,19 +663,23 @@ void HearthmapComponent::check_memory_() {
   }
   if (v.warn) {
     const hm::ui::BulkStats b = hm::ui::bulk_stats();
-    ESP_LOGW(
-        TAG,
-        "internal RAM low: %u KiB free, floor %u KiB (was %u KiB), lowest %u KiB, largest "
-        "DMA-capable block %u KiB; failed allocations %u, DMA %u (last %u B, caps 0x%x); "
-        "hearthmap holds %u KiB in PSRAM (%u refused) and captured %u sprites since; "
-        "pulse sprite builds paused (D-064)",
-        static_cast<unsigned>(m.internal_free / 1024U),
-        static_cast<unsigned>(this->ram_guard_.floor() / 1024U),
-        static_cast<unsigned>(v.fell_from / 1024U), static_cast<unsigned>(m.internal_min / 1024U),
-        static_cast<unsigned>(m.dma_largest / 1024U), static_cast<unsigned>(m.failed_allocs),
-        static_cast<unsigned>(m.failed_dma_allocs), static_cast<unsigned>(m.last_failed_size),
-        static_cast<unsigned>(m.last_failed_caps), static_cast<unsigned>(b.in_use / 1024U),
-        static_cast<unsigned>(b.failures), static_cast<unsigned>(captures - this->captures_at_ok_));
+    char dma[24] = "not probed";
+    if (m.walked) {
+      snprintf(dma, sizeof(dma), "%u KiB", static_cast<unsigned>(m.dma_largest / 1024U));
+    }
+    ESP_LOGW(TAG,
+             "internal RAM low: %u KiB free, floor %u KiB (was %u KiB), lowest %u KiB, largest "
+             "DMA-capable block %s; failed allocations %u, DMA %u (last %u B, caps 0x%x); "
+             "hearthmap holds %u KiB in PSRAM (%u refused) and captured %u sprites since; "
+             "pulse sprite builds paused (D-064)",
+             static_cast<unsigned>(m.internal_free / 1024U),
+             static_cast<unsigned>(this->ram_guard_.floor() / 1024U),
+             static_cast<unsigned>(v.fell_from / 1024U),
+             static_cast<unsigned>(m.internal_min / 1024U), dma,
+             static_cast<unsigned>(m.failed_allocs), static_cast<unsigned>(m.failed_dma_allocs),
+             static_cast<unsigned>(m.last_failed_size), static_cast<unsigned>(m.last_failed_caps),
+             static_cast<unsigned>(b.in_use / 1024U), static_cast<unsigned>(b.failures),
+             static_cast<unsigned>(captures - this->captures_at_ok_));
   }
   if (v.recovered) {
     ESP_LOGI(TAG, "internal RAM back to %u KiB: pulse sprite builds resumed",
@@ -703,14 +718,24 @@ void HearthmapComponent::log_perf_() {
     this->last_sprite_frames_ = c.frames;
     this->last_sprite_dropped_ = c.dropped;
   }
-  const MemorySample m = sample_memory();
+  // The once-a-second check's latest sample, at most a second old: no heap read of its own
+  // (with `heap_probe: off`, the boot figures).
+  const MemorySample& m = this->last_memory_;
   const hm::ui::BulkStats b = hm::ui::bulk_stats();
   w.internal_free_kib = static_cast<uint32_t>(m.internal_free / 1024U);
   w.internal_min_kib = static_cast<uint32_t>(m.internal_min / 1024U);
   w.dma_largest_kib = static_cast<uint32_t>(m.dma_largest / 1024U);
+  w.dma_largest_probed = m.walked && this->heap_probe_ == HeapProbe::Walk;
   w.bulk_kib = static_cast<uint32_t>(b.in_use / 1024U);
   w.bulk_refused = b.failures;
   w.sprites_paused = this->sprites_paused_;
+  w.heap_probe_max_us = take_heap_probe_max_us();
+  w.dsi_underruns_counted = this->dsi_tap_;
+  if (this->dsi_tap_) {
+    const uint32_t u = dsi_underruns();
+    w.dsi_underruns = u - this->last_dsi_underruns_;
+    this->last_dsi_underruns_ = u;
+  }
   char line[640];
   hearthmap_device::PerfStats::format(w, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
@@ -750,8 +775,15 @@ void HearthmapComponent::dump_config() {
 #ifdef HEARTHMAP_DIAGNOSTICS
   ESP_LOGCONFIG(TAG, "  Diagnostics: hosted link report every 10 s on the UART (D-063)");
 #endif
-  ESP_LOGCONFIG(TAG, "  UI storage: PSRAM through the memory port; internal RAM floor %u KiB",
+  ESP_LOGCONFIG(TAG, "  UI storage: %s; internal RAM floor %u KiB",
+                this->ui_storage_psram_ ? "PSRAM through the memory port"
+                                        : "malloc, as before D-064 (bisecting aid)",
                 static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
+  ESP_LOGCONFIG(TAG, "  Heap probe: %s; DSI underrun counter: %s (D-067)",
+                this->heap_probe_ == HeapProbe::Counters ? "counters"
+                : this->heap_probe_ == HeapProbe::Walk   ? "walk, once a second (bisecting aid)"
+                                                         : "off (internal RAM floor blind)",
+                this->dsi_tap_ ? "on" : (this->count_dsi_underruns_ ? "unavailable" : "off"));
 #ifdef CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO
 #ifdef CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL
   ESP_LOGCONFIG(TAG, "  Hosted SDIO packet pool: on (reserved when the link starts, D-064)");

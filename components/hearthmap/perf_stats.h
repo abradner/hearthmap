@@ -68,8 +68,13 @@ struct PerfWindow {
   // Memory at the window's end (D-064), set by the caller: internal RAM is what the hosted
   // Wi-Fi driver's DMA frames come from; the UI's bulk storage is in PSRAM through the port.
   std::uint32_t internal_free_kib = 0;
-  std::uint32_t internal_min_kib = 0;  ///< the lowest since boot
-  std::uint32_t dma_largest_kib = 0;   ///< largest DMA-capable block
+  std::uint32_t internal_min_kib = 0;   ///< the lowest since boot
+  std::uint32_t dma_largest_kib = 0;    ///< largest DMA-capable block
+  bool dma_largest_probed = false;      ///< false: not walked this window (heap_probe, D-067)
+  std::uint32_t heap_probe_max_us = 0;  ///< the longest heap sample in the window (D-067)
+  /// DSI bridge FIFO underruns in the window: frames the panel showed as uniform blue (D-067).
+  std::uint32_t dsi_underruns = 0;
+  bool dsi_underruns_counted = false;  ///< false: the build cannot count them
   std::uint32_t bulk_kib = 0;          ///< the UI's bulk storage held through the port
   std::uint32_t bulk_refused = 0;      ///< port allocations refused, since boot
   bool sprites_paused = false;         ///< the internal-RAM guard has paused sprite builds

@@ -15,6 +15,7 @@
 #include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
 #include "generated_photos.h"
+#include "heap_watch.h"
 #include "hearthmap/readings.h"
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/ui/screen.h"
@@ -70,6 +71,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_pulse_mode(hm::ui::PulseMode mode) { pulse_mode_ = mode; }
   /// `internal_ram_floor`: below it, warn and pause sprite builds (D-064). 0: off.
   void set_internal_ram_floor(uint32_t bytes) { ram_guard_ = InternalRamGuard(bytes); }
+  /// `heap_probe`: what the once-a-second memory check reads (heap_watch.h, D-067).
+  void set_heap_probe(HeapProbe probe) { heap_probe_ = probe; }
+  /// `ui_storage: system`: leave the UI's bulk storage on malloc, as before D-064 (bisecting).
+  void set_ui_storage_psram(bool psram) { ui_storage_psram_ = psram; }
+  /// `dsi_underrun_counter`: count the panel's FIFO underruns in the perf log (D-067).
+  void set_count_dsi_underruns(bool on) { count_dsi_underruns_ = on; }
 
   /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
   /// setup().
@@ -156,6 +163,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   uint32_t last_press_ms_ = 0;
 
   InternalRamGuard ram_guard_{64U * 1024U};
+  HeapProbe heap_probe_ = HeapProbe::Counters;
+  bool ui_storage_psram_ = true;
+  bool count_dsi_underruns_ = true;
+  bool dsi_tap_ = false;  ///< the underrun tap is live
+  uint32_t last_dsi_underruns_ = 0;
+  MemorySample last_memory_;  ///< the latest sample, for the perf mem line
   uint32_t last_memory_check_ms_ = 0;
   uint32_t captures_at_ok_ = 0;  ///< sprite captures at the last sample above the floor
   bool sprites_paused_ = false;

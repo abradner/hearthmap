@@ -274,8 +274,22 @@ many small buffers the link died with nothing in the log (D-063). So:
   and pulse sprite builds pause (pulses already built keep playing; animation degrades, the
   network does not) until free RAM is back above the floor plus a quarter of it. `0` turns the
   guard off. The boot log has the same figures, and every perf window adds a second line,
-  `perf mem: internal <K> KiB (lowest <K> KiB), largest DMA block <K> KiB | ui in psram <K> KiB,
-  refused <n> | sprite builds on|paused`.
+  `perf mem: internal <K> KiB (lowest <K> KiB), largest DMA block <K> KiB|not probed | ui in
+  psram <K> KiB, refused <n> | sprite builds on|paused | heap probe max <us> us | dsi underruns
+  <n>|not counted`.
+- **Counters, not walks** (`heap_probe`, D-067): the once-a-second check reads free and
+  lowest-free (per-heap counters, no lock). A largest-free-block figure means walking the heap
+  with interrupts off, which can make the panel's frame DMA miss its restart and flash the
+  screen blue, so the check and the warning say "not probed" for it. `heap_probe: walk` brings
+  the walks back (to reproduce the flash), `off` stops the check (the floor is then blind).
+  `heap probe max` is the longest heap read in the window.
+- **DSI underruns** (`dsi_underrun_counter`, default on, D-067): a frame the panel could not
+  fetch in time shows uniform blue, and ESP-IDF reports it only on the console. The component
+  counts that line (a tap on the ROM console's second channel) into the perf mem line; with a
+  secondary console configured it cannot, and says "not counted".
+- **Bisecting the blue flash** (D-067), one change per flash: `heap_probe: walk`,
+  `hosted_packet_pool: false` (leave esp-hosted's packet pool at its default, off), `ui_storage:
+  system` (no memory port: the UI's storage back on malloc as before D-064).
 - **esp-hosted's packet pool** (D-065): with `esp32_hosted` over SDIO the component sets
   `CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL` (as a default: an `sdkconfig_options` value of your
   own wins), which reserves 31 frames (47,616 B) for the link when it starts instead of

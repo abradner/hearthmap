@@ -10,8 +10,12 @@ YAML:
       #           heat_refresh_interval (15s), touchscreen_id (touch latency in the perf log),
       #           blitter (software | ppa; default software), present (false) with display_id
       #           internal_ram_floor (64kB; below it, warn and pause sprite builds; 0: off, D-064)
+      #           heap_probe (counters | walk | off; default counters, D-067),
+      #           dsi_underrun_counter (true; panel FIFO underruns in the perf log, D-067)
       # bisecting aids for the hosted Wi-Fi link (D-063), off by default:
       #           diagnostics (false), pulse_sprites (animated | still | off; default animated)
+      # bisecting aids for the blue flash (D-067), default as shipped:
+      #           heap_probe: walk, hosted_packet_pool (true), ui_storage (psram | system)
 
 Build-time work lives in hearthmap_codegen.py (pure Python, unit-tested); this file is only the
 ESPHome surface. See README.md for how core and ui_lvgl reach the build.
@@ -54,6 +58,10 @@ CONF_DISPLAY_ID = "display_id"
 CONF_DIAGNOSTICS = "diagnostics"
 CONF_PULSE_SPRITES = "pulse_sprites"
 CONF_INTERNAL_RAM_FLOOR = "internal_ram_floor"
+CONF_HEAP_PROBE = "heap_probe"
+CONF_HOSTED_PACKET_POOL = "hosted_packet_pool"
+CONF_UI_STORAGE = "ui_storage"
+CONF_DSI_UNDERRUN_COUNTER = "dsi_underrun_counter"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -71,6 +79,12 @@ PulseMode = cg.global_ns.namespace("hearthmap").namespace("ui").enum("PulseMode"
 # `pulse_sprites: still` composes the sprites but never animates them; `off` never builds them.
 # For bisecting the hosted Wi-Fi link fault (docs/decisions.md D-063), not for normal use.
 PULSE_MODES = {"animated": PulseMode.Animated, "still": PulseMode.Still, "off": PulseMode.Off}
+HeapProbe = hearthmap_panel_ns.enum("HeapProbe", is_class=True)
+# What the once-a-second memory check reads (heap_watch.h, D-067). `walk` restores the
+# largest-free-block walks, which hold interrupts off long enough to flash the panel blue; it
+# is there to reproduce that, not for normal use. `off` leaves the internal-RAM floor blind.
+HEAP_PROBES = {"counters": HeapProbe.Counters, "walk": HeapProbe.Walk, "off": HeapProbe.Off}
+UI_STORAGES = ("psram", "system")
 
 
 def _load_schema() -> dict:
@@ -156,6 +170,14 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_INTERNAL_RAM_FLOOR, default="64kB"): cv.All(
                 cv.validate_bytes, cv.int_range(min=0, max=400_000)
             ),
+            cv.Optional(CONF_HEAP_PROBE, default="counters"): cv.enum(HEAP_PROBES, lower=True),
+            # Counts the DSI bridge's FIFO underruns (a frame shown blue) from the panel driver's
+            # console line (dsi_underrun_tap.h, D-067).
+            cv.Optional(CONF_DSI_UNDERRUN_COUNTER, default=True): cv.boolean,
+            # Bisecting aids for the blue flash (D-067): `false` leaves esp-hosted's SDIO packet
+            # pool at its own default (off); `system` keeps the UI's bulk storage on malloc.
+            cv.Optional(CONF_HOSTED_PACKET_POOL, default=True): cv.boolean,
+            cv.Optional(CONF_UI_STORAGE, default="psram"): cv.one_of(*UI_STORAGES, lower=True),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_document,
@@ -283,6 +305,10 @@ async def to_code(config: dict) -> None:
         cg.add(var.set_watchdog_ms(int(wdt.total_milliseconds)))
     cg.add(var.set_pulse_mode(config[CONF_PULSE_SPRITES]))
     cg.add(var.set_internal_ram_floor(config[CONF_INTERNAL_RAM_FLOOR]))
+    cg.add(var.set_heap_probe(config[CONF_HEAP_PROBE]))
+    cg.add(var.set_count_dsi_underruns(config[CONF_DSI_UNDERRUN_COUNTER]))
+    if config[CONF_UI_STORAGE] != "psram":
+        cg.add(var.set_ui_storage_psram(False))
     if config[CONF_DIAGNOSTICS]:
         cg.add_define("HEARTHMAP_DIAGNOSTICS")
         if CORE.using_toolchain_esp_idf:
@@ -297,7 +323,8 @@ async def to_code(config: dict) -> None:
     _write_build_tree(config)
     if CORE.is_esp32 and "psram" in CORE.config:
         CORE.add_job(_psram_malloc)
-    if CORE.using_toolchain_esp_idf and gen.hosted_sdio(CORE.config):
+    pool = config[CONF_HOSTED_PACKET_POOL]
+    if pool and CORE.using_toolchain_esp_idf and gen.hosted_sdio(CORE.config):
         _hosted_mempool()
 
     if CORE.using_toolchain_esp_idf:
