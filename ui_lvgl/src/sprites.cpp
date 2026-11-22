@@ -219,6 +219,12 @@ bool distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32
   if (!out.resize(static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
                   static_cast<std::size_t>(std::max<std::int32_t>(0, h))))
     return false;
+  fill_distance(x0, y0, w, h, cx, cy, out.data());
+  return true;
+}
+
+void fill_distance(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float cx,
+                   float cy, std::uint16_t* out) {
   std::size_t i = 0;
   for (std::int32_t y = 0; y < h; ++y) {
     const float dy = static_cast<float>(y0 + y) + 0.5f - cy;
@@ -228,7 +234,6 @@ bool distance_table(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32
       out[i] = d >= 65535.0f ? 65535 : static_cast<std::uint16_t>(d + 0.5f);
     }
   }
-  return true;
 }
 
 bool ring_lut(float radius, float width, std::uint8_t opa, std::size_t size,
@@ -253,6 +258,12 @@ bool add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std:
   const std::size_t n = static_cast<std::size_t>(std::max<std::int32_t>(0, w)) *
                         static_cast<std::size_t>(std::max<std::int32_t>(0, h));
   if (cov.size() != n && !cov.assign(n, 0)) return false;
+  accumulate_segment(x0, y0, w, h, ax, ay, bx, by, width, cov.data());
+  return true;
+}
+
+void accumulate_segment(std::int32_t x0, std::int32_t y0, std::int32_t w, std::int32_t h, float ax,
+                        float ay, float bx, float by, float width, std::uint8_t* cov) {
   const float vx = bx - ax;
   const float vy = by - ay;
   const float len2 = vx * vx + vy * vy;
@@ -271,7 +282,6 @@ bool add_segment_coverage(std::int32_t x0, std::int32_t y0, std::int32_t w, std:
       if (c > cov[i]) cov[i] = c;
     }
   }
-  return true;
 }
 
 }  // namespace hearthmap::ui::detail

@@ -23,6 +23,7 @@
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/ui/present.h"
 #include "hearthmap/ui/sprite_composer.h"
+#include "hearthmap/ui/worker.h"
 #include "hearthmap/view_model.h"
 #include "lvgl.h"
 
@@ -80,6 +81,10 @@ struct ScreenDeps {
   /// Keep at most 1/N of the pulse frames per cycle (1, 2, 4 or 8), whatever memory allows. For
   /// tests, and for a target that wants the memory back.
   std::uint32_t pulse_min_divisor = 1;
+  /// Optional: where pulse sprites' tables and frames are computed (D-069), its Sprites lane
+  /// used by this Screen alone, outliving it. nullptr: inline, a step per prepare_step(), as
+  /// before. Captures always happen in prepare_step(), on the caller (they render through LVGL).
+  Worker* worker = nullptr;
 };
 
 /// How pulse sprites run (Screen::set_pulse_mode()).
@@ -99,6 +104,9 @@ struct PulseCounters {
   std::uint32_t not_ready = 0;      ///< frames held back: set incomplete, or index out of range
   std::uint32_t alloc_failures = 0;  ///< sprite buffers the memory port refused (D-064)
   bool builds_paused = false;        ///< Screen::set_sprite_builds_paused() is in force
+  std::uint32_t sets_built = 0;      ///< frame sets composed and adopted
+  std::uint32_t sets_discarded = 0;  ///< built for inputs that changed meanwhile, thrown away
+  std::uint32_t sets_kept = 0;       ///< recaptures that changed nothing: no set rebuilt
 };
 
 /// Raw pointers to the widgets, for tests and for embedders that want to restyle. Owned by the

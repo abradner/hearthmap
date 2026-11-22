@@ -15,6 +15,10 @@ YAML:
       #           diagnostics (false), pulse_sprites (animated | still | off; default animated)
       # bisecting aids for the blue flash (D-067), default as shipped:
       #           heap_probe: walk, hosted_packet_pool (true), ui_storage (psram | system)
+      # heat rebuilds and sprite frames on the other core (D-069), default true; false runs the
+      # same jobs inline in loop() slices, a bisecting aid for the threading only (the jobs
+      # themselves, kept sets, tile pieces and the step structure are the same either way):
+      #           worker (true)
 
 Build-time work lives in hearthmap_codegen.py (pure Python, unit-tested); this file is only the
 ESPHome surface. See README.md for how core and ui_lvgl reach the build.
@@ -60,6 +64,7 @@ CONF_INTERNAL_RAM_FLOOR = "internal_ram_floor"
 CONF_HEAP_PROBE = "heap_probe"
 CONF_HOSTED_PACKET_POOL = "hosted_packet_pool"
 CONF_UI_STORAGE = "ui_storage"
+CONF_WORKER = "worker"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -178,6 +183,10 @@ CONFIG_SCHEMA = cv.All(
             # pool at its own default (off); `system` keeps the UI's bulk storage on malloc.
             cv.Optional(CONF_HOSTED_PACKET_POOL, default=True): cv.boolean,
             cv.Optional(CONF_UI_STORAGE, default="psram"): cv.one_of(*UI_STORAGES, lower=True),
+            # Heat rebuilds and sprite frames on a task on the other core (D-069); `false` runs
+            # the same jobs inline in loop() slices. It bisects the threading only: what the
+            # jobs do (kept sets D-071, tile pieces D-070, their steps) is the same either way.
+            cv.Optional(CONF_WORKER, default=True): cv.boolean,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_document,
@@ -308,6 +317,8 @@ async def to_code(config: dict) -> None:
     cg.add(var.set_heap_probe(config[CONF_HEAP_PROBE]))
     if config[CONF_UI_STORAGE] != "psram":
         cg.add(var.set_ui_storage_psram(False))
+    if not config[CONF_WORKER]:
+        cg.add(var.set_worker_enabled(False))
     if config[CONF_DIAGNOSTICS]:
         cg.add_define("HEARTHMAP_DIAGNOSTICS")
         if CORE.using_toolchain_esp_idf:

@@ -966,7 +966,10 @@ at 128), against 0.84-1.23 ms through LVGL. **Default:** `ui_lvgl/include/hearth
 a `Presenter` port (`NoPresenter` on the host and by default) and `show_tile_frame()`, which
 points the tile image's descriptor at the new frame without invalidating, then presents it only
 when `present_check()` passes and otherwise invalidates. `present_check()` enforces in code: an
-lv_image whose source is that descriptor, tightly packed RGB565, not inside an LVGL refresh, on
+lv_image whose source is that descriptor, RGB565 (tightly packed when written; since D-070 any
+even stride of at least w * 2 bytes, because a tile's pieces read their rows out of the whole
+tile's frame at its stride, and `show_tile_frame()` hands that stride to the presenter, whose
+`View565` always carried one), not inside an LVGL refresh, on
 the active screen with no screen-load animation running, nothing hidden, full opacity with no
 recolour, and no layered opacity, blend mode or bitmap mask along its ancestry, no image or style
 transform, object area exactly the image (no padding, border, other size), wholly inside the
@@ -1293,6 +1296,212 @@ principle 1). The flash itself is answered by D-067's counters-only probing (gon
 2026-11-22, by eye). **Rejected:** a second interrupt on the DSI bridge (the driver's is not
 shared, D-067); polling the bridge's raw interrupt status from a task (the driver's ISR clears
 it first). **Would change if:** ESP-IDF's DPI driver gains an underrun callback or counter.
+
+### D-069 Pure computation may run on a worker, behind a port with one hand-off rule (provisional)
+
+**Question:** on the busiest tab (main, 3bcd667, 64 min soak) the main loop ran 39-45 times a
+second against 62 idle, heat slices took up to 28 ms each, and sprite preparation ran one unit
+per loop pass, so after a heat image every tile took about 43 s to recompose: longer than the
+15 s heat interval, so the tab never settled. The ESP32-P4 has a second core the loop does not
+use. How may work move there without making the UI depend on two cores or on ESP-IDF?
+**Default:** `ui_lvgl/include/hearthmap/ui/worker.h`, a `Worker` port with a fixed number of
+lanes (sprites, heat), each holding one `WorkJob` that runs in bounded `step()`s. The lane logic
+(submit, cancel, poll) is portable C++17 atomics in ui_lvgl; a platform supplies only a thread
+and its wake-up. `InlineWorker` runs one step per `poll()` on the caller: the host's worker, a
+single-core target's (an ESP32-S3 port must not need a second core), and the panel's with the
+worker turned off. **The hand-off, the one rule every client follows:** while a lane is queued,
+the job and everything its caller lent it belong to the worker, and the main loop neither reads
+nor writes them (sizes set before submitting, which the worker never changes, excepted); the
+worker touches nothing else. `submit()` publishes with a release store, the worker's last step
+with a release store of Done, `poll()` reads both with acquire loads, so a job's writes are
+visible once `poll()` says Finished. `cancel()` only asks: the job is stopped between two steps
+and still comes back through `poll()` before anything lent is freed or reused, and a client
+whose inputs changed meanwhile discards the result by its own generation counter. A job never
+touches LVGL (not thread-safe) and never allocates through the memory port (D-064's port
+allocates from one task): its caller sizes and allocates every buffer before submitting. No lock
+is held while a step runs, and no interrupts are disabled: lane states are atomics (and there is
+no atomic read-modify-write in the worker at all: every counter has one writer, the worker
+thread when threaded and the main loop when inline, so it advances by a relaxed load and store;
+an inline worker living in PSRAM inside a PulseLayer raises no question about atomic RMW on
+external memory), and the
+thread's wake-up is its only blocking primitive. **Guard:** `ui_lvgl/tests/worker_test.cpp` on
+a real `std::thread` (`worker_thread.h`, header-only, never in the library): every write
+visible after 200 hand-offs, a job cancelled while building returned before its buffer is
+rewritten, two lanes side by side; a mutant `poll()` that reports Finished while the job is
+still queued fails three of its four threaded cases. CI's `tsan` job runs every `worker:*` case
+under ThreadSanitizer; with the lane's release/acquire weakened to relaxed it reports 14 races.
+**Would change if:** a client needs more than one job in flight per lane.
+**Client: pulse sprites** (`PulseLayer::Job`, `ScreenDeps::worker`). Captures stay in
+`prepare_step()` on the main loop (they render through LVGL); everything after them, the
+distance and coverage tables and every frame of the set, is the job. At submit the tile's two
+captures and its lists of tables are swapped into the job (their reserved capacity travels with
+them, D-064), every table and the new set are allocated, and what the main loop may change
+meanwhile is copied in (room colours into each table's entry, the frame rate, the tile's size
+and place). Every opacity table is now filled at construction instead of lazily, since the job
+reads them. Everything that used to drop the set being built (a change under the tile, a
+release, a pause, a coarser rate) bumps the tile's generation and cancels the lane; back from
+the worker, the captures and lists return to the tile and the set is adopted only when it ran
+to the end for the generation the tile still has, else freed. Without a worker the job runs a
+step per `prepare_step()`, as before (the goldens and every earlier sprite test run that way,
+unchanged). **Guard:** `ui_lvgl/tests/screen_test.cpp`, "a set whose tile changes while it is
+out is discarded, never adopted" (a test-driven worker: cancelled while out; finished and then
+made stale before it is polled back, which adopting regardless of generation fails; a pause),
+and "worker: every shown pulse frame is whole when sets are built on a second thread" (the
+20 s walk of D-053's guard with a real thread, every frame checked after every step, under
+ThreadSanitizer in CI: clean); `host/tests/memory_budget_test.cpp` runs its walk again with a
+thread worker, with the same default-heap budget (jobs allocate nothing).
+**Client: heat images** (`PanelPipeline::HeatJob`, `PanelPipeline::set_worker()`). A rebuild's
+units (field rows, cell colours and the rasterizer's preparation, image rows with the row
+hook) are the job; `heat_step()` hands rebuilds over and adopts them, and with a threaded worker
+returns at once, so the main loop never runs or waits on a heat unit. While the job is out its
+working state (the samples it draws, the field, the cell colours, the row counters and the
+target buffer, which is never the one shown) is the worker's, and the main loop starts no other
+rebuild: a layer change restarts by cancelling the one in flight and starting the new one once
+it is back; giving way cancels; a rebuild that comes back cancelled, or no longer wanted, is
+discarded. No generation counter is needed on this side (one was written and removed in review):
+since no rebuild can start while another is out, the one that comes back is always the one in
+flight, and whether it is still wanted decides. The sprite side keeps its per-tile generation,
+because there a tile's inputs change while its set is out. The cell colours are sized when a rebuild starts, on the main loop, so nothing in
+the job allocates. The row hook (the map bake, D-055) runs on the worker: `set_row_hook()` takes
+a `ready` check asked on the main loop at hand-over, and the hook is used for that rebuild only
+if it said yes; the bake's buffers never change once it is ready, so the hook reads nothing
+being written. Without a worker the units run inline as before, and every earlier pipeline test
+passes unchanged. **Guard:** `components/hearthmap/tests/test_cpp.py::
+test_heat_rebuilds_on_a_worker_thread_match_inline_and_cancel_cleanly`: the same images, pixel
+for pixel, as the inline path; every band drawn off the main thread with the worker and on it
+without; a soil tab chosen while humidity's first image is on the worker cancels it (counted)
+and publishes soil's image. Built with `HEARTHMAP_TSAN=1` it runs under ThreadSanitizer (CI's
+`tsan` job): clean; with the restart not waiting for the cancelled job it reports a race in
+`begin_heat_field`.
+**On the panel** (`components/hearthmap/task_worker.cpp`, YAML `worker`, default `true`): a
+FreeRTOS task, priority 1, pinned to the core `setup()` is not running on, with a 16 KiB
+internal-RAM stack (the one internal allocation the worker makes; never PSRAM, since flash and
+OTA writes disable the cache). Sized at about four times the largest step frame read from the
+code (a frame's two layer arrays, about 2 KiB; a heat unit's `Prepared` temporary, about 1 KiB;
+the saved FPU and PIE context), not measured: `stack free` on the perf line is the measurement.
+It was 8 KiB until review asked for more margin, since an overflow panics on every boot. The
+task is created only if free internal RAM stays at or above the internal-RAM floor plus its
+margin afterwards (`InternalRamGuard::affords()`, a counter read); otherwise the worker runs
+inline and the boot log says why. At the last soak's figures (350-357 KiB internal free, floor
+64 KiB plus 16 KiB margin) it has about 260 KiB to spare. It
+waits on its task notification, runs queued lanes a step at a time, and gives its core away for
+a tick after every 10 ms of continuous work so that core's idle task still runs. `worker:
+false`, a single-core chip, a stack the floor cannot afford, or a failed task creation run the
+same jobs inline; nothing requires a second core (the ESP32-S3 port, D-054). `worker: false`
+bisects the threading only: inline is not the pre-D-069 code. Kept sets (D-071), tile pieces
+(D-070), the jobs' step structure (the uncomposed fill and each table are steps of their own)
+and the heat row hook decided at hand-over are the same with or without it; to compare against
+the code before them, flash 3bcd667. A third perf line, `perf work:`, says where
+jobs run, the worker's busy time, jobs completed and cancelled, its stack never touched, and the
+window's sprite sets built, kept (D-071) and discarded. **Not verified on the panel:** all of
+it; the task code has not been compiled here (the firmware build is the owner's). What would
+show it working: `perf work: worker core N` with busy time rising after a heat refresh, `hm
+heat` and `prepare` in the first perf line falling to the cost of hand-overs and captures, and
+the loop rate rising towards its idle 62/s; `stack free` well above 0. What would refute it: the
+loop rate unchanged (the cost was elsewhere), `cancelled` close to `jobs` (work thrown away
+faster than it lands), or blue flashes or Wi-Fi drops appearing with `worker: true` and not
+with `false` (PSRAM bandwidth taken by the second core).
+
+### D-070 A pulse tile overlapped by a later one shows through pieces of itself (provisional)
+
+**What happened:** D-058's `present_check()` refuses a tile that anything drawn after it reaches
+into, and D-053's outline cells avoid each other but not the rings: a ring's tile drawn after an
+outline cell, or after an earlier ring, crossing it at a corner (where trimming cannot make it a
+rectangle) left that tile refused, so every one of its frames fell back to an LVGL refresh. On
+main the soak showed none, but after the owner's floor plan changed (rooms sharing long walls,
+more adjacent rooms pulsing, pins near room edges) the panel showed `present 3529 / fallback 228
+(covered)` in a 5 s window, the loop at 22/s and LVGL at 16 % (one observation about 70 s after
+boot, not a soak). The host reproduced it: `edge_heavy()` (panel-like with its plants 14-26 px
+from walls) fell back 22.8 frames a second, every one `Covered`, from four tiles: two rings
+cornered by a later ring, two cells cornered by a ring; panel-like itself fell back 26.6/s and
+the example flat 7.6/s, all `Covered`. **Default:** a tile shows through up to four pieces, each
+an lv_image whose descriptor points into the tile's own frame at its offset, with the tile's
+stride (`PulseLayer::Piece`). Whenever visibility changes, each shown tile is cut to its area
+less the areas of the shown tiles drawn after it (later rings for a ring, any ring for a cell):
+no two shown pieces overlap, so none is ever covered by another, and nothing is lost, because
+the later tile composes the earlier one's pulse where they overlap (D-053). Without a presenter each shown piece is one invalidated area, so the
+pulse clock's limit of 20 areas a tick counts pieces, not tiles (review: a tick asked for 21 in
+a test scene); a tile whose pieces do not fit waits a tick with its frame unchanged. Cutting moves
+objects and descriptors only: frames are composed for the whole tile as before, so a cut costs
+no recompose and no memory. A cut that would need more than four pieces keeps the tile whole, and
+it then falls back as `Covered`, as before: correct pixels (LVGL repaints it), the old perf cost.
+Only tiles a later tile can overlap get the extra images, made
+at construction. `present_check()` now accepts a stride of at least w * 2, and
+`show_tile_frame()` passes it to the presenter (whose `View565` always had a stride). **Trades:**
+more, smaller presents where tiles meet (four in the worst case instead of one plus a fallback);
+a piece's descriptor claims `stride * h` bytes, as LVGL requires, which for a piece on the
+bottom row of the last frame runs up to its x offset past the frames. That claim is kept true
+(review): every frame set is allocated one tile row longer, after its trailing guard words
+(`FrameSet::pad`, counted in the memory estimate), and `verify_pulse_frames()` recomposes every distinct
+frame its pieces point at (they can differ for a moment when one piece waits on LVGL's area limit),
+and checks each shown piece's claimed span, from the set's last frame, against the allocation (screen test "a piece
+low in its tile claims no memory past its frame set" failed before the padding). **Found while building it:** an lv_image reads its source's size
+when the source is set, not when it draws, so a piece re-cut while showing drew its old size,
+centred (three goldens showed it); the source is set again after every re-cut, and
+`verify_pulse_frames()` checks each shown piece's image size against its descriptor. **Guard:**
+`host/tests/perf_proxy_test.cpp`, "pins next to walls of pulsing neighbours present without
+covered tiles" (0 covered; 228 in 10 s with the cut switched off), and every proxy scene now
+falls back 0 times; `ui_lvgl/tests/screen_test.cpp`, "a tile overlapped by a later one shows
+through pieces" (shown pieces disjoint, the earlier tile's area wholly drawn, 3 s of frames all
+presented, the tile whole again when the later ring stops; with the cut off it fails on overlap
+and 90 covered frames, with the source not set again after a re-cut it fails on size). Goldens
+unchanged. **Would change if:** the device still shows covered fallbacks (then name the object
+drawn after the tile: `present_block` in the perf line says only the reason).
+
+### D-071 A recaptured sprite whose scene did not change keeps its frames (provisional)
+
+**What happened:** every heat image (at most every 15 s on the shown layer, `heat_refresh_interval`)
+marks every sprite for recapture and, until now, for a whole new set of frames: on the busiest tab
+about 43 s of one-unit-per-pass preparation on the panel (3bcd667), so the tab never settled,
+and `prepare` cost 84-230 ms of main loop per 5 s window (372 ms in the 2026-11-22 observation
+of the new floor plan). Interpolation is room-local (core's heat field, D-005), so a changed
+reading changes the heat only in its own room, and a pin's pill only the tiles it reaches: most
+sprites' backgrounds are pixel for pixel what they were. **Default:** captures go to two staging
+buffers (the largest tile's size, taken once); after the second, if the tile's playing set was
+built from captures equal to them, with the same pulses reaching the tile in the same order and
+colours and at the same rate (exactly what `plan_ring()` / `plan_cell()` would list), the set
+stays: nothing is allocated or composed, and the tile steps back in at once. Otherwise the
+staged captures are copied to the tile and the set is built as before (D-069). A tile whose last
+build was discarded holds captures newer than its playing set and never keeps on that basis
+(`captures_match`). The comparison is exact (every pixel, every input), not a hash, so a kept set
+is the set that would have been built (principle 1). **Cost:** 2 x (largest tile) x 2 bytes of
+staging (64 KiB at 128 x 128), counted in the sprite budget (`need_at()`, `bytes_in_use()`) from
+construction, and asked for again at the next capture if the port refused it then (review), two compares of the tile per recapture, and a copy of the captures
+when they differ. **Guard:** `host/tests/perf_proxy_test.cpp`, "a heat refresh that changes
+nothing under the sprites settles at once": panel-like, soil, 78 tiles: 155 preparation steps
+(two captures each), 78 sets kept, 0 built; with the keep switched off, 877 steps and 78 sets
+built. Its positive control moves every reading and sees all 78 rebuilt. Screen tests whose
+point is "everything under the sprites changed" now really change the heat image (`Rig::new_heat()`);
+they had relied on any invalidation recomposing. **Would change if:** the device shows most
+recaptures differing anyway (then compare per row band and recompose only the changed rows).
+
+### D-072 Delta frames and a per-tile rate are not built now; the perf line's own cost is measured (provisional)
+
+**Question:** a proposal for "sprite engine v2" (2026-11-22) also listed delta frames (each
+frame stored as changed spans against one base tile), a rate divisor per tile instead of one
+for all, and a cheaper or rarer perf line (suspected of an 80 ms loop gap once a window). Do the
+code and the numbers still justify them? **Found:** (1) *Delta frames.* The host measured them
+(panel-like, soil, every frame diffed against its tile's capture with the pins, spans with gaps
+under 4 px merged and 6 bytes of header each): at the full rate a ring's set is 1.28 MB as full
+frames against 310 KB as deltas (9 rings: 11.5 MB against 2.8 MB), an outline cell's 71 KB
+against 28 KB; each delta-framed tile would also need a live frame (one more tile of memory) to
+point LVGL and the presenter at. But on the panel memory is not what binds: the 64-minute soak
+of 3bcd667 ran at `rate /1` with 2.9-5.9 MiB of sprites, inside a budget of three quarters of
+the PSRAM left (D-053). And showing a delta frame is a copy (restore the last frame's spans from
+the base, write the next frame's) of a few thousand pixels per frame on the main loop, at about
+21 Mpx/s for PSRAM copies (D-057), against today's pointer move: about 0.2 ms per ring frame,
+tens of milliseconds a second at 300-600 frames a second, spent on the loop the owner wants
+faster. Moving that copy to the worker means a second live frame per tile and a frame-by-frame
+hand-off, for a memory saving the P4 does not need. The owner trades memory for speed. (2) *A
+divisor per tile.* The soak showed `rate /1` throughout: no ring was halving any other, so there
+is nothing for it to fix on this panel. (3) *The perf line.* No host measurement can show a loop
+gap from ESPHome's logger, so the line is not made rarer on a suspicion. **Default:** none of the
+three is built. The perf work line (D-069) adds `perf log <us> us`: how long the previous
+window's three lines took to format and log, timed in the main loop, so a gap that matches it can
+be read off the panel. **Would change if:** the ESP32-S3 port (about 8 MB of PSRAM, issue 27)
+needs the memory (then deltas, with the copy on that target's main loop or in its inline worker,
+and these numbers); the panel shows `rate /2` or coarser on a real tab (then a per-tile rate);
+`perf log` shows a cost near the gap (then log less often, or only with `diagnostics`).
 
 ### D-080 The map is turned once, by core, as the config is loaded (provisional)
 

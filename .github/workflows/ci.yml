@@ -75,6 +75,42 @@ jobs:
           path: build/golden-out/
           if-no-files-found: ignore
 
+  # The worker hand-off (D-069) on a real second thread under ThreadSanitizer: every test case
+  # whose name starts "worker:" runs a std::thread worker. A race report fails the job
+  # (halt_on_error), as does a zero-case run.
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHEARTHMAP_BUILD_UI=ON
+          -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+      - name: Build
+        run: cmake --build build --parallel --target hearthmap_ui_tests
+      - name: Threaded cases
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          out=$(./build/ui_lvgl/tests/hearthmap_ui_tests --no-version -tc='worker:*')
+          echo "$out"
+          echo "$out" | grep -Eq 'test cases: +[1-9][0-9]* \| +[1-9]' || { echo "no threaded case ran"; exit 1; }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: The heat pipeline on a worker thread, under ThreadSanitizer
+        env:
+          CXX: clang++
+          HEARTHMAP_REQUIRE_CORE: "1"
+          HEARTHMAP_TSAN: "1"
+        run: |
+          python -m pip install --disable-pip-version-check -r components/hearthmap/tests/requirements.txt
+          python -m pytest -v components/hearthmap/tests/test_cpp.py -k worker_thread
+
   schema:
     runs-on: ubuntu-latest
     steps:

@@ -43,4 +43,10 @@ InternalRamGuard::Verdict InternalRamGuard::update(std::uint32_t now_ms,
   return v;
 }
 
+bool InternalRamGuard::affords(std::size_t internal_free, std::size_t bytes) const {
+  if (internal_free < bytes) return false;
+  const std::size_t left = internal_free - bytes;
+  return floor_ == 0 || left >= floor_ + margin();
+}
+
 }  // namespace esphome::hearthmap_panel

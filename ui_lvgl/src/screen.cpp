@@ -675,6 +675,7 @@ struct Screen::Impl {
     if (deps.pulse_memory_bytes != 0) budget.memory_bytes = deps.pulse_memory_bytes;
     budget.micros = deps.micros;
     budget.min_divisor = deps.pulse_min_divisor;
+    budget.worker = deps.worker;
     pulses = make_bulk<detail::PulseLayer>(
         w.map, lv_point_t{a.x, a.y}, lv_point_t{a.width, a.height}, room_points, centres, w.pin,
         budget,
@@ -1664,6 +1665,9 @@ PulseCounters Screen::pulse_counters() const {
   c.not_ready = s.not_ready;
   c.alloc_failures = s.alloc_failures;
   c.builds_paused = s.paused;
+  c.sets_built = s.sets_built;
+  c.sets_discarded = s.sets_discarded;
+  c.sets_kept = s.sets_kept;
   return c;
 }
 

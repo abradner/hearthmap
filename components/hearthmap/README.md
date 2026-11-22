@@ -291,6 +291,19 @@ many small buffers the link died with nothing in the log (D-063). So:
   happens") on ESP-IDF's primary console, never in ESPHome's log. ESPHome makes that console
   USB-Serial-JTAG when `logger: hardware_uart` is USB_SERIAL_JTAG (the ESP32-P4's default) and
   otherwise leaves ESP-IDF's default, UART0. Watch that port to see them.
+- **A worker on the other core** (`worker`, D-069, default `true`): heat rebuilds and pulse
+  sprite frames run on a FreeRTOS task (`hm_worker`, 16 KiB of internal RAM for its stack, the
+  one internal allocation it makes, taken only if free internal RAM stays above
+  `internal_ram_floor` plus its margin afterwards) pinned to the core the main loop does not
+  use; `loop()` only hands work over and adopts it, and still captures sprite backgrounds itself
+  (they render through LVGL). `worker: false` runs the same jobs inline in `loop()` slices: it
+  bisects the threading only, not this release's other changes (kept sets, tile pieces, the jobs'
+  steps), which run the same way with or without it. A single-core chip, a stack the floor
+  cannot afford, or a task FreeRTOS cannot create also run inline (`dump_config` says which, and
+  the boot log says why). Every perf window adds a third line, `perf work: worker core <n>|inline, busy
+  <ms> ms (<%>), <n> jobs, <n> cancelled, stack free <B> B | sprite sets <n> built, <n> kept, <n>
+  discarded | perf log <us> us` (kept: a recapture that found nothing changed, D-071; perf log:
+  how long the previous window's three lines took to format and log, in the main loop).
 - **Bisecting the blue flash** (D-067), one change per flash: `heap_probe: walk`,
   `hosted_packet_pool: false` (leave esp-hosted's packet pool at its default, off), `ui_storage:
   system` (no memory port: the UI's storage back on malloc as before D-064).

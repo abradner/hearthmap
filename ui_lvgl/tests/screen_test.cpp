@@ -15,6 +15,8 @@
 #include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/ui/theme.h"
+#include "hearthmap/ui/worker.h"
+#include "hearthmap/ui/worker_thread.h"
 #include "src/core/lv_refr_private.h"        // lv_refr_get_top_obj(), for the cover test
 #include "src/display/lv_display_private.h"  // invalidated areas, for the fallback test
 
@@ -84,11 +86,12 @@ struct Rig {
 
   std::size_t pulse_memory = 0;
   std::uint32_t pulse_min_divisor = 1;
+  Worker* worker = nullptr;
 
   Rig() { init(); }
   explicit Rig(Config c) : config(std::move(c)) { init(); }
-  Rig(Config c, std::size_t memory, std::uint32_t min_divisor)
-      : config(std::move(c)), pulse_memory(memory), pulse_min_divisor(min_divisor) {
+  Rig(Config c, std::size_t memory, std::uint32_t min_divisor, Worker* w = nullptr)
+      : config(std::move(c)), pulse_memory(memory), pulse_min_divisor(min_divisor), worker(w) {
     init();
   }
   void init() {
@@ -105,9 +108,16 @@ struct Rig {
     deps.photos = &photos;
     deps.pulse_memory_bytes = pulse_memory;
     deps.pulse_min_divisor = pulse_min_divisor;
+    deps.worker = worker;
     screen = std::make_unique<Screen>(display.screen(), config, &heat_dsc, deps);
   }
   const ScreenWidgets& w() const { return screen->widgets(); }
+  /// A different heat image in the same buffer, then the embedder's invalidate_heat(): every
+  /// sprite's background really changes (an unchanged one keeps its frames, D-071).
+  void new_heat() {
+    for (Rgb565& p : heat) p = static_cast<Rgb565>(p ^ 0x0821U);
+    screen->invalidate_heat();
+  }
   void show(const ViewModel& vm, Timestamp now = 1000) {
     screen->update(vm, header, now);
     while (screen->prepare_step()) {
@@ -1188,6 +1198,8 @@ TEST_CASE("a room's pulse outline invalidates strips along its walls, never its 
 TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") {
   Rig rig;
   const std::size_t timers_before = timer_count();
+  // Before any pulse: only the capture staging, held from the start (D-071).
+  const std::size_t idle_bytes = rig.screen->pulse_counters().tile_bytes;
   ViewModel vm = test::temperature_vm(rig.config);
   vm.pins[0].active_value = 33.0;
   vm.pins[0].active_severity = Severity::Danger;
@@ -1211,8 +1223,8 @@ TEST_CASE("a pulse that clears leaves nothing drawn and stops the pulse clock") 
     rig.display.run_timers();
   }
   CHECK(g_invalidated == 0);  // nothing left moving
-  // The cleared pulses gave their memory back (the budget no longer counts them).
-  CHECK(rig.screen->pulse_counters().tile_bytes == 0);
+  // The cleared pulses gave their memory back (the budget counts only the staging again).
+  CHECK(rig.screen->pulse_counters().tile_bytes == idle_bytes);
   CHECK(timer_count() == timers_before);  // the clock stopped itself
   CHECK(hidden(w.pin_pulse[0]));          // and nothing came back
   CHECK(hidden(w.room_pulse[1]));
@@ -1414,10 +1426,11 @@ TEST_CASE("walls and labels baked into the heat image look as LVGL drew them") {
 
 // One of small_config()'s top rooms' outline sprites fits, two do not, at the coarsest rate with
 // room for one replacement set (PulseLayer::need_at).
-constexpr std::size_t kOneRoomBudget = 500U * 1024U;
+// Both budgets include the 64 KiB of capture staging every layer holds (D-071).
+constexpr std::size_t kOneRoomBudget = 564U * 1024U;
 // Two ring tiles at an eighth of the frames, not three (two far apart hold about 560 KiB; each
 // tile also holds a distance table per ring reaching it).
-constexpr std::size_t kTwoRingBudget = 850U * 1024U;
+constexpr std::size_t kTwoRingBudget = 914U * 1024U;
 
 TEST_CASE("a pulse waiting for memory gets it when another pulse stops") {
   // Room for one room outline's sprites, not two (west and east rooms are 432 x 360 px each).
@@ -1525,10 +1538,10 @@ struct ReadingPresenter final : Presenter {
 };
 
 // Every tile, every shown frame, through cycles and the moments that rebuild or free frame sets.
-void walk_pulses(std::size_t memory, std::uint32_t divisor) {
+void walk_pulses(std::size_t memory, std::uint32_t divisor, Worker* worker = nullptr) {
   CAPTURE(memory);
   CAPTURE(divisor);
-  Rig rig(test::small_config(), memory, divisor);
+  Rig rig(test::small_config(), memory, divisor, worker);
   ViewModel vm = test::temperature_vm(rig.config);
   vm.pins[0].active_value = 33.0;
   vm.pins[0].active_severity = Severity::Danger;
@@ -1547,7 +1560,7 @@ void walk_pulses(std::size_t memory, std::uint32_t divisor) {
     rig.display.set_time_ms(t);
     // Something changes mid-cycle every 800 ms: a new heat image under every tile, another
     // layer's pulses, a ring starting and one stopping; preparation is sliced meanwhile.
-    if (k % 50 == 10) rig.screen->invalidate_heat();
+    if (k % 50 == 10) rig.new_heat();
     if (k % 50 == 20) {
       vm.rooms[1].pulse = vm.rooms[1].pulse == Severity::Ok ? Severity::Danger : Severity::Ok;
       vm.rooms[2].pulse = vm.rooms[2].pulse == Severity::Ok ? Severity::Warn : Severity::Ok;
@@ -1565,6 +1578,11 @@ void walk_pulses(std::size_t memory, std::uint32_t divisor) {
     }
     rig.display.run_timers();
     for (int i = 0; i < 40; ++i) (void)rig.screen->prepare_step();  // a device slice's worth
+    // A second thread works in real time, which the simulated clock outruns: give it about a
+    // tick's worth of its own (on the panel a ring's set takes well under one heat interval).
+    for (int i = 0; worker != nullptr && i < 20000 && rig.screen->prepare_step(); ++i) {
+      std::this_thread::yield();
+    }
     ok = ok && rig.screen->verify_pulse_frames(&why);
     rig.screen->show_due_frames(presenter);
     ok = ok && rig.screen->verify_pulse_frames(&why);
@@ -1578,7 +1596,8 @@ void walk_pulses(std::size_t memory, std::uint32_t divisor) {
   CHECK(presenter.uncomposed == 0);
   const PulseCounters c = rig.screen->pulse_counters();
   MESSAGE("divisor " << c.frame_divisor << ", " << presenter.calls << " frames handed over, "
-                     << c.not_ready << " not ready");
+                     << c.not_ready << " not ready; sets built " << c.sets_built << ", discarded "
+                     << c.sets_discarded);
   if (divisor > 1 || memory > 8U * 1024U * 1024U) CHECK(c.frame_divisor == divisor);
   CHECK(c.not_ready == 0);  // every index the clock asks for exists in its set
 }
@@ -1589,6 +1608,101 @@ TEST_CASE("every shown pulse frame is a whole composed frame, at every rate and 
   for (std::uint32_t divisor : {1U, 2U, 4U, 8U}) walk_pulses(64U * 1024U * 1024U, divisor);
   // Memory pressure: rings take memory from outlines, which wait and come back.
   walk_pulses(1536U * 1024U, 1U);  // the divisor is memory's choice here
+}
+
+TEST_CASE("worker: every shown pulse frame is whole when sets are built on a second thread") {
+  // The same walk, with tables and frames composed on a real thread while the main loop keeps
+  // capturing, changing and showing: changes land while sets are out (cancelled, or discarded by
+  // generation), and every check after every step still holds. ThreadSanitizer runs it in CI.
+  ThreadWorker worker;
+  for (std::uint32_t divisor : {1U, 4U}) walk_pulses(64U * 1024U * 1024U, divisor, &worker);
+  walk_pulses(1536U * 1024U, 1U, &worker);
+}
+
+namespace {
+
+/// A threaded worker whose "thread" is the test: jobs run only when run_all() is called, so the
+/// test decides exactly what the main loop does while a job is out.
+class ManualWorker final : public Worker {
+ public:
+  ManualWorker() : Worker(true, nullptr, 0) {}
+  void run_all() { run_pending(); }
+};
+
+}  // namespace
+
+TEST_CASE("a set whose tile changes while it is out is discarded, never adopted") {
+  ManualWorker worker;
+  Rig rig(test::small_config(), 64U * 1024U * 1024U, 1, &worker);
+  ViewModel vm = test::temperature_vm(rig.config);
+  vm.pins[0].active_value = 33.0;
+  vm.pins[0].active_severity = Severity::Danger;
+  // The map bake first (no worker involved), so the next steps are the ring's.
+  for (int i = 0; i < 1000 && !rig.screen->bake_ready(); ++i) (void)rig.screen->prepare_step();
+  REQUIRE(rig.screen->bake_ready());
+  rig.screen->update(vm, rig.header, 1000);
+  auto go_out = [&] {
+    // Two captures on the main loop, then the job goes out; it stays out until the test runs it.
+    CHECK(rig.screen->prepare_step());
+    CHECK(rig.screen->prepare_step());
+    CHECK(rig.screen->prepare_step());  // out: busy, nothing adopted
+  };
+  const char* why = "";
+
+  // 1. Cancelled while out: the map changes before the worker gets to it. It comes back
+  //    unfinished at the next poll, is freed, and the tile is built again from new captures.
+  go_out();
+  CHECK(rig.screen->pulse_counters().rings_shown == 0);
+  CHECK(rig.screen->pulse_counters().tile_bytes > 0);  // what the job holds is still counted
+  rig.screen->invalidate_heat();
+  worker.run_all();
+  (void)rig.screen->prepare_step();
+  PulseCounters c = rig.screen->pulse_counters();
+  CHECK(c.sets_discarded == 1);
+  CHECK(c.sets_built == 0);
+  CHECK(c.rings_shown == 0);
+
+  // 2. Finished, then stale: the worker builds the whole set, and the map changes before the
+  //    main loop polls it back. It ran to the end but for the old captures: by its generation it
+  //    is thrown away, not adopted.
+  for (int i = 0; i < 4 && !worker.busy(WorkLane::Sprites); ++i) (void)rig.screen->prepare_step();
+  REQUIRE(worker.busy(WorkLane::Sprites));
+  worker.run_all();  // complete
+  rig.screen->invalidate_heat();
+  (void)rig.screen->prepare_step();
+  c = rig.screen->pulse_counters();
+  CHECK(c.sets_discarded == 2);
+  CHECK(c.sets_built == 0);
+  CHECK(c.rings_shown == 0);
+
+  // 3. Left alone, the next one is adopted.
+  for (int i = 0; i < 50 && c.rings_shown == 0; ++i) {
+    (void)rig.screen->prepare_step();
+    worker.run_all();
+    c = rig.screen->pulse_counters();
+  }
+  CHECK(c.sets_built == 1);
+  CHECK(c.rings_shown == 1);
+  bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
+
+  // 4. A pause drops the set being built; resumed, it is built whole.
+  vm.rooms[0].pulse = Severity::Danger;
+  rig.screen->update(vm, rig.header, 1000);
+  for (int i = 0; i < 4 && !worker.busy(WorkLane::Sprites); ++i) (void)rig.screen->prepare_step();
+  REQUIRE(worker.busy(WorkLane::Sprites));
+  rig.screen->set_sprite_builds_paused(true);
+  worker.run_all();
+  (void)rig.screen->prepare_step();
+  c = rig.screen->pulse_counters();
+  CHECK(c.sets_discarded == 3);
+  CHECK(c.rooms_animated == 0);
+  rig.screen->set_sprite_builds_paused(false);
+  for (int i = 0; i < 400 && rig.screen->prepare_step(); ++i) worker.run_all();
+  CHECK(rig.screen->pulse_counters().rooms_animated == 1);
+  ok = rig.screen->verify_pulse_frames(&why);
+  CHECK(ok);
 }
 
 TEST_CASE("pulse sprites stay inside their memory budget while frames are recomposed") {
@@ -1608,7 +1722,7 @@ TEST_CASE("pulse sprites stay inside their memory budget while frames are recomp
         peak = std::max(peak, rig.screen->pulse_counters().tile_bytes);
       }
       peak = std::max(peak, rig.screen->pulse_counters().tile_bytes);
-      rig.screen->invalidate_heat();  // every tile recomposed, the old sets kept meanwhile
+      rig.new_heat();  // every tile recomposed, the old sets kept meanwhile
       rig.display.set_time_ms(static_cast<std::uint32_t>(100 * (round + 1)));
       rig.display.run_timers();
     }
@@ -1763,7 +1877,7 @@ TEST_CASE("sprite buffers the memory port refuses stop the animation, never brea
     // Everything under the sprites changes while the port refuses: preparation ends (no tile
     // asks again at once), every tile steps aside, and no frame shown is anything but whole.
     mem.refuse = true;
-    rig.screen->invalidate_heat();
+    rig.new_heat();
     int steps = 0;
     while (rig.screen->prepare_step() && steps < 10000) ++steps;
     CHECK(steps < 10000);
@@ -1781,7 +1895,7 @@ TEST_CASE("sprite buffers the memory port refuses stop the animation, never brea
 
     // Memory again, and the next change under them brings the pulses back.
     mem.refuse = false;
-    rig.screen->invalidate_heat();
+    rig.new_heat();
     while (rig.screen->prepare_step()) {
     }
     c = rig.screen->pulse_counters();
@@ -1920,8 +2034,9 @@ TEST_CASE("paused sprite builds start nothing; the sets already built keep playi
   CHECK_FALSE(c.builds_paused);
   CHECK(c.rooms_animated == 1);
   const char* why = "";
-  CHECK(rig.screen->verify_pulse_frames(&why));
-  INFO(why);
+  const bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
 }
 
 TEST_CASE("a room admitted while builds are paused does not take a playing ring's frames") {
@@ -1988,6 +2103,277 @@ TEST_CASE("a ring admitted from the waiting list is drawn into the tiles of ring
   CHECK(pc.rings_shown == 2);
   CHECK(pc.captures - before == 2);  // W's tile and B's
   const char* why = "";
-  CHECK(rig.screen->verify_pulse_frames(&why));
-  INFO(why);
+  const bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
+}
+
+namespace {
+
+/// Every shown pulse image (ring pieces in the map, outline pieces in their container), screen px.
+std::vector<std::pair<lv_obj_t*, lv_area_t>> shown_pulse_images(const ScreenWidgets& w) {
+  std::vector<std::pair<lv_obj_t*, lv_area_t>> out;
+  auto take = [&](lv_obj_t* parent) {
+    const std::uint32_t n = lv_obj_get_child_count(parent);
+    for (std::uint32_t i = 0; i < n; ++i) {
+      lv_obj_t* o = lv_obj_get_child(parent, static_cast<std::int32_t>(i));
+      if (lv_obj_is_hidden(o) || !lv_obj_check_type(o, &lv_image_class)) continue;
+      if (lv_image_get_src(o) == nullptr) continue;
+      lv_area_t a;
+      lv_obj_get_coords(o, &a);
+      out.emplace_back(o, a);
+    }
+  };
+  lv_obj_update_layout(w.root);
+  take(w.map);
+  take(w.outline_pulse);
+  return out;
+}
+
+/// Takes every frame it is offered.
+struct VerdictPresenter final : Presenter {
+  bool present(int, int, const View565&) override { return true; }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "a tile overlapped by a later one shows through pieces: nothing covers, nothing is lost") {
+  // Pin 1's ring overlaps pin 0's (pin 0 drawn first); pin 3 sits by the corner where the west,
+  // east and balcony walls meet, so its ring crosses the corners of pulsing rooms' outline cells.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.25, 0.33};
+  c.pins[3].position = MapPoint{0.53, 0.47};
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  auto danger = [&](std::size_t i, bool on) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = on ? Severity::Danger : Severity::Ok;
+  };
+  vm.rooms[0].pulse = Severity::Danger;
+  vm.rooms[1].pulse = Severity::Warn;
+  // Plants in danger would put a scaled photo in the HUD, which LVGL may draw over the map's east
+  // edge (its extra draw size): a cover the cut is not about. Pin 1 is the fern: no HUD here.
+  vm.hud = Hud{};
+  danger(0, true);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_area_t a0;
+  lv_obj_get_coords(rig.w().pin_pulse[0], &a0);  // pin 0's whole tile, nothing over it yet
+  danger(1, true);
+  danger(3, true);
+  rig.show(vm);
+  lv_area_t a1;
+  lv_obj_get_coords(rig.w().pin_pulse[1], &a1);
+  REQUIRE(overlap(a0, a1));  // the case under test
+
+  const auto shown = shown_pulse_images(rig.w());
+  // Every shown piece draws its own descriptor at its own size (an lv_image keeps the size it
+  // read when its source was set: a piece re-cut while showing must be told again).
+  bool sized = true;
+  for (const auto& s : shown) {
+    const auto* d = static_cast<const lv_image_dsc_t*>(lv_image_get_src(s.first));
+    sized = sized && lv_image_get_src_width(s.first) == lv_area_get_width(&s.second) &&
+            lv_image_get_src_height(s.first) == lv_area_get_height(&s.second) &&
+            static_cast<std::int32_t>(d->header.w) == lv_area_get_width(&s.second);
+  }
+  CHECK(sized);
+  // No two shown pulse images overlap.
+  bool disjoint = true;
+  for (std::size_t i = 0; i < shown.size(); ++i) {
+    for (std::size_t j = i + 1; j < shown.size(); ++j) {
+      disjoint = disjoint && !overlap(shown[i].second, shown[j].second);
+    }
+  }
+  CHECK(disjoint);
+  // Pin 0's tile is still drawn whole: every pixel of it lies in a shown pulse image (its own
+  // pieces, or pin 1's tile, which draws pin 0's ring where they overlap).
+  std::size_t holes = 0;
+  for (std::int32_t y = a0.y1; y <= a0.y2; ++y) {
+    for (std::int32_t x = a0.x1; x <= a0.x2; ++x) {
+      bool in = false;
+      for (const auto& s : shown) {
+        in = in || (x >= s.second.x1 && x <= s.second.x2 && y >= s.second.y1 && y <= s.second.y2);
+      }
+      holes += in ? 0U : 1U;
+    }
+  }
+  CHECK(holes == 0U);
+  CHECK(lv_area_get_size(&a0) > 0);
+
+  // Through three seconds of frames every one is presented: none refused as covered.
+  rig.screen->set_frames_deferred(true);
+  VerdictPresenter presenter;
+  Screen::ShownFrames tally;
+  const char* why = "";
+  bool ok = true;
+  for (std::uint32_t t = 16; t <= 3000; t += 16) {
+    rig.display.set_time_ms(t);
+    rig.display.run_timers();
+    rig.screen->show_due_frames(presenter, &tally);
+    ok = ok && rig.screen->verify_pulse_frames(&why);
+  }
+  INFO(std::string(why));
+  CHECK(ok);
+  CHECK(tally.presented > 100U);
+  CHECK(tally.blocked[static_cast<std::size_t>(PresentBlock::Covered)] == 0U);
+  CHECK(tally.invalidated == 0U);
+
+  // Pin 1 stops: pin 0's tile is whole again (one piece, its full area).
+  danger(1, false);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_area_t again;
+  lv_obj_get_coords(rig.w().pin_pulse[0], &again);
+  CHECK(again.x1 == a0.x1);
+  CHECK(again.y2 == a0.y2);
+  CHECK(lv_area_get_size(&again) == lv_area_get_size(&a0));
+}
+
+TEST_CASE("a piece low in its tile claims no memory past its frame set, in the last frame") {
+  // Pin 1's ring covers the lower left of pin 0's tile, so pin 0 keeps a piece on its right that
+  // reaches the tile's bottom row at an offset: its descriptor's stride * h span, from the last
+  // frame, runs past the frames by that offset. verify_pulse_frames() checks it fits the set.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.20, 0.33};
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  auto danger = [&](std::size_t i) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = Severity::Danger;
+  };
+  vm.hud = Hud{};
+  danger(0);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_area_t a0, a1;
+  lv_obj_get_coords(rig.w().pin_pulse[0], &a0);  // pin 0's whole tile, nothing over it yet
+  danger(1);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_obj_get_coords(rig.w().pin_pulse[1], &a1);
+  // The case under test: a shown piece of pin 0's tile on its bottom row, more than the 16 guard
+  // words in from its left edge (so the old allocation was too short for its claim).
+  bool low_right_piece = false;
+  for (const auto& sp : shown_pulse_images(rig.w())) {
+    const lv_area_t& p = sp.second;
+    low_right_piece = low_right_piece || (p.y2 == a0.y2 && p.x1 > a0.x1 + 16 && p.x1 > a1.x2 &&
+                                          p.x2 <= a0.x2 && p.y1 >= a0.y1);
+  }
+  CHECK(low_right_piece);
+  const char* why = "";
+  const bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
+}
+
+namespace {
+
+/// The system heap, refusing allocations of exactly `size` bytes while armed.
+struct RefuseSize final : BulkMemory {
+  std::size_t size = 0;
+  bool armed = false;
+  std::uint32_t refused = 0;
+  void* allocate(std::size_t bytes, std::size_t align) override {
+    if (armed && bytes == size) {
+      ++refused;
+      return nullptr;
+    }
+    return system_bulk_memory().allocate(bytes, align);
+  }
+  void deallocate(void* p, std::size_t bytes) override {
+    system_bulk_memory().deallocate(p, bytes);
+  }
+};
+
+/// The largest pulse tile of a scene, in pixels (a ring's, whole: nothing over it).
+std::size_t largest_tile_px(const Config& c) {
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  std::size_t most = 0;
+  for (std::size_t i = 0; i < vm.pins.size(); ++i) {
+    ViewModel one = vm;
+    one.pins[i].on_active_layer = true;
+    one.pins[i].active_value = 33.0;
+    one.pins[i].active_severity = Severity::Danger;
+    one.hud = Hud{};
+    rig.show(one);
+    lv_obj_update_layout(rig.w().root);
+    most = std::max(most, static_cast<std::size_t>(lv_obj_get_width(rig.w().pin_pulse[i])) *
+                              static_cast<std::size_t>(lv_obj_get_height(rig.w().pin_pulse[i])));
+  }
+  return most;
+}
+
+}  // namespace
+
+TEST_CASE("the capture staging buffers count against the sprite budget") {
+  // Nothing pulses, so the only sprite memory is the staging the layer holds from the start.
+  Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
+  rig.show(test::temperature_vm(rig.config));
+  const std::size_t largest = largest_tile_px(test::small_config());
+  CHECK(rig.screen->pulse_counters().rings_shown == 0);
+  CHECK(rig.screen->pulse_counters().tile_bytes == 2U * largest * sizeof(std::uint16_t));
+}
+
+TEST_CASE("staging the port refused at start-up is asked for again at the next capture") {
+  const std::size_t largest = largest_tile_px(test::small_config());
+  RefuseSize mem;
+  mem.size = largest * sizeof(std::uint16_t);
+  REQUIRE(set_bulk_memory(&mem));
+  {
+    mem.armed = true;  // only while the Screen (and its pulse layer) is built
+    Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
+    mem.armed = false;
+    REQUIRE(mem.refused > 0);
+    ViewModel vm = test::temperature_vm(rig.config);
+    vm.pins[0].active_value = 33.0;
+    vm.pins[0].active_severity = Severity::Danger;
+    rig.show(vm);
+    CHECK(rig.screen->pulse_counters().rings_shown == 1);
+    const char* why = "";
+    CHECK(rig.screen->verify_pulse_frames(&why));
+  }
+  (void)set_bulk_memory(nullptr);
+}
+
+TEST_CASE("pulse invalidations stay under LVGL's area limit when tiles show through pieces") {
+  // Not deferred: every tile whose frame moves is invalidated in the tick, a call per piece.
+  // Rings by every room's corners cut many outline cells into pieces.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.52, 0.48};
+  c.pins[3].position = MapPoint{0.48, 0.52};
+  c.pins[4].position = MapPoint{0.02, 0.48};
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  for (auto& r : vm.rooms) r.pulse = Severity::Danger;
+  for (std::size_t i = 0; i < vm.pins.size(); ++i) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = Severity::Danger;
+  }
+  vm.hud = Hud{};
+  rig.show(vm);
+  rig.display.render();
+  lv_display_t* disp = rig.display.display();
+  // Invalidations asked for between two refreshes (LVGL keeps 32 and then repaints everything).
+  static std::uint32_t asked = 0;
+  asked = 0;
+  lv_display_add_event_cb(disp, [](lv_event_t*) { ++asked; }, LV_EVENT_INVALIDATE_AREA, nullptr);
+  std::uint32_t most = 0;
+  for (std::uint32_t t = 16; t <= 3200; t += 16) {
+    asked = 0;
+    rig.display.set_time_ms(t);
+    lv_timer_t* refr = lv_display_get_refr_timer(disp);
+    lv_timer_pause(refr);  // the pulse timer runs; the refresh waits, so its areas add up
+    rig.display.run_timers();
+    lv_timer_resume(refr);
+    most = std::max(most, asked);
+    rig.display.render();
+  }
+  MESSAGE("most areas asked for in one pulse tick: " << most);
+  CHECK(most > 0);
+  CHECK(most <= 20);  // PulseLayer::kMaxInvalidationsPerTick, counted in areas
 }

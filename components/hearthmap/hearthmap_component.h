@@ -26,6 +26,7 @@
 #include "loop_breadcrumb.h"
 #include "panel_pipeline.h"
 #include "perf_stats.h"
+#include "task_worker.h"
 #ifdef USE_TOUCHSCREEN
 #include "esphome/components/touchscreen/touchscreen.h"
 #endif
@@ -75,6 +76,9 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_heap_probe(HeapProbe probe) { heap_probe_ = probe; }
   /// `ui_storage: system`: leave the UI's bulk storage on malloc, as before D-064 (bisecting).
   void set_ui_storage_psram(bool psram) { ui_storage_psram_ = psram; }
+  /// `worker: false`: heat rebuilds and sprite frames run inline in loop() slices, as before
+  /// D-069 (a bisecting aid). With it (the default) they run on a task on the other core.
+  void set_worker_enabled(bool enabled) { worker_enabled_ = enabled; }
 
   /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
   /// setup().
@@ -130,6 +134,9 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline
+  /// Declared before pipeline_ and screen_, so destroyed after them: their destructors poll it
+  /// for a job still out (D-069). null: jobs run inline.
+  std::unique_ptr<TaskWorker> worker_;
   std::unique_ptr<hearthmap_device::PanelPipeline> pipeline_;
   uint32_t boot_started_ms_ = 0;
   uint32_t stage_started_ms_ = 0;
@@ -178,6 +185,14 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   lv_obj_t* status_ = nullptr;
 
   hearthmap_device::PerfStats perf_;  ///< Where the time goes; one DEBUG line per window.
+
+  bool worker_enabled_ = true;
+  const char* worker_name_ = "inline";
+  hm::ui::Worker::Stats last_worker_{};
+  uint32_t last_sets_built_ = 0;
+  uint32_t last_sets_kept_ = 0;
+  uint32_t last_sets_discarded_ = 0;
+  uint32_t last_log_us_ = 0;  ///< the last perf window's own logging time
 #ifdef USE_TOUCHSCREEN
   touchscreen::Touchscreen* touchscreen_ = nullptr;
   std::unique_ptr<TouchProbe> touch_probe_;

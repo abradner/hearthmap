@@ -28,6 +28,15 @@
 // for another layer). A rebuild for changed samples on the same layer starts at most once per
 // heat refresh interval; until then the image lags the pins, which always show the latest
 // values. Unchanged samples on the shown layer never rebuild.
+//
+// A rebuild's units run as a WorkJob on the embedder's worker when it sets one (D-069): on the
+// panel a task on the core the main loop does not use, so heat_step() only hands rebuilds over
+// and adopts them. Without one they run inline, a unit per heat_step() call, as before.
+// Hand-off: from submit until the job is polled back, the rebuild's working state (job_samples_,
+// field_, cell_colours_, prepared_, the row counters, job_baked_ and the target buffer
+// slots_[job_slot_].px) belongs to the worker; the main loop touches none of it, and starts no
+// other rebuild until the job is back. A rebuild that must stop (a layer change, giving way) is
+// cancelled and, once back, discarded (it is no longer wanted); a restart waits for it.
 #pragma once
 
 #include <array>
@@ -42,6 +51,7 @@
 #include "hearthmap/heat_field.h"
 #include "hearthmap/readings.h"
 #include "hearthmap/ui/heat_image.h"
+#include "hearthmap/ui/worker.h"
 #include "hearthmap/view_model.h"
 
 namespace hearthmap_device {
@@ -63,7 +73,12 @@ class PanelPipeline {
 
   /// `palette` colours the heat field. Both are used during boot only.
   PanelPipeline(Builder build, const hearthmap::Palette& palette)
-      : build_(std::move(build)), palette_(palette) {}
+      : build_(std::move(build)), palette_(palette) {
+    heat_job_.p = this;
+  }
+  ~PanelPipeline();
+  PanelPipeline(const PanelPipeline&) = delete;
+  PanelPipeline& operator=(const PanelPipeline&) = delete;
 
   Stage stage() const { return stage_; }
   static const char* stage_name(Stage stage);
@@ -103,7 +118,20 @@ class PanelPipeline {
   /// returns whether it laid the walls and labels over them (D-055).
   using RowHook = std::function<bool(hearthmap::Rgb565* image, std::int32_t stride,
                                      std::int32_t begin, std::int32_t end)>;
-  void set_row_hook(RowHook hook) { row_hook_ = std::move(hook); }
+  /// With a worker the hook runs on it: `ready` (optional) is asked on the main loop when a
+  /// rebuild is handed over, and only if it says true is the hook called for that rebuild; the
+  /// embedder keeps everything the hook reads unchanged once `ready` has said true (D-069).
+  void set_row_hook(RowHook hook, std::function<bool()> ready = nullptr) {
+    row_hook_ = std::move(hook);
+    hook_ready_ = std::move(ready);
+  }
+  /// Where rebuilds run (D-069). nullptr: inline, a unit per heat_step(). Set it before the
+  /// first rebuild; it must outlive the pipeline, and its Heat lane is the pipeline's alone.
+  void set_worker(hearthmap::ui::Worker* worker) {
+    worker_ = worker != nullptr ? worker : &inline_worker_;
+  }
+  /// A rebuild is wanted or running (on the worker or inline).
+  bool heat_in_flight() const { return job_active_ || job_out_ || restart_pending_; }
   /// Redraw every kept image (the walls and labels became available): the shown one at once,
   /// the others in the background.
   void request_rebuild_all();
@@ -117,7 +145,8 @@ class PanelPipeline {
   void update(const hearthmap::Readings& readings, hearthmap::Timestamp now,
               const hearthmap::UiState& state, std::uint32_t mono_ms);
   /// One bounded unit of heat work; first starts a held-back rebuild whose interval has passed
-  /// by `mono_ms`. Returns true when no heat work is left (idle).
+  /// by `mono_ms`. Returns true when the main loop has no more heat work now: idle, or (with a
+  /// threaded worker) a rebuild is on the worker, so the caller never waits on it.
   bool heat_step(std::int32_t rows, std::uint32_t mono_ms);
   /// True once for each rebuild that swapped in a new front image since the last call.
   bool take_published() {
@@ -163,8 +192,36 @@ class PanelPipeline {
   std::size_t job_slot_ = 0;
   std::uint64_t show_counter_ = 0;
   RowHook row_hook_;
+  std::function<bool()> hook_ready_;
+  /// One rebuild's units, run by the worker (or inline). See the file comment for what it owns.
+  struct HeatJob final : hearthmap::ui::WorkJob {
+    PanelPipeline* p = nullptr;
+    std::int32_t rows = 1;
+    bool use_hook = false;
+    hearthmap::Rgb565* back = nullptr;
+    const hearthmap::ColourLut* lut = nullptr;
+    bool step() override;
+  };
+  HeatJob heat_job_;
+  hearthmap::ui::InlineWorker inline_worker_;
+  hearthmap::ui::Worker* worker_ = &inline_worker_;
+  bool job_out_ = false;          ///< the worker holds the rebuild's state
+  bool restart_pending_ = false;  ///< a rebuild waits for the cancelled one to come back
+  hearthmap::Layer restart_layer_ = hearthmap::Layer::Temperature;
+  /// start_rebuild() now, or once the job on the worker is back (it is cancelled).
+  void request_rebuild(hearthmap::Layer layer, std::uint32_t mono_ms);
+  /// The rebuild in flight is not wanted any more: cancelled (and reclaimed when it can be).
+  void abandon_rebuild();
+  /// Hands the rebuild to the worker, then polls it once (inline: one unit runs).
+  bool run_rebuild(std::int32_t rows);
+  /// The worker's answer for the rebuild: true when the main loop has nothing more to do now.
+  bool settle_rebuild(hearthmap::ui::Worker::Poll poll, bool completed);
+  void finish_rebuild();
   bool job_baked_ = false;
   bool force_ = false;
+  /// request_rebuild_all() asked for the walls; an image published without them since (it was
+  /// handed over before the bake was ready) is drawn again (finish_rebuild()).
+  bool bake_pending_ = false;
   bool published_switch_ = false;
   void start_rebuild(hearthmap::Layer layer, std::uint32_t mono_ms);
   std::size_t slot_for(hearthmap::Layer layer) const;

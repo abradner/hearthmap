@@ -267,6 +267,24 @@ int main() {
   CHECK(std::strstr(line, "largest DMA block not probed |") != nullptr);
   CHECK(std::strstr(line, "heap probe max 4 us") != nullptr);
   char tiny[8];
+  {
+    hearthmap_device::PerfWork k;
+    k.window_ms = 5000;
+    k.worker = "core 1";
+    k.worker_busy_us = 812000;
+    k.worker_jobs = 40;
+    k.worker_cancelled = 2;
+    k.worker_stack_free = 5120;
+    k.sets_built = 12;
+    k.sets_kept = 60;
+    k.sets_discarded = 1;
+    k.log_us = 950;
+    PerfStats::format_work(k, line, sizeof(line));
+    std::printf("%s\n", line);
+    CHECK(std::strstr(line, "perf work: worker core 1, busy 812 ms (16%), 40 jobs, 2 cancelled, "
+                            "stack free 5120 B | sprite sets 12 built, 60 kept, 1 discarded | perf log 950 us") != nullptr);
+    CHECK(PerfStats::format_work(k, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
+  }
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   CHECK(PerfStats::format_memory(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   std::printf("perf checks done, %d failures\n", failures);
@@ -403,7 +421,7 @@ def test_both_device_paths_hand_over_the_turned_config(gen, schema, minimal, tmp
     (tmp_path / "driver.cpp").write_text(ROTATION_DRIVER)
     sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
                str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
-               str(REPO / "ui_lvgl/src/memory.cpp"), *core]
+               str(REPO / "ui_lvgl/src/worker.cpp"), str(REPO / "ui_lvgl/src/memory.cpp"), *core]
     stdout = _build_and_run(tmp_path, sources,
                             [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"])
     for tag in ("LOAD", "PIPELINE"):
@@ -588,7 +606,7 @@ def _pipeline(gen, schema, doc, tmp_path) -> dict:
     (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
     (tmp_path / "driver.cpp").write_text(PIPELINE_DRIVER)
     sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), str(REPO / "ui_lvgl/src/worker.cpp"),
          str(REPO / "ui_lvgl/src/memory.cpp"), *core]
     exe = tmp_path / "pipeline"
     cmd = [_cxx(), *FLAGS, "-O2", f"-I{tmp_path}", f"-I{COMPONENT}", f"-I{REPO / 'core/include'}",
@@ -856,7 +874,7 @@ def test_heat_rebuild_policy_and_immediate_taps(gen, schema, example, tmp_path):
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), str(REPO / "ui_lvgl/src/worker.cpp"),
          str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
@@ -997,8 +1015,228 @@ def test_layer_images_are_kept_and_shown_at_once(gen, schema, example, tmp_path)
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), str(REPO / "ui_lvgl/src/worker.cpp"),
          str(REPO / "ui_lvgl/src/memory.cpp"), *core],
+        [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
+    )
+    assert "0 failures" in text, text
+
+
+WORKER_PIPELINE_TEST = r"""
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <thread>
+#include <vector>
+#include "hearthmap/ui/worker_thread.h"
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+struct Rig {
+  hearthmap_gen::GeneratedConfigSource source;
+  std::unique_ptr<Pipeline> p;
+  std::vector<std::vector<Rgb565>> bufs;
+  std::atomic<std::uint32_t> on_main{0}, off_main{0};
+  /// While `hold` is set, the next band on the worker waits in the hook until it is cleared, and
+  /// says so with `held`: the test then acts while the job is known to be mid-way.
+  std::atomic<bool> hold{false}, held{false};
+  std::thread::id main_id = std::this_thread::get_id();
+  explicit Rig(ui::Worker* worker) {
+    Pipeline::Builder builder;
+    builder.steps = source.build_steps();
+    builder.step = [this](Config& c, std::size_t k) { source.build_step(c, k); };
+    p = std::make_unique<Pipeline>(builder, Palette{});
+    while (p->stage() != Pipeline::Stage::Ready && p->stage() != Pipeline::Stage::Refused) p->boot_step(4);
+    const std::size_t n = p->rasterizer().pixel_count();
+    bufs.assign(5, std::vector<Rgb565>(n, 0));
+    std::vector<Rgb565*> ptrs;
+    for (auto& b : bufs) ptrs.push_back(b.data());
+    p->set_heat_buffers(ptrs);
+    p->set_heat_refresh_interval_ms(1000);
+    p->set_worker(worker);
+    // The hook says where each band of rows was drawn: the main loop or another thread.
+    p->set_row_hook([this](Rgb565*, std::int32_t, std::int32_t, std::int32_t) {
+      (std::this_thread::get_id() == main_id ? on_main : off_main).fetch_add(1);
+      if (hold.load() && std::this_thread::get_id() != main_id) {
+        held.store(true);
+        while (hold.load()) std::this_thread::yield();
+      }
+      return true;
+    }, [] { return true; });
+  }
+  // The main loop until nothing is in flight: never waits on the worker, only polls it.
+  int drain(std::uint32_t mono) {
+    int published = 0, calls = 0;
+    for (;;) {
+      const bool idle = p->heat_step(1, mono);
+      ++calls;
+      published += p->take_published() ? 1 : 0;
+      if (idle && !p->heat_in_flight()) break;
+      if (calls > 50000000) { std::printf("NEVER SETTLED\n"); break; }
+      std::this_thread::yield();
+    }
+    return published;
+  }
+};
+
+int main() {
+  ui::ThreadWorker worker;
+  Rig inline_rig(nullptr), threaded(&worker);
+  if (inline_rig.p->stage() != Pipeline::Stage::Ready) return 2;
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 20.0 + double(i % 5) * 0.4; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  UiState st = initial_ui_state(inline_rig.p->config());
+  st.active_layer = Layer::Temperature;
+  const std::size_t n = inline_rig.p->rasterizer().pixel_count();
+  auto same_front = [&] {
+    return std::memcmp(inline_rig.p->front(), threaded.p->front(), n * sizeof(Rgb565)) == 0;
+  };
+
+  // 1. The first image: the same pixels either way; inline every band is drawn on the main
+  //    loop, threaded none is.
+  for (Rig* r : {&inline_rig, &threaded}) r->p->update(rs, 1000, st, 0);
+  CHECK(inline_rig.drain(0) == 1);
+  CHECK(threaded.drain(0) == 1);
+  CHECK(same_front());
+  CHECK(inline_rig.on_main > 0 && inline_rig.off_main == 0);
+  CHECK(threaded.on_main == 0 && threaded.off_main > 0);
+  CHECK(!threaded.p->heat_behind());
+
+  // 2. Cancelled while building: humidity is chosen, and while its first image is on the
+  //    worker soil is chosen (neither kept yet). The humidity rebuild is stopped, and soil's
+  //    starts once it is back; what is published is soil's image, exactly as inline.
+  UiState hum = st;
+  hum.active_layer = Layer::Humidity;
+  UiState soil = st;
+  soil.active_layer = Layer::Soil;
+  const std::uint32_t cancelled_before = worker.stats().cancelled;
+  // The humidity rebuild is held in its first band on the worker, soil is chosen, and only then
+  // is the band let go: the cancel lands on a running job whatever the scheduling.
+  threaded.hold.store(true);
+  threaded.p->update(rs, 1000, hum, 2000);
+  (void)threaded.p->heat_step(1, 2000);  // handed over
+  while (!threaded.held.load()) std::this_thread::yield();
+  CHECK(threaded.p->heat_in_flight());
+  threaded.p->update(rs, 1000, soil, 2000);  // mid-rebuild: cancelled, soil waits for it
+  threaded.hold.store(false);
+  (void)threaded.drain(2000);
+  inline_rig.p->update(rs, 1000, soil, 2000);
+  (void)inline_rig.drain(2000);
+  CHECK(worker.stats().cancelled > cancelled_before);  // the humidity rebuild really was stopped
+  CHECK(!threaded.p->heat_behind());
+  CHECK(same_front());                                  // soil, exactly as inline
+
+  // 3. A changed reading on the shown layer: rebuilt in the background of the main loop, the
+  //    same pixels as inline.
+  Readings rs2 = rs;
+  rs2.by_entity.begin()->second.value = 31.0;
+  for (Rig* r : {&inline_rig, &threaded}) {
+    r->p->update(rs2, 1000, soil, 5000);
+    (void)r->drain(5000);
+  }
+  CHECK(same_front());
+  CHECK(inline_rig.off_main == 0);
+  CHECK(threaded.on_main == 0);
+  std::printf("worker pipeline: %u bands on the worker, %u cancelled; %d failures\n",
+              threaded.off_main.load(), worker.stats().cancelled, failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_heat_rebuilds_on_a_worker_thread_match_inline_and_cancel_cleanly(gen, schema, example, tmp_path):
+    """D-069: with a worker the heat image is built off the main loop, pixel for pixel what the
+    inline path builds, and a rebuild cancelled mid-way is restarted for the layer now shown."""
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(WORKER_PIPELINE_TEST)
+    sources = [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+               str(REPO / "ui_lvgl/src/worker.cpp"), str(REPO / "ui_lvgl/src/memory.cpp"), *core]
+    exe = tmp_path / "t"
+    # HEARTHMAP_TSAN=1 builds it under ThreadSanitizer (where the compiler has it).
+    extra = ["-fsanitize=thread", "-g"] if os.environ.get("HEARTHMAP_TSAN") == "1" else []
+    cmd = [_cxx(), *FLAGS, "-O1", "-pthread", *extra, f"-I{tmp_path}", f"-I{COMPONENT}",
+           f"-I{REPO / 'core/include'}", f"-I{REPO / 'ui_lvgl/include'}", *sources, "-o", str(exe)]
+    build = subprocess.run(cmd, capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr[-4000:]
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=300,
+                         env={**os.environ, "TSAN_OPTIONS": "halt_on_error=1"})
+    assert run.returncode == 0, run.stdout[-4000:] + run.stderr[-4000:]
+    assert "0 failures" in run.stdout, run.stdout
+
+
+BAKE_LATE_TEST = r"""
+#include <cstdio>
+#include <vector>
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+int main() {
+  hearthmap_gen::GeneratedConfigSource source;
+  Pipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  Pipeline p(builder, Palette{});
+  while (p.stage() != Pipeline::Stage::Ready && p.stage() != Pipeline::Stage::Refused) p.boot_step(4);
+  if (p.stage() != Pipeline::Stage::Ready) return 2;
+  const std::size_t n = p.rasterizer().pixel_count();
+  std::vector<std::vector<Rgb565>> bufs(5, std::vector<Rgb565>(n));
+  std::vector<Rgb565*> ptrs;
+  for (auto& b : bufs) ptrs.push_back(b.data());
+  p.set_heat_buffers(ptrs);
+  // The bake becomes ready while the first image is being built (handed over without the hook).
+  bool ready = false;
+  p.set_row_hook([&](Rgb565*, std::int32_t, std::int32_t, std::int32_t) { return ready; },
+                 [&] { return ready; });
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 21.0; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  UiState st = initial_ui_state(p.config());
+  p.update(rs, 1000, st, 0);
+  CHECK(!p.heat_step(1, 0));  // the first image is under way, without the walls
+  ready = true;
+  p.request_rebuild_all();   // the component asks once, when the bake is ready
+  for (int guard = 0; guard < 1000000 && !(p.heat_step(1, 0) && !p.heat_in_flight()); ++guard) {}
+  // Same samples, nothing else to trigger a rebuild: the request alone must bring the walls in.
+  for (int guard = 0; guard < 1000000 && !(p.heat_step(1, 0) && !p.heat_in_flight()); ++guard) {}
+  CHECK(p.front_baked());
+  std::printf("bake late: %u rebuilds, %d failures\n", p.heat_rebuilds(), failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_a_bake_request_during_the_first_image_is_not_lost(gen, schema, example, tmp_path):
+    """The bake can become ready while the first image is out without it; the request must
+    stay pending until a rebuild with the walls publishes (review of PR 36)."""
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(BAKE_LATE_TEST)
+    text = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/worker.cpp"), str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in text, text
@@ -1474,6 +1712,14 @@ int main() {
   // A small floor still needs a real margin.
   InternalRamGuard small(16 * K);
   CHECK(small.margin() == 8 * K);
+  // A fixed internal allocation at boot (the worker's 16 KiB stack) is taken only if free RAM
+  // stays above floor + margin after it, so the guard is not low from the first sample.
+  CHECK(g.affords(200 * K, 16 * K));               // 184 K left >= 64 + 16
+  CHECK(g.affords(96 * K, 16 * K));                // 80 K left: exactly floor + margin
+  CHECK(!g.affords(95 * K, 16 * K));               // one K short
+  CHECK(!g.affords(8 * K, 16 * K));                // more than there is (no wrap)
+  CHECK(off.affords(17 * K, 16 * K));              // floor off: only that it exists
+  CHECK(!off.affords(15 * K, 16 * K));
   std::printf("guard checks done, %d failures\n", failures);
   return failures == 0 ? 0 : 1;
 }

@@ -40,6 +40,10 @@ class InternalRamGuard {
   std::size_t floor() const { return floor_; }
   /// Free RAM must reach floor() + margin() to end a low spell.
   std::size_t margin() const;
+  /// Whether a fixed internal allocation of `bytes` (made once, at boot) leaves free RAM at or
+  /// above floor() + margin(), given `internal_free` now; with the floor off, whether it fits at
+  /// all. The component asks before it creates the worker task (D-069).
+  bool affords(std::size_t internal_free, std::size_t bytes) const;
   /// Low spells since start-up.
   std::uint32_t spells() const { return spells_; }
 

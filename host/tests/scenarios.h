@@ -136,6 +136,26 @@ inline Scenario panel_like() {
   return s;
 }
 
+/// panel_like() with its plants moved next to walls and corners (14 to 26 px from a wall), as in
+/// an install whose rooms share long walls with pins near their edges: every danger ring's tile
+/// then crosses outline cells of pulsing neighbours, and rings near one corner overlap.
+inline Scenario edge_heavy() {
+  Scenario s = panel_like();
+  for (std::size_t k = 8; k < s.config.pins.size(); ++k) {
+    Pin& p = s.config.pins[k];
+    const int room = static_cast<int>(k % 14);
+    const double w = 1.0 / 6.0, h = 1.0 / 3.0;
+    const double x0 = (room % 6) * w, y0 = (room / 6) * h;
+    // Alternately near the left wall, near the bottom-right corner, and near the top wall.
+    switch (k % 3) {
+      case 0: p.position = MapPoint{x0 + 0.12 * w, y0 + 0.55 * h}; break;
+      case 1: p.position = MapPoint{x0 + 0.86 * w, y0 + 0.92 * h}; break;
+      default: p.position = MapPoint{x0 + 0.5 * w, y0 + 0.06 * h}; break;
+    }
+  }
+  return s;
+}
+
 inline Scenario example_thirsty() {
   const std::string dir = std::string(HEARTHMAP_EXAMPLES_DIR) + "/flat/";
   Scenario s;

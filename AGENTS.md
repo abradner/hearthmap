@@ -319,6 +319,8 @@ runners only (a public repo must never use self-hosted runners: anyone can open 
 - **editor**: in `editor/` with Node 24, `npm ci` from the lockfile, then lint, typecheck, Vitest
   unit tests (including `schema/semantic-cases.json`, shared with core), the production build
   and the Playwright smoke test in Chromium (report uploaded on failure).
+- **tsan**: ui_lvgl's tests built with ThreadSanitizer (Clang), running every case named
+  `worker:*`: the worker hand-off on a real second thread (D-069). A race report fails it.
 - **schema**: installs the pinned validator, runs `schema/validate.py` (every example config and
   fixture, plus cross-references) and `schema/test_schema.py` (mutations that must be rejected).
 - **calibrate**: `pytest` for `tools/calibrate/` on Python 3.11 and 3.13, with the pinned
