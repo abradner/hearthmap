@@ -9,16 +9,26 @@
 #include <string>
 #include <vector>
 
+#include "blitter_select.h"
+#include "display_presenter.h"
 #include "esphome/components/lvgl/lvgl_esphome.h"
 #include "esphome/components/time/real_time_clock.h"
 #include "esphome/core/component.h"
 #include "generated_photos.h"
+#include "heap_watch.h"
 #include "hearthmap/readings.h"
 #include "hearthmap/ui/ports.h"
 #include "hearthmap/ui/screen.h"
 #include "hearthmap/view_model.h"
 #include "hearthmap_gen/generated_config.h"
+#include "hosted_diag.h"
+#include "internal_ram_guard.h"
+#include "loop_breadcrumb.h"
 #include "panel_pipeline.h"
+#include "perf_stats.h"
+#ifdef USE_TOUCHSCREEN
+#include "esphome/components/touchscreen/touchscreen.h"
+#endif
 
 namespace esphome::hearthmap_panel {
 
@@ -29,13 +39,48 @@ void hook_lvgl_log();
 uint32_t lvgl_warnings();
 uint32_t lvgl_errors();
 
+#ifdef USE_TOUCHSCREEN
+/// Tells PerfStats when the touchscreen reports a new contact, so the log can say how long LVGL
+/// took to see it. Registered only when the YAML names the touchscreen (touchscreen_id).
+class TouchProbe : public touchscreen::TouchListener {
+ public:
+  explicit TouchProbe(hearthmap_device::PerfStats* stats) : stats_(stats) {}
+  void touch(touchscreen::TouchPoint tp) override;
+
+ private:
+  hearthmap_device::PerfStats* stats_;
+};
+#endif
+
 class HearthmapComponent : public Component, public hm::ui::EventSink {
  public:
   void set_lvgl(lvgl::LvglComponent* lvgl) { lvgl_ = lvgl; }
+#ifdef USE_TOUCHSCREEN
+  void set_touchscreen(touchscreen::Touchscreen* ts) { touchscreen_ = ts; }
+#endif
   void set_time(time::RealTimeClock* clock) { clock_ = clock; }
   void set_refresh_interval_ms(uint32_t ms) { refresh_interval_ms_ = ms; }
   void set_min_redraw_interval_ms(uint32_t ms) { min_redraw_interval_ms_ = ms; }
   void set_heat_refresh_interval_ms(uint32_t ms) { heat_refresh_interval_ms_ = ms; }
+  void set_blitter_kind(BlitterKind kind) { blitter_kind_ = kind; }
+  /// `present: true` with this display: small animated tiles skip LVGL's refresh (D-058).
+  void set_present_display(display::Display* display) { present_display_ = display; }
+  /// The task watchdog's timeout (esp32: watchdog_timeout), for the stall monitor (D-062).
+  void set_watchdog_ms(uint32_t ms) { watchdog_ms_ = ms; }
+  /// `pulse_sprites: still | off`: a bisecting aid for the Wi-Fi link fault (D-063).
+  void set_pulse_mode(hm::ui::PulseMode mode) { pulse_mode_ = mode; }
+  /// `internal_ram_floor`: below it, warn and pause sprite builds (D-064). 0: off.
+  void set_internal_ram_floor(uint32_t bytes) { ram_guard_ = InternalRamGuard(bytes); }
+  /// `heap_probe`: what the once-a-second memory check reads (heap_watch.h, D-067).
+  void set_heap_probe(HeapProbe probe) { heap_probe_ = probe; }
+  /// `ui_storage: system`: leave the UI's bulk storage on malloc, as before D-064 (bisecting).
+  void set_ui_storage_psram(bool psram) { ui_storage_psram_ = psram; }
+
+  /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
+  /// setup().
+  hm::ui::Blitter& blitter() { return *blitter_; }
+  /// Pass to hm::ui::show_tile_frame(). A NoPresenter unless `present: true`. Valid after setup().
+  hm::ui::Presenter& presenter() { return *presenter_; }
 
   // After LVGL (PROCESSOR) and the YAML-built widgets (PROCESSOR - 5).
   float get_setup_priority() const override { return setup_priority::PROCESSOR - 10.0f; }
@@ -56,14 +101,32 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void refresh_view_(uint32_t start_ms, bool connected);
   void show_view_();
   void invalidate_band_();
+  void handle_publish_();
   void show_status_(const char* text);
   void hide_status_();
+  void hook_perf_();
+  void check_sprite_canaries_();
+  void check_memory_();
+  void log_perf_();
+  static void on_display_event_(lv_event_t* e);
+  static void on_indev_event_(lv_event_t* e);
 
   lvgl::LvglComponent* lvgl_ = nullptr;
   time::RealTimeClock* clock_ = nullptr;
   uint32_t refresh_interval_ms_ = 30000;
   uint32_t min_redraw_interval_ms_ = 500;
   uint32_t heat_refresh_interval_ms_ = 15000;
+  BlitterKind blitter_kind_ = BlitterKind::Software;
+  std::unique_ptr<hm::ui::Blitter> blitter_;
+  const char* blitter_name_ = "software";
+  display::Display* present_display_ = nullptr;
+  std::unique_ptr<hm::ui::Presenter> presenter_;
+  const char* presenter_name_ = "off";
+  uint32_t watchdog_ms_ = 5000;
+  bool stall_monitor_ = false;
+  Crumb crumb_before_refresh_ = Crumb::Elsewhere;
+  bool presenting_ = false;  ///< a DisplayPresenter is up: pulse frames are shown from loop()
+  hm::ui::PulseMode pulse_mode_ = hm::ui::PulseMode::Animated;
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline
@@ -81,11 +144,31 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   bool connected_ = false;  ///< The API connection state the last view was built with.
   bool first_heat_logged_ = false;
   bool heat_active_ = false;  ///< A heat rebuild is in flight (for the timing log).
-  bool dimmed_ = false;       ///< The last Screen update dimmed the heat image.
+  bool dimmed_ = false;       ///< The last Screen update hid the heat image as behind.
   uint32_t heat_started_ms_ = 0;
   uint32_t last_view_ms_ = 0;
+  uint32_t last_sprite_frames_ = 0;
+  uint32_t last_sprite_dropped_ = 0;
+  uint64_t last_sprite_frame_us_ = 0;
+  hm::ui::Screen::ShownFrames shown_frames_;
+  uint64_t last_sprite_prepare_us_ = 0;
+  uint32_t last_sprite_not_ready_ = 0;
+  uint32_t last_canary_check_ms_ = 0;
+  uint32_t canary_failures_ = 0;  ///< since boot
+  bool canary_logged_ = false;
+  bool rebake_requested_ = false;
+  bool pressed_ = false;  ///< A press was seen and heat work is held (kHeatHoldAfterPressMs).
+  uint32_t last_press_ms_ = 0;
 
-  hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, in PSRAM.
+  InternalRamGuard ram_guard_{64U * 1024U};
+  HeapProbe heap_probe_ = HeapProbe::Counters;
+  bool ui_storage_psram_ = true;
+  MemorySample last_memory_;  ///< the latest sample, for the perf mem line
+  uint32_t last_memory_check_ms_ = 0;
+  uint32_t captures_at_ok_ = 0;  ///< sprite captures at the last sample above the floor
+  bool sprites_paused_ = false;
+
+  hm::Rgb565* heat_pixels_ = nullptr;  ///< rasterizer().pixel_count() pixels, from the port.
   hm::Rgb565* heat_back_ = nullptr;    ///< The second buffer frames render into.
   int32_t band_row_ = 1 << 30;         ///< Next heat-image row to invalidate; past the end: none.
   uint32_t last_band_ms_ = 0;
@@ -93,6 +176,12 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   hearthmap_device::GeneratedPhotos photos_;
   std::unique_ptr<hm::ui::Screen> screen_;
   lv_obj_t* status_ = nullptr;
+
+  hearthmap_device::PerfStats perf_;  ///< Where the time goes; one DEBUG line per window.
+#ifdef USE_TOUCHSCREEN
+  touchscreen::Touchscreen* touchscreen_ = nullptr;
+  std::unique_ptr<TouchProbe> touch_probe_;
+#endif
 };
 
 }  // namespace esphome::hearthmap_panel

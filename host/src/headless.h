@@ -33,6 +33,9 @@ class HeadlessDisplay {
   /// A press and release at (x, y) at the current time, delivered through LVGL's input
   /// pipeline exactly as a touch panel would deliver it.
   void tap(std::int32_t x, std::int32_t y);
+  /// The two halves of tap(), for tests of what a press shows before it is released.
+  void press(std::int32_t x, std::int32_t y);
+  void release();
 
   /// Render the whole screen now into framebuffer().
   void render();

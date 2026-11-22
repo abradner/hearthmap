@@ -1,8 +1,11 @@
 #include "hearthmap/ui/screen.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -12,8 +15,15 @@
 
 #include "hearthmap/geometry.h"
 #include "hearthmap/ui/format.h"
+#include "hearthmap/ui/memory.h"
 #include "hearthmap/ui/theme.h"
 #include "image_util.h"
+#include "map_bake.h"
+#include "pulse_layer.h"
+// The cover-check result is only writable through LVGL's private struct
+// (detail::opaque_image_cover_cb). The root of the LVGL tree is on the include path in both builds
+// (the host's CMake, and LVGL's own ESP-IDF component description).
+#include "lvgl_private.h"
 
 namespace hearthmap::ui {
 
@@ -27,12 +37,12 @@ constexpr int kPlainDotRadius = 7;
 constexpr int kPlainDotBorder = 3;
 constexpr int kPlantRadius = 22;
 constexpr int kPinRingWidth = 6;
-constexpr int kPulseFrom = 26;
-constexpr int kPulseTo = 52;
-constexpr int kPulseWidth = 4;
-constexpr std::uint32_t kPulsePeriodMs = 1600;
-constexpr std::uint32_t kRoomPulseHalfPeriodMs = 1400;  // ~2.8 s full cycle
-constexpr int kRoomPulseWidth = 5;
+// Pulses are pre-rendered sprites (D-053, pulse_layer.h).
+constexpr std::size_t kDefaultBakeMemory = 4U * 1024U * 1024U;
+constexpr std::int32_t kPinOverflow = 140;  // how far a pin's value pill and badge may reach
+// The heat image's strips (D-052), and how fast they come back after it caught up.
+constexpr std::int32_t kHeatStrips = 16;
+constexpr std::uint32_t kRevealStepMs = 30;
 constexpr int kBadgeW = 28;
 constexpr int kHudTextWidth = 146;  // card 328 - text x 84 - "100%" at 28 px - margins
 constexpr int kPillMaxWidth = 120;  // room labels keep clear of a value pill this wide
@@ -48,6 +58,7 @@ constexpr int kOverlayH = 600;
 constexpr int kOverlayPad = 32;
 constexpr int kOverlayDiscRadius = 64;
 constexpr int kOverlayInnerW = kOverlayW - 2 * kOverlayPad;
+constexpr int kHintGap = 10;  // card bottom to the "tap outside" hint
 constexpr int kBarH = 18;
 constexpr int kStatColumns = 3;
 constexpr std::size_t kMaxStats = 6;
@@ -150,19 +161,6 @@ void badge_draw_cb(lv_event_t* e) {
   d.p[2].y = a.y2 - 2;
   d.color = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
   lv_draw_triangle(layer, &d);
-}
-
-void room_pulse_exec(void* var, std::int32_t v) {
-  // Opacity 0.35..1 on an eased (sine-like) ramp.
-  const std::int32_t opa = 89 + ((255 - 89) * v) / 1000;
-  lv_obj_set_style_line_opa(static_cast<lv_obj_t*>(var), static_cast<lv_opa_t>(opa), 0);
-}
-
-void pin_pulse_exec(void* var, std::int32_t v) {
-  auto* ring = static_cast<lv_obj_t*>(var);
-  const std::int32_t r = kPulseFrom + ((kPulseTo - kPulseFrom) * v) / 1000;
-  lv_obj_set_size(ring, 2 * r, 2 * r);
-  lv_obj_set_style_border_opa(ring, static_cast<lv_opa_t>((255 * (1000 - v)) / 1000), 0);
 }
 
 // ---- what each widget shows, for diffing ----------------------------------------------------
@@ -286,6 +284,18 @@ struct Screen::Impl {
   LeafImage overlay_leaf_stale{88, theme::kLeafStale};
 
   std::vector<std::vector<lv_point_precise_t>> room_points;
+  BulkPtr<detail::PulseLayer> pulses;  // bulk storage, like everything sized by pixels (D-064)
+  PulseMode pulse_mode = PulseMode::Animated;
+  lv_obj_t* press_marker = nullptr;
+  struct RoundPhoto {
+    BulkBuffer<std::uint16_t> px;
+    lv_image_dsc_t dsc{};
+  };
+  std::map<std::string, BulkPtr<RoundPhoto>, std::less<>> round_photos;
+  BulkPtr<detail::MapBake> bake;
+  std::vector<lv_obj_t*> walls;
+  std::optional<bool> objects_baked;
+
   std::vector<Disc> pin_disc;  // per pin; holder == nullptr for plain pins
   std::vector<lv_obj_t*> pin_dot;
   std::vector<Disc> hud_disc;
@@ -304,6 +314,16 @@ struct Screen::Impl {
   std::optional<std::string> summary_text;
   std::optional<bool> summary_offline;
   std::optional<bool> heat_dimmed;
+  /// The heat image is drawn as kHeatStrips horizontal image objects over slices of the
+  /// embedder's buffer (D-052). While the image is behind the active layer every strip is
+  /// hidden, so the map shows the background under the walls, labels and pins (a cheap fill, no
+  /// image); when it catches up the strips come back one per timer tick, so the new image is
+  /// revealed in bands rather than in one long refresh.
+  const lv_image_dsc_t* heat_src = nullptr;
+  const void* heat_data = nullptr;        ///< heat_src->data the strips point into
+  std::vector<lv_image_dsc_t> strip_dsc;  // sized once: the strips keep pointers
+  std::vector<lv_obj_t*> heat_strips;
+  lv_timer_t* reveal_timer = nullptr;
   std::optional<std::vector<Layer>> tab_layers;
   std::optional<Layer> tab_active;
   std::vector<std::optional<Severity>> room_pulse;
@@ -347,6 +367,34 @@ struct Screen::Impl {
         UiEvent::tap_map(CanvasPoint{static_cast<double>(p.x), static_cast<double>(p.y)}));
   }
 
+  // A press on a pin is acknowledged at once by a ring around it (D-056), drawn in the next
+  // refresh, before the tap's event has been applied: core's hit_test() says which pin.
+  static void on_map_press(lv_event_t* e) {
+    Impl* s = self(e);
+    lv_indev_t* indev = lv_indev_active();
+    if (indev == nullptr || s->press_marker == nullptr) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    lv_area_t root;
+    lv_obj_get_coords(s->w.root, &root);
+    const HitResult hit = hit_test(s->config, CanvasPoint{static_cast<double>(p.x - root.x1),
+                                                          static_cast<double>(p.y - root.y1)});
+    if (hit.kind != HitResult::Kind::Pin || hit.index >= s->config.pins.size()) return;
+    const lv_point_precise_t c = s->map_px(s->config.pins[hit.index].position);
+    const std::int32_t r = in_pot(s->config.pins[hit.index].kind)
+                               ? kPlantRadius + 6
+                               : kPlainDotRadius + kPlainDotBorder + 6;
+    lv_obj_set_size(s->press_marker, 2 * r, 2 * r);
+    lv_obj_set_pos(s->press_marker, static_cast<std::int32_t>(c.x) - r,
+                   static_cast<std::int32_t>(c.y) - r);
+    lv_obj_set_hidden(s->press_marker, false);
+  }
+
+  static void on_map_release(lv_event_t* e) {
+    Impl* s = self(e);
+    if (s->press_marker != nullptr) lv_obj_set_hidden(s->press_marker, true);
+  }
+
   static void on_tab_click(lv_event_t* e) {
     auto* obj = lv_event_get_current_target_obj(e);
     const auto layer =
@@ -368,8 +416,18 @@ struct Screen::Impl {
   // ---- construction ---------------------------------------------------------------------------
 
   // LVGL frees the tree with its parent: if the embedder deletes the parent first, forget every
-  // widget so update() and ~Screen() never touch freed objects.
-  static void on_root_deleted(lv_event_t* e) { self(e)->w = ScreenWidgets{}; }
+  // widget so update() and ~Screen() never touch freed objects, and stop the pulse clock.
+  static void on_root_deleted(lv_event_t* e) {
+    Impl* s = self(e);
+    s->w = ScreenWidgets{};
+    if (s->pulses) s->pulses->forget_objects();
+    s->press_marker = nullptr;
+    if (s->bake) s->bake->forget_objects();
+    s->heat_strips.clear();
+    s->stop_reveal_timer();
+  }
+
+  ~Impl() { stop_reveal_timer(); }
 
   void build_root(lv_obj_t* parent) {
     w.root = make_box(parent);
@@ -508,15 +566,14 @@ struct Screen::Impl {
     allow_overflow(w.map, 160);
     lv_obj_set_clickable(w.map, true);
     lv_obj_add_event_cb(w.map, on_map_click, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(w.map, on_map_press, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(w.map, on_map_release, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(w.map, on_map_release, LV_EVENT_PRESS_LOST, this);
 
-    w.heat_image = lv_image_create(w.map);
-    lv_obj_remove_style_all(w.heat_image);
-    lv_obj_set_clickable(w.heat_image, false);
-    lv_obj_set_pos(w.heat_image, 0, 0);
-    if (heat != nullptr) lv_image_set_src(w.heat_image, heat);
+    build_heat_strips(heat);
 
-    // Walls (indoor rooms; the outdoor fill comes from the heat image), then the pulse outlines
-    // on top, so a pulsing room's outline covers its walls.
+    // Walls (indoor rooms; the outdoor fill comes from the heat image). The pulse outlines are
+    // sprites above the pins (build_pulses()).
     room_points.resize(config.rooms.size());
     for (std::size_t r = 0; r < config.rooms.size(); ++r) {
       auto& pts = room_points[r];
@@ -533,18 +590,7 @@ struct Screen::Impl {
       lv_obj_set_style_line_width(wall, 2, 0);
       lv_obj_set_style_line_color(wall, hex(theme::kWall), 0);
       lv_obj_set_style_line_opa(wall, LV_OPA_COVER, 0);
-    }
-    for (std::size_t r = 0; r < config.rooms.size(); ++r) {
-      lv_obj_t* pulse = lv_line_create(w.map);
-      lv_obj_remove_style_all(pulse);
-      lv_obj_set_clickable(pulse, false);
-      lv_line_set_points(pulse, room_points[r].data(),
-                         static_cast<std::uint32_t>(room_points[r].size()));
-      lv_obj_set_style_line_width(pulse, kRoomPulseWidth, 0);
-      lv_obj_set_style_line_rounded(pulse, true, 0);
-      lv_obj_set_style_line_opa(pulse, LV_OPA_COVER, 0);
-      lv_obj_set_hidden(pulse, true);
-      w.room_pulse.push_back(pulse);
+      walls.push_back(wall);
     }
     for (std::size_t r = 0; r < config.rooms.size(); ++r) {
       lv_obj_t* label = make_label(w.map, deps.fonts.px20, theme::kTextSecondary);
@@ -554,24 +600,7 @@ struct Screen::Impl {
     }
     room_pulse.assign(config.rooms.size(), std::nullopt);
 
-    // Danger pulses below every pin, then the pins.
-    w.pin_pulse.assign(config.pins.size(), nullptr);
-    for (std::size_t i = 0; i < config.pins.size(); ++i) {
-      const lv_point_precise_t c = map_px(config.pins[i].position);
-      lv_obj_t* holder = make_box(w.map);
-      allow_overflow(holder, 8);
-      lv_obj_set_size(holder, 2 * kPulseTo, 2 * kPulseTo);
-      lv_obj_set_pos(holder, c.x - kPulseTo, c.y - kPulseTo);
-      lv_obj_t* ring = make_box(holder);
-      lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-      lv_obj_set_style_border_width(ring, kPulseWidth, 0);
-      lv_obj_set_style_border_color(ring, hex(theme::kDanger), 0);
-      lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
-      lv_obj_set_size(ring, 2 * kPulseFrom, 2 * kPulseFrom);
-      lv_obj_set_align(ring, LV_ALIGN_CENTER);
-      lv_obj_set_hidden(ring, true);
-      w.pin_pulse[i] = ring;
-    }
+    // The pins, then the pulse sprites above them (they compose the pins themselves).
     pin_disc.assign(config.pins.size(), Disc{});
     pin_dot.assign(config.pins.size(), nullptr);
     w.pin.assign(config.pins.size(), nullptr);
@@ -580,6 +609,160 @@ struct Screen::Impl {
     w.pin_ring.assign(config.pins.size(), nullptr);
     pin_look.assign(config.pins.size(), std::nullopt);
     for (std::size_t i = 0; i < config.pins.size(); ++i) build_pin(i);
+    build_pulses();
+    // Above the pulses: the press acknowledgement ring.
+    press_marker = make_box(w.map);
+    lv_obj_set_style_radius(press_marker, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(press_marker, 3, 0);
+    lv_obj_set_style_border_color(press_marker, hex(theme::kTextPrimary), 0);
+    lv_obj_set_style_border_opa(press_marker, LV_OPA_COVER, 0);
+    lv_obj_set_hidden(press_marker, true);
+    // A press held while sprites are captured or the walls baked must not end up in either.
+    if (pulses) pulses->hide_in_captures(press_marker);
+    if (bake) bake->hide_too(press_marker);
+  }
+
+  /// The overlay disc's photo cut round over the card colour, once per photo (D-056), so the
+  /// disc needs no clipping mask; nullptr when the photo is not a 128 px RGB565 image.
+  const lv_image_dsc_t* rounded_overlay_photo(const Pin& pin, const lv_image_dsc_t* photo) {
+    const int d = 2 * kOverlayDiscRadius;
+    if (photo == nullptr || !pin.photo.has_value() || photo->header.cf != LV_COLOR_FORMAT_RGB565 ||
+        static_cast<int>(photo->header.w) != d || static_cast<int>(photo->header.h) != d ||
+        photo->data == nullptr)
+      return nullptr;
+    auto it = round_photos.find(*pin.photo);
+    if (it != round_photos.end()) return &it->second->dsc;
+    // Made on first opening, long after start-up: without memory for the holder or the cut copy
+    // the disc shows the photo as it is (the caller's fallback), never an abort (D-064).
+    auto round = try_make_bulk<RoundPhoto>();
+    if (!round || !round->px.resize(static_cast<std::size_t>(d) * static_cast<std::size_t>(d)))
+      return nullptr;
+    const auto* src = reinterpret_cast<const std::uint16_t*>(photo->data);
+    const std::uint16_t card = rgb565(theme::kCard);
+    const float rr = static_cast<float>(kOverlayDiscRadius);
+    for (int y = 0; y < d; ++y) {
+      for (int x = 0; x < d; ++x) {
+        const float dx = static_cast<float>(x) + 0.5f - rr;
+        const float dy = static_cast<float>(y) + 0.5f - rr;
+        const float cov = std::min(1.0f, std::max(0.0f, rr - std::sqrt(dx * dx + dy * dy) + 0.5f));
+        const std::size_t i =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(d) + static_cast<std::size_t>(x);
+        round->px[i] = blend565(card, src[i], static_cast<std::uint32_t>(cov * 255.0f + 0.5f));
+      }
+    }
+    detail::fill_image_dsc(round->dsc, LV_COLOR_FORMAT_RGB565, static_cast<std::uint32_t>(d),
+                           static_cast<std::uint32_t>(d), 2, round->px.data());
+    const lv_image_dsc_t* out = &round->dsc;
+    round_photos.emplace(*pin.photo, std::move(round));
+    return out;
+  }
+
+  void build_pulses() {
+    // Sprites and the bake capture in display coordinates: take the map's real position, which
+    // differs from the canvas one when the embedder's parent is not at the display's origin.
+    lv_obj_update_layout(w.root);
+    lv_area_t map_coords;
+    lv_obj_get_coords(w.map, &map_coords);
+    CanvasRect a = config.canvas.map_area;
+    a.x = map_coords.x1;
+    a.y = map_coords.y1;
+    std::vector<lv_point_t> centres;
+    for (const Pin& pin : config.pins) {
+      const lv_point_precise_t c = map_px(pin.position);
+      centres.push_back(lv_point_t{static_cast<std::int32_t>(c.x), static_cast<std::int32_t>(c.y)});
+    }
+    detail::PulseBudget budget;
+    if (deps.pulse_memory_bytes != 0) budget.memory_bytes = deps.pulse_memory_bytes;
+    budget.micros = deps.micros;
+    budget.min_divisor = deps.pulse_min_divisor;
+    pulses = make_bulk<detail::PulseLayer>(
+        w.map, lv_point_t{a.x, a.y}, lv_point_t{a.width, a.height}, room_points, centres, w.pin,
+        budget,
+        deps.sprite_composer != nullptr ? *deps.sprite_composer : detail::cpu_sprite_composer());
+    w.room_pulse = pulses->room_objects();
+    w.pin_pulse = pulses->ring_objects();
+    w.outline_pulse = pulses->outline_object();
+
+    // The walls and room labels, baked into the heat image when memory allows (D-055).
+    std::vector<lv_obj_t*> draw = walls;
+    // Labels too narrow for their room were hidden by place_room_label(): not drawn, not baked.
+    for (lv_obj_t* l : w.room_label) {
+      if (!lv_obj_is_hidden(l)) draw.push_back(l);
+    }
+    std::vector<lv_obj_t*> hide{w.heat_image};
+    for (lv_obj_t* p : w.pin) hide.push_back(p);
+    hide.push_back(w.outline_pulse);
+    for (lv_obj_t* o : w.pin_pulse) hide.push_back(o);
+    const lv_area_t area{a.x, a.y, a.x + a.width - 1, a.y + a.height - 1};
+    bake = make_bulk<detail::MapBake>(w.map, area, std::move(draw), std::move(hide));
+    const std::size_t bake_budget =
+        deps.bake_memory_bytes != 0 ? deps.bake_memory_bytes : kDefaultBakeMemory;
+    if (bake->bytes_needed() <= bake_budget) bake->start();
+  }
+
+  void update_baked(bool baked) {
+    if (!bake || objects_baked == baked) return;
+    // Only an image that carries the bake may stand in for the wall and label objects.
+    const bool hide = baked && bake->ready();
+    bake->set_objects_hidden(hide);
+    objects_baked = baked;
+    count();
+  }
+
+  void build_heat_strips(const lv_image_dsc_t* heat) {
+    w.heat_image = make_box(w.map);
+    lv_obj_set_pos(w.heat_image, 0, 0);
+    heat_src = heat;
+    if (heat == nullptr || heat->data == nullptr) {
+      lv_obj_set_size(w.heat_image, config.canvas.map_area.width, config.canvas.map_area.height);
+      return;
+    }
+    const auto width = static_cast<std::int32_t>(heat->header.w);
+    const auto height = static_cast<std::int32_t>(heat->header.h);
+    const std::uint32_t stride = heat->header.stride;
+    lv_obj_set_size(w.heat_image, width, height);
+    const std::int32_t n = std::max<std::int32_t>(1, std::min<std::int32_t>(kHeatStrips, height));
+    strip_dsc.assign(static_cast<std::size_t>(n), *heat);
+    heat_data = heat->data;
+    for (std::int32_t k = 0; k < n; ++k) {
+      const std::int32_t y0 = height * k / n;
+      const std::int32_t y1 = height * (k + 1) / n;
+      lv_image_dsc_t& d = strip_dsc[static_cast<std::size_t>(k)];
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+// lv_image_header_t is a set of bit-fields; a strip's height is at most the image's.
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
+      d.header.h = static_cast<std::uint32_t>(y1 - y0);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+      d.data_size = static_cast<std::uint32_t>(y1 - y0) * stride;
+      d.data = heat->data + static_cast<std::size_t>(y0) * stride;
+      lv_obj_t* img = lv_image_create(w.heat_image);
+      lv_obj_remove_style_all(img);
+      lv_obj_set_clickable(img, false);
+      lv_obj_set_pos(img, 0, y0);
+      lv_image_set_src(img, &d);
+      lv_obj_add_event_cb(img, detail::opaque_image_cover_cb, LV_EVENT_COVER_CHECK, nullptr);
+      heat_strips.push_back(img);
+    }
+  }
+
+  /// The embedder swapped the buffer behind its descriptor (a back buffer coming to the front):
+  /// point the strips at the new pixels. Like the single image before, this invalidates nothing;
+  /// the embedder decides when to repaint (invalidate_heat(), or its own bands).
+  void sync_heat_source() {
+    if (heat_src == nullptr || heat_src->data == heat_data || strip_dsc.empty()) return;
+    std::size_t offset = 0;
+    for (lv_image_dsc_t& d : strip_dsc) {
+      d.data = heat_src->data + offset;
+      offset += d.data_size;
+    }
+    heat_data = heat_src->data;
+    // The map under every sprite changed: a new image of the same layer (the embedder's buffer
+    // swap), close to the old one, so sprites keep their old background until recaptured.
+    if (pulses) pulses->mark_all_dirty(false);
   }
 
   lv_obj_t* make_badge(lv_obj_t* parent) {
@@ -598,7 +781,7 @@ struct Screen::Impl {
     const lv_point_precise_t c = map_px(pin.position);
     if (in_pot(pin.kind)) {
       lv_obj_t* box = make_box(w.map);
-      allow_overflow(box, 140);
+      allow_overflow(box, kPinOverflow);
       lv_obj_set_size(box, 2 * kPlantRadius, 2 * kPlantRadius);
       lv_obj_set_pos(box, c.x - kPlantRadius, c.y - kPlantRadius);
       Disc d = make_disc(box, kPlantRadius, kPinRingWidth);
@@ -614,7 +797,7 @@ struct Screen::Impl {
     } else {
       constexpr int r = kPlainDotRadius + kPlainDotBorder;
       lv_obj_t* box = make_box(w.map);
-      allow_overflow(box, 140);
+      allow_overflow(box, kPinOverflow);
       lv_obj_set_size(box, 2 * r, 2 * r);
       lv_obj_set_pos(box, c.x - r, c.y - r);
       lv_obj_t* dot = make_circle(box, r, theme::kTextPrimary);
@@ -749,32 +932,49 @@ struct Screen::Impl {
 
   void build_overlay() {
     const Fonts& f = deps.fonts;
+    // The scrim draws nothing and is only as big as the card and its hint, so opening and
+    // closing the overlay repaint that area, not the whole screen (D-052). Its click area is
+    // extended past every screen edge, so a tap anywhere outside the card still lands on it.
+    const std::int32_t hint_h = static_cast<std::int32_t>(lv_font_get_line_height(f.px20)) + 4;
     w.scrim = make_box(w.root);
-    lv_obj_set_pos(w.scrim, 0, 0);
-    lv_obj_set_size(w.scrim, config.canvas.width, config.canvas.height);
-    lv_obj_set_style_bg_color(w.scrim, hex(theme::kScrim), 0);
-    lv_obj_set_style_bg_opa(w.scrim, theme::kScrimOpa, 0);
+    lv_obj_set_pos(w.scrim, (config.canvas.width - kOverlayW) / 2,
+                   (config.canvas.height - kOverlayH) / 2);
+    lv_obj_set_size(w.scrim, kOverlayW, kOverlayH + kHintGap + hint_h);
     lv_obj_set_clickable(w.scrim, true);
+    lv_obj_set_ext_click_area(w.scrim, std::max(config.canvas.width, config.canvas.height));
     lv_obj_add_event_cb(w.scrim, on_scrim_click, LV_EVENT_CLICKED, this);
     lv_obj_set_hidden(w.scrim, true);
 
     lv_obj_t* card = make_box(w.scrim);
     w.overlay_card = card;
     lv_obj_set_size(card, kOverlayW, kOverlayH);
-    lv_obj_set_pos(card, (config.canvas.width - kOverlayW) / 2,
-                   (config.canvas.height - kOverlayH) / 2);
-    lv_obj_set_style_radius(card, 20, 0);
+    lv_obj_set_pos(card, 0, 0);
+    // Square, opaque, its 2 px stroke as four thin fills (D-056): a rounded corner and a border
+    // are masked shapes LVGL draws at about 1 us per pixel of the card's area on the panel.
     lv_obj_set_style_bg_color(card, hex(theme::kCard), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_border_color(card, hex(theme::kCardStroke), 0);
-    lv_obj_set_style_border_opa(card, LV_OPA_COVER, 0);
+    for (const lv_area_t& edge : {lv_area_t{0, 0, kOverlayW - 1, 1},
+                                  lv_area_t{0, kOverlayH - 2, kOverlayW - 1, kOverlayH - 1},
+                                  lv_area_t{0, 0, 1, kOverlayH - 1},
+                                  lv_area_t{kOverlayW - 2, 0, kOverlayW - 1, kOverlayH - 1}}) {
+      lv_obj_t* line = make_box(card);
+      lv_obj_set_pos(line, edge.x1, edge.y1);
+      lv_obj_set_size(line, lv_area_get_width(&edge), lv_area_get_height(&edge));
+      lv_obj_set_style_bg_color(line, hex(theme::kCardStroke), 0);
+      lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+    }
     // Clickable with no handler: a tap on the card is absorbed (sends nothing).
     lv_obj_set_clickable(card, true);
 
-    lv_obj_t* hint = make_label(w.scrim, f.px20, theme::kTextMuted);
+    // With no dimmed backdrop the hint sits on the map: an opaque pill keeps it readable.
+    lv_obj_t* hint = make_label(w.scrim, f.px20, theme::kTextSecondary);
     lv_label_set_text(hint, "Tap outside to close");
-    lv_obj_align_to(hint, card, LV_ALIGN_OUT_BOTTOM_MID, 0, 14);
+    lv_obj_set_style_bg_color(hint, hex(theme::kBackground), 0);
+    lv_obj_set_style_bg_opa(hint, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(hint, 6, 0);
+    lv_obj_set_style_pad_hor(hint, 10, 0);
+    lv_obj_set_style_pad_ver(hint, 2, 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, kOverlayH + kHintGap);
 
     // Header
     overlay_disc = make_disc(card, kOverlayDiscRadius, 8);
@@ -927,6 +1127,8 @@ struct Screen::Impl {
         lv_obj_set_flex_align(pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_clickable(pill, true);
+        // Pressed: the pill lightens at once, before the layer changes (D-056).
+        lv_obj_set_style_bg_color(pill, hex(theme::kCardStroke), LV_STATE_PRESSED);
         lv_obj_set_user_data(pill,
                              reinterpret_cast<void*>(static_cast<std::uintptr_t>(index_of(layer))));
         lv_obj_add_event_cb(pill, on_tab_click, LV_EVENT_CLICKED, this);
@@ -957,24 +1159,8 @@ struct Screen::Impl {
       const Severity sev = rv.pulse == Severity::Stale ? Severity::Ok : rv.pulse;
       auto& prev = room_pulse[rv.room_index];
       if (prev == sev) continue;
-      lv_obj_t* line = w.room_pulse[rv.room_index];
-      lv_anim_delete(line, room_pulse_exec);
-      if (sev == Severity::Ok) {
-        set_hidden(line, true);
-      } else {
-        lv_obj_set_style_line_color(line, hex(severity_colour(sev)), 0);
-        set_hidden(line, false);
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, line);
-        lv_anim_set_exec_cb(&a, room_pulse_exec);
-        lv_anim_set_values(&a, 0, 1000);
-        lv_anim_set_duration(&a, kRoomPulseHalfPeriodMs);
-        lv_anim_set_reverse_duration(&a, kRoomPulseHalfPeriodMs);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-        lv_anim_start(&a);
-      }
+      if (pulses) pulses->set_room(rv.room_index, sev != Severity::Ok, severity_colour(sev));
+      count();
       prev = sev;
     }
   }
@@ -1038,21 +1224,8 @@ struct Screen::Impl {
         set_hidden(w.pin_badge[i], look.badge == Severity::Ok);
       }
       if (first || prev->pulse != look.pulse) {
-        lv_obj_t* ring = w.pin_pulse[i];
-        lv_anim_delete(ring, pin_pulse_exec);
-        set_hidden(ring, !look.pulse);
-        if (look.pulse) {
-          lv_anim_t a;
-          lv_anim_init(&a);
-          lv_anim_set_var(&a, ring);
-          lv_anim_set_exec_cb(&a, pin_pulse_exec);
-          lv_anim_set_values(&a, 0, 1000);
-          lv_anim_set_duration(&a, kPulsePeriodMs);
-          lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-          lv_anim_set_path_cb(&a, lv_anim_path_linear);
-          lv_anim_set_early_apply(&a, true);
-          lv_anim_start(&a);
-        }
+        if (pulses) pulses->set_ring(i, look.pulse);
+        count();
       }
       const Pin& pin = config.pins[i];
       if (in_pot(pin.kind)) {
@@ -1084,6 +1257,14 @@ struct Screen::Impl {
                                     hex(look.stale ? theme::kStale : theme::kTextPrimary), 0);
           count();
         }
+      }
+      // What the pin draws reaches into nearby sprites: recapture them. A pin container may draw
+      // up to its overflow (kPinOverflow) beyond itself (value pill, badge).
+      if (pulses && !first) {
+        lv_area_t a;
+        lv_obj_get_coords(w.pin[i], &a);
+        lv_area_increase(&a, kPinOverflow, kPinOverflow);
+        pulses->mark_dirty(a);
       }
       prev = look;
     }
@@ -1233,10 +1414,63 @@ struct Screen::Impl {
 
   void update_heat_dim(bool behind) {
     if (heat_dimmed == behind || w.heat_image == nullptr) return;
-    // A style change invalidates the whole image: one full map repaint each way (D-047).
-    lv_obj_set_style_image_opa(w.heat_image, behind ? LV_OPA_40 : LV_OPA_COVER, 0);
+    if (behind) {
+      // Hide the whole image at once: no colours of another layer, and the refresh is the
+      // background fill under the walls, labels and pins (D-047, D-052). Sprites captured the
+      // old image, so they go too until the new one is revealed and they are recaptured.
+      stop_reveal_timer();
+      for (lv_obj_t* strip : heat_strips) lv_obj_set_hidden(strip, true);
+      if (pulses) {
+        pulses->set_veiled(true);
+        pulses->mark_all_dirty(true);
+      }
+    } else if (heat_dimmed.has_value()) {
+      // Reveal the new image a strip at a time, from the top.
+      if (reveal_timer == nullptr)
+        reveal_timer = lv_timer_create(on_reveal_tick, kRevealStepMs, this);
+      if (reveal_timer == nullptr) {
+        // No timer (LVGL out of memory): reveal everything at once rather than never.
+        while (reveal_step_now()) {
+        }
+        finish_reveal();
+      }
+    }
     count();
     heat_dimmed = behind;
+  }
+
+  static void on_reveal_tick(lv_timer_t* t) {
+    static_cast<Impl*>(lv_timer_get_user_data(t))->reveal_step();
+  }
+
+  /// Shows the next hidden strip; false when none was left (and the reveal is finished).
+  bool reveal_step_now() {
+    for (lv_obj_t* strip : heat_strips) {
+      if (lv_obj_is_hidden(strip)) {
+        lv_obj_set_hidden(strip, false);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void reveal_step() {
+    if (reveal_step_now()) return;
+    stop_reveal_timer();
+    finish_reveal();
+  }
+
+  // The new image is whole again: sprites are captured against it before they reappear.
+  void finish_reveal() {
+    if (pulses) {
+      pulses->mark_all_dirty(true);
+      pulses->set_veiled(false);
+    }
+  }
+
+  void stop_reveal_timer() {
+    if (reveal_timer != nullptr) lv_timer_delete(reveal_timer);
+    reveal_timer = nullptr;
   }
 
   void update_overlay(const ViewModel& vm, Timestamp now, bool restamped) {
@@ -1265,8 +1499,14 @@ struct Screen::Impl {
         }
         if (all || prev->stale != o.stale) {
           if (pin.kind == PinKind::Plant) {
-            set_disc_image(overlay_disc, photo_for(pin, 2 * kOverlayDiscRadius),
+            const lv_image_dsc_t* photo = photo_for(pin, 2 * kOverlayDiscRadius);
+            const lv_image_dsc_t* round = rounded_overlay_photo(pin, photo);
+            set_disc_image(overlay_disc, round != nullptr ? round : photo,
                            o.stale ? &overlay_leaf_stale : &overlay_leaf);
+            // A photo already cut round over the card needs no clipping mask (D-056).
+            lv_obj_set_style_clip_corner(overlay_disc.face, round == nullptr, 0);
+            lv_obj_set_style_bg_opa(overlay_disc.face,
+                                    round == nullptr ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
           } else {
             set_disc_image(overlay_disc, nullptr, nullptr);
           }
@@ -1331,8 +1571,10 @@ Screen::~Screen() {
 void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now,
                     const SourceStatus& status) {
   if (impl_->w.root == nullptr) return;  // the tree went with its parent
+  impl_->sync_heat_source();
   impl_->update_header(header, status.offline);
   impl_->update_heat_dim(status.heat_behind);
+  impl_->update_baked(status.heat_baked);
   impl_->update_tabs(vm);
   impl_->update_rooms(vm);
   impl_->update_pins(vm);
@@ -1341,7 +1583,96 @@ void Screen::update(const ViewModel& vm, const HeaderText& header, Timestamp now
 }
 
 void Screen::invalidate_heat() {
-  if (impl_->w.heat_image != nullptr) lv_obj_invalidate(impl_->w.heat_image);
+  if (impl_->w.heat_image == nullptr) return;
+  impl_->sync_heat_source();
+  // A repaint the embedder asks for (a layer change, or the host rewriting in place): another
+  // layer's colours may be under every sprite, so they step aside until recaptured.
+  if (impl_->pulses) impl_->pulses->mark_all_dirty(true);
+  lv_obj_invalidate(impl_->w.heat_image);
+}
+
+bool Screen::prepare_step() {
+  if (impl_->w.root == nullptr) return false;
+  // The bake first: sprites captured afterwards see the final map.
+  if (impl_->bake && impl_->bake->prepare_step()) return true;
+  if (impl_->pulse_mode == PulseMode::Off) return false;
+  return impl_->pulses && impl_->pulses->prepare_step();
+}
+
+void Screen::set_pulse_mode(PulseMode mode) {
+  impl_->pulse_mode = mode;
+  if (impl_->pulses) impl_->pulses->set_frozen(mode == PulseMode::Still);
+}
+
+void Screen::set_sprite_builds_paused(bool paused) {
+  if (impl_->pulses) impl_->pulses->set_paused(paused);
+}
+
+bool Screen::bake_ready() const {
+  return impl_->bake && impl_->bake->ready();
+}
+
+bool Screen::bake_rows(std::uint16_t* image, std::int32_t stride, std::int32_t row_begin,
+                       std::int32_t row_end) const {
+  return impl_->bake && impl_->bake->apply(image, stride, row_begin, row_end);
+}
+
+void Screen::set_frames_deferred(bool deferred) {
+  if (impl_->pulses) impl_->pulses->set_defer(deferred);
+}
+
+void Screen::show_due_frames(Presenter& presenter, ShownFrames* tally) {
+  if (impl_->w.root == nullptr || !impl_->pulses) return;
+  // A fallback invalidates the whole tile, and LVGL repaints the whole screen past 32 areas
+  // pending. The main loop calls this on every pass, several times between two refreshes, so the
+  // limit is on what is pending now (whatever invalidated it): past kMaxPendingAreas the
+  // remaining frames wait for a call after the next refresh.
+  constexpr std::uint32_t kMaxPendingAreas = 20;
+  lv_display_t* disp = lv_obj_get_display(impl_->w.root);
+  const BulkVector<detail::PulseLayer::Due>& due = impl_->pulses->take_due();
+  for (const detail::PulseLayer::Due& d : due) {
+    if (disp != nullptr && disp->inv_p >= kMaxPendingAreas) {
+      impl_->pulses->requeue(d);
+      continue;
+    }
+    PresentBlock why = PresentBlock::Ok;
+    const TileShown shown = show_tile_frame(d.image, *d.dsc, d.frame, presenter, &why);
+    if (tally == nullptr) continue;
+    if (shown == TileShown::Presented) {
+      ++tally->presented;
+    } else {
+      ++tally->invalidated;
+      const auto k = static_cast<std::size_t>(why);
+      if (k < tally->blocked.size()) ++tally->blocked[k];
+    }
+  }
+}
+
+PulseCounters Screen::pulse_counters() const {
+  PulseCounters c;
+  if (!impl_->pulses) return c;
+  const detail::PulseStats s = impl_->pulses->stats();
+  c.frames = s.frames;
+  c.dropped = s.dropped;
+  c.captures = s.captures;
+  c.tile_bytes = s.tile_bytes;
+  c.rings_shown = s.rings_shown;
+  c.rooms_animated = s.rooms_animated;
+  c.frame_us = s.frame_us;
+  c.prepare_us = s.prepare_us;
+  c.frame_divisor = s.frame_divisor;
+  c.not_ready = s.not_ready;
+  c.alloc_failures = s.alloc_failures;
+  c.builds_paused = s.paused;
+  return c;
+}
+
+bool Screen::verify_pulse_frames(const char** why) {
+  return !impl_->pulses || impl_->pulses->verify_shown(why);
+}
+
+std::uint32_t Screen::pulse_canary_failures() const {
+  return impl_->pulses ? impl_->pulses->check_canaries() : 0U;
 }
 
 std::size_t Screen::writes() const {

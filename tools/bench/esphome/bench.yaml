@@ -1,0 +1,101 @@
+# Rendering benchmark for the Guition JC8012P4A1 (ESP32-P4). Self-contained: no Wi-Fi, no Home
+# Assistant, no secrets. Results are INFO lines on UART0 tagged "bench" (../README.md).
+#
+#   esphome compile tools/bench/esphome/bench.yaml
+#
+# Variants are substitutions on the command line, for example
+#   esphome -s lvgl_ppa_unit true -s device_name hm-bench-ppa compile tools/bench/esphome/bench.yaml
+
+substitutions:
+  device_name: "hm-bench"
+  # true: force LVGL's PPA draw unit on under ESP-IDF 5.5 (components/hm_bench/__init__.py)
+  lvgl_ppa_unit: "false"
+  # true: run only the present self-check, and hold its side-by-side screen for 10 minutes
+  selfcheck_only: "false"
+  period: "30s"
+  # ESPHome's named or numeric ESP-IDF version ("recommended" is 5.5.6 in 2026.11.0)
+  idf_version: "recommended"
+  display_model: "JC8012P4A1"
+
+esphome:
+  name: ${device_name}
+  min_version: 2026.11.0
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [hm_bench]
+
+esp32:
+  variant: esp32p4
+  engineering_sample: true
+  flash_size: 16MB
+  cpu_frequency: 360MHz
+  framework:
+    type: esp-idf
+    version: ${idf_version}
+    advanced:
+      enable_idf_experimental_features: true  # 200 MHz PSRAM
+
+logger:
+  level: INFO
+  hardware_uart: UART0
+
+esp_ldo:
+  - channel: 3   # VDD_MIPI_DPHY
+    voltage: 2.5V
+
+psram:
+  mode: hex
+  speed: 200MHz
+
+i2c:
+  - id: i2c_main
+    sda: GPIO7
+    scl: GPIO8
+    frequency: 400kHz
+
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO23
+    frequency: 20000Hz
+    min_power: 0.03
+    zero_means_zero: true
+
+light:
+  - platform: monochromatic
+    id: display_backlight
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+
+display:
+  - platform: mipi_dsi
+    id: main_display
+    model: ${display_model}
+    update_interval: never
+    auto_clear_enabled: false
+
+touchscreen:
+  - platform: gsl3670
+    id: main_touch
+    model: GUITION-JC8012P4A1
+    display: main_display
+    i2c_id: i2c_main
+
+lvgl:
+  displays:
+    - main_display
+  touchscreens:
+    - main_touch
+  rotation: 90
+  byte_order: little_endian
+  default_font: montserrat_24
+  widgets: []
+
+hm_bench:
+  display_id: main_display
+  lvgl_ppa_unit: ${lvgl_ppa_unit}
+  selfcheck_only: ${selfcheck_only}
+  period: ${period}

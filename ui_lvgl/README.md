@@ -18,9 +18,13 @@ Its visual contract is the approved UI spec (mockup A); the sample render in
 | `hearthmap/ui/fonts.h` | `Fonts`: the only place font choice lives |
 | `hearthmap/ui/format.h` | Value text, moisture percent, ring length, verdicts, status colours, the house summary's words |
 | `hearthmap/ui/theme.h` | The spec's colours and fixed geometry |
+| `hearthmap/ui/blitter.h` | `Blitter` (RGB565 copy, fill, constant-alpha blend, 2x scale; clipped) and `SoftwareBlitter`, the portable default (D-054, D-057) |
+| `hearthmap/ui/memory.h` | `BulkMemory`, the embedder's memory port: every buffer the UI sizes by pixels, cells or pulses comes from it (`BulkBuffer`, `BulkVector`, `make_bulk`), never from plain `new` (D-064). The host's is malloc; the panel's is PSRAM only |
+| `hearthmap/ui/present.h` | `Presenter` (an opaque tile straight to the panel), `NoPresenter` (the host's), `present_check()` and `show_tile_frame()`: an animated tile's next frame without an LVGL refresh when that is safe, an invalidation when not (D-058) |
 
-The embedder owns the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 pixels) and its
-`lv_image_dsc_t`, the UI state (core's `UiState`), and the clock. A frame is:
+The embedder owns the memory port (installed with `set_bulk_memory()` before the first Screen or
+rasterizer is made), the heat image buffer (`HeatRasterizer::pixel_count()` RGB565 pixels) and
+its `lv_image_dsc_t`, the UI state (core's `UiState`), and the clock. A frame is:
 
 ```
 build_view_model(config, readings, now, ui_state, vm)            // core, reuse form
@@ -40,8 +44,9 @@ and passes a `SourceStatus` (D-046, D-047).
   counts the touches and the tests pin it. A value change below display precision writes nothing.
 - **Touch.** Pins are not click targets: a tap in the map area is `TapMap` with the tap point,
   and core's `hit_test()` decides what was hit. Tabs send `SelectLayer`, HUD cards
-  `TapHudItem`. While the overlay is open its scrim covers the whole screen: a tap on it sends
-  `CloseOverlay`, a tap on the card sends nothing (`docs/decisions.md` D-013, amended).
+  `TapHudItem`. While the overlay is open its scrim takes every tap outside the card (it draws nothing and is
+  only the card's size, but its click area reaches past every screen edge, D-052): a tap on it
+  sends `CloseOverlay`, a tap on the card sends nothing (`docs/decisions.md` D-013, amended).
 - **Heat image.** Colour is resolved per heat cell through core's `ColourLut`, never per pixel.
   The rasterizer blends neighbouring cells of the pixel's own room in integer arithmetic (so the
   image is bit-identical across compilers), draws outdoor rooms in the outdoor fill, and draws
@@ -54,8 +59,30 @@ and passes a `SourceStatus` (D-046, D-047).
   the widest value pill a plain pin may show; else top-left. This depends on the config only, so
   updates never move a label. The HUD gap shrinks from 10 px (never below 4) so `max_items`
   cards and the "+N more" line end 12 px above the bottom edge; the spec's cap of 7 fits.
-- **Animations.** Room and danger pulses are LVGL animations started and stopped by `update()`;
-  they need nothing from the embedder but LVGL's timer handler.
+- **Pulses are pre-rendered sprites** (D-053, `src/pulse_layer.h`). Every danger ring and room
+  outline is an opaque RGB565 image above the pins. What lies under it is captured once through
+  LVGL's own renderer (`render_area()`, twice: without and with the pins), and each frame is
+  composed by `SpriteComposer::compose()` from look-up tables (ring alpha by distance, outline
+  coverage), keeping the pins' pixels; LVGL only copies the tile. Rings run 20 frames over 1.6 s
+  (radius 26 to 52 px, fading), room outlines 14 eased steps over 2.8 s; one LVGL timer (16 ms)
+  shows the frame for LVGL's tick, so a slow loop drops frames. Captures run in
+  `Screen::prepare_step()`, which the embedder calls from its sliced work (the host until done);
+  a change under a sprite (a pin's look, a new heat image) marks it for recapture. Memory is
+  bounded by `ScreenDeps::pulse_memory_bytes`; at most 4 outlines animate, others hold steady.
+- **Walls and room labels are baked** into the heat image when memory allows (D-055):
+  `prepare_step()` renders them through LVGL into memory (over black and white), and
+  `Screen::bake_rows()` lays them over rows of each new heat image; with
+  `SourceStatus::heat_baked` the objects are hidden and LVGL no longer draws them.
+- **Large pixel moves go through `Blitter`** (`include/hearthmap/ui/blitter.h`: copy, fill,
+  constant-alpha blend, 2x scale; `SoftwareBlitter` by default) and sprite frames through
+  `SpriteComposer` (`sprite_composer.h`, per-pixel blends from tables); both replaceable through
+  `ScreenDeps` (D-054).
+- **The heat image is 16 strip images** over slices of the embedder's buffer (D-052). Each reports
+  that it covers its area when opaque (LVGL 9.6's image widget never does without an opaque
+  background of its own), so a refresh inside the map starts at the image instead of filling the
+  background under it first. While the image is behind its layer every strip is hidden (the map
+  shows the background under walls, labels and pins); when it catches up the strips come back
+  one per 30 ms, so the new image is revealed in bands.
 - **LVGL 9.6 clipping.** `overflow_visible` alone no longer lets children draw outside their
   parent: they are clipped to the parent's extended draw area. Containers whose children stick
   out (pin value labels, badges) set one (`allow_overflow()` in `screen.cpp`); a render test

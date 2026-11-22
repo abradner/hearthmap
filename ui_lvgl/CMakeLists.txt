@@ -8,10 +8,16 @@
 option(HEARTHMAP_UI_BUILTIN_FONTS "Compile builtin_fonts() (LVGL's Montserrat)" ON)
 
 set(HEARTHMAP_UI_SOURCES
+  src/blitter.cpp
+  src/present.cpp
   src/format.cpp
   src/heat_image.cpp
   src/image_util.cpp
+  src/map_bake.cpp
+  src/memory.cpp
+  src/pulse_layer.cpp
   src/screen.cpp
+  src/sprites.cpp
 )
 if(HEARTHMAP_UI_BUILTIN_FONTS)
   list(APPEND HEARTHMAP_UI_SOURCES src/fonts_builtin.cpp)

@@ -124,6 +124,167 @@ def test_readings_ingest(tmp_path):
     assert "0 failures" in out
 
 
+PERF_TEST = r"""
+#include <cstdio>
+#include <cstring>
+#include "perf_stats.h"
+using hearthmap_device::PerfStats;
+using hearthmap_device::PerfWindow;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+int main() {
+  PerfStats p(5000);
+  CHECK(!p.due(1000));            // the first call starts the window
+  CHECK(!p.due(5999));
+  CHECK(p.due(6000));
+
+  // Loop gaps, across a micros() wrap.
+  p.loop_start(0xFFFFFF00u);
+  p.loop_start(0x00000100u);      // 512 us later
+  p.loop_start(0x00001100u);      // 4096 us later
+  p.own_work(300, 1700);
+  p.own_work(100, 0);
+
+  // A refresh that flushed nothing does not count; one that flushed does.
+  p.refresh_start(10000);
+  p.refresh_ready(12000, 12);
+  p.invalidated(100 * 50);
+  p.refresh_start(20000);
+  p.flush_start(21000);
+  p.flush_finish(23000, 4000);
+  p.flush_start(24000);
+  p.flush_finish(25000, 1000);
+  p.refresh_ready(70000, 70);
+  // A REFR_READY without a start (registered mid-refresh) is ignored.
+  p.refresh_ready(90000, 90);
+
+  // Touch: read -> press latency, then click -> applied -> drawn.
+  p.touch_read(100);              // a contact LVGL never saw pressed...
+  p.touch_read(130);              // ...replaced by the next contact: timed from this one
+  p.lvgl_pressed(180);
+  p.lvgl_clicked(200);
+  p.refresh_start(205000);        // a refresh before the click was applied: not its ack
+  p.flush_start(205000); p.flush_finish(206000, 10);
+  p.refresh_ready(207000, 207);
+  p.events_applied(260, true);
+  p.refresh_start(300000);
+  p.flush_start(300000); p.flush_finish(301000, 10);
+  p.refresh_ready(350000, 350);   // drawn 150 ms after the click
+
+  PerfWindow w = p.take(6000);
+  CHECK(w.window_ms == 5000);
+  CHECK(w.loops == 3);
+  CHECK(w.loop_gap_max == 4096);
+  CHECK(w.own_view == 400 && w.own_heat == 1700 && w.own_max == 2000);
+  CHECK(w.refreshes == 3);
+  CHECK(w.refresh_max == 50000);
+  CHECK(w.refresh_total == 50000 + 2000 + 50000);
+  CHECK(w.flushes == 4 && w.flush_total == 2000 + 1000 + 1000 + 1000);
+  CHECK(w.flushed_px == 5020);
+  CHECK(w.invalidated_px == 5000);
+  CHECK(w.touch_reads == 2 && w.presses == 1 && w.clicks == 1);
+  CHECK(w.read_to_press_max_ms == 50);
+  CHECK(w.acks == 1 && w.click_to_ack_max_ms == 150);
+
+  // The next window starts empty; a click never applied is never acked; one drawn too late is
+  // dropped rather than reported as a latency.
+  CHECK(!p.due(10999));
+  CHECK(p.due(11000));
+  p.lvgl_clicked(7000);
+  p.refresh_start(7100000); p.flush_start(7100000); p.flush_finish(7101000, 1);
+  p.refresh_ready(7102000, 7102);
+  p.lvgl_clicked(7500);           // a click that changed nothing on screen: not timed
+  p.events_applied(7501, false);
+  p.refresh_start(7600000); p.flush_start(7600000); p.flush_finish(7601000, 1);
+  p.refresh_ready(7602000, 7602);
+  p.lvgl_clicked(8000);
+  p.events_applied(8001, true);
+  p.refresh_start(11500000); p.flush_start(11500000); p.flush_finish(11501000, 1);
+  p.refresh_ready(11502000, 11502);  // 3502 ms after the click: beyond kAckTimeoutMs
+  w = p.take(11600);
+  CHECK(w.loops == 0 && w.refreshes == 3);
+  CHECK(w.acks == 0 && w.click_to_ack_max_ms == 0);
+
+  // The longest refresh by cause: a tap's update, a heat repaint, else animation.
+  p.take(12000);
+  p.cause_tap();
+  p.refresh_start(12000000); p.flush_start(12000000); p.flush_finish(12001000, 1);
+  p.refresh_ready(12090000, 12090);  // 90 ms: a tap
+  p.cause_heat();
+  p.refresh_start(12100000); p.flush_start(12100000); p.flush_finish(12101000, 1);
+  p.refresh_ready(12140000, 12140);  // 40 ms: heat
+  p.refresh_start(12200000); p.flush_start(12200000); p.flush_finish(12201000, 1);
+  p.refresh_ready(12210000, 12210);  // 10 ms: neither
+  w = p.take(12300);
+  CHECK(w.refresh_max_tap == 90000 && w.refresh_max_heat == 40000 && w.refresh_max_anim == 10000);
+
+  // The log line: rates per second and the share of the window spent refreshing.
+  PerfWindow f;
+  f.window_ms = 5000;
+  f.loops = 50;
+  f.loop_gap_max = 412000;
+  f.refreshes = 12;
+  f.refresh_total = 2500000;  // 2.5 s of 5 s: 50 %
+  f.refresh_max = 402000;
+  f.flushed_px = 5000000;     // 1000 kpx/s
+  f.sprite_frames = 1550;     // 310 a second
+  f.sprite_divisor = 2;
+  f.sprite_not_ready = 3;
+  f.presented = 1500;
+  f.present_fallbacks = 50;
+  f.present_block = "covered";
+  f.internal_free_kib = 180;
+  f.internal_min_kib = 150;
+  f.dma_largest_kib = 31;
+  f.dma_largest_probed = true;
+  f.bulk_kib = 9000;
+  f.bulk_refused = 2;
+  f.sprites_paused = true;
+  f.heap_probe_max_us = 1840;
+  char line[640];
+  const std::size_t n = PerfStats::format(f, line, sizeof(line));
+  std::printf("%s\n", line);
+  CHECK(n == std::strlen(line));
+  CHECK(std::strstr(line, "loop 10/s, gap max 412 ms") != nullptr);
+  CHECK(std::strstr(line, "12 refr, 2500 ms (50%), max 402 ms") != nullptr);
+  CHECK(std::strstr(line, "1000 kpx/s flushed") != nullptr);
+  CHECK(std::strstr(line, "sprites 310 frames/s (rate /2), 0 dropped, 3 not ready, 0 canary") != nullptr);
+  CHECK(std::strstr(line, "present 1500 / fallback 50 (covered)") != nullptr);
+  CHECK(n < 512);  // ESPHome's logger buffer: one line at the schema's sizes
+  const std::size_t m = PerfStats::format_memory(f, line, sizeof(line));
+  std::printf("%s\n", line);
+  CHECK(m == std::strlen(line));
+  CHECK(std::strstr(line, "perf mem: internal 180 KiB (lowest 150 KiB), largest DMA block 31 KiB "
+                          "| ui in psram 9000 KiB, refused 2 | sprite builds paused "
+                          "| heap probe max 1840 us") != nullptr);
+  CHECK(m < 512);
+  // Counters only: the line says the block was not probed, never a 0.
+  f.dma_largest_probed = false;
+  f.heap_probe_max_us = 4;
+  PerfStats::format_memory(f, line, sizeof(line));
+  std::printf("%s\n", line);
+  CHECK(std::strstr(line, "largest DMA block not probed |") != nullptr);
+  CHECK(std::strstr(line, "heap probe max 4 us") != nullptr);
+  char tiny[8];
+  CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
+  CHECK(PerfStats::format_memory(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
+  std::printf("perf checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_perf_stats(tmp_path):
+    (tmp_path / "perf_test.cpp").write_text(PERF_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "perf_test.cpp"), str(COMPONENT / "perf_stats.cpp")],
+        [COMPONENT],
+    )
+    assert "0 failures" in out
+
+
 LOAD_TEST = r"""
 #include <cstdio>
 #include "hearthmap_gen/generated_config.h"
@@ -368,7 +529,8 @@ def _pipeline(gen, schema, doc, tmp_path) -> dict:
     (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
     (tmp_path / "driver.cpp").write_text(PIPELINE_DRIVER)
     sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core]
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/memory.cpp"), *core]
     exe = tmp_path / "pipeline"
     cmd = [_cxx(), *FLAGS, "-O2", f"-I{tmp_path}", f"-I{COMPONENT}", f"-I{REPO / 'core/include'}",
            f"-I{REPO / 'ui_lvgl/include'}", *sources, "-o", str(exe)]
@@ -569,32 +731,49 @@ int main() {
   CHECK(drain(p, 56500) == 1);
   CHECK(!p.heat_behind());
 
+  // Back to a layer whose image is still kept (temperature, in the other buffer): shown at once
+  // as a layer switch, with no rebuild (D-055).
+  {
+    const std::uint32_t n = p.heat_rebuilds();
+    UiState back = st2;
+    back.active_layer = Layer::Temperature;
+    p.update(rs, 1000, back, 56900);
+    CHECK(!p.heat_behind());
+    CHECK(p.take_published());
+    CHECK(p.published_switch());
+    CHECK(drain(p, 56900) == 0);
+    CHECK(p.heat_rebuilds() == n);
+  }
+
   // A tap during a rebuild is in the very next view model, without waiting for the image.
   UiState st3 = st2;
-  st3.active_layer = Layer::Temperature;
+  st3.active_layer = others[1];  // never drawn
   p.update(rs, 1000, st3, 57000);
   for (int k = 0; k < 3; ++k) CHECK(!p.heat_step(1, 57000));  // rebuild in flight
   UiState st4 = apply(p.config(), st3, UiEvent::tap_hud_item(p.config().pins[0].id));
   CHECK(st4.overlay_pin.has_value());
   p.update(rs, 1000, st4, 57010);
   CHECK(p.view().overlay.has_value());
-  CHECK(p.view().active_layer == Layer::Temperature);
-  CHECK(p.heat_behind());               // still the other layer's image: dimmed
+  CHECK(p.view().active_layer == others[1]);
+  CHECK(p.heat_behind());               // still another layer's image: veiled
   CHECK(!p.heat_step(1, 57010));        // the rebuild is still going
   CHECK(!p.take_published());
 
-  // A layer change during a rebuild restarts it for the new layer, and that is what lands.
+  // A layer change during a rebuild restarts it for the new layer (others[0], whose buffer the
+  // rebuild in flight took), and that is what lands.
   UiState st5 = st4;
-  st5.active_layer = others[1];
+  st5.active_layer = others[0];
   p.update(rs, 1000, st5, 57020);
+  CHECK(p.heat_behind());
   CHECK(drain(p, 57020) == 1);
+  CHECK(!p.published_switch());
   CHECK(!p.heat_behind());
-  CHECK(p.view().active_layer == others[1]);
+  CHECK(p.view().active_layer == others[0]);
 
   // Tabbing away and straight back cancels the rebuild: the shown image is current again.
   const std::uint32_t before = p.heat_rebuilds();
   UiState st6 = st5;
-  st6.active_layer = others[0];
+  st6.active_layer = others[1];
   p.update(rs, 1000, st6, 57100);
   CHECK(!p.heat_step(1, 57100));
   p.update(rs, 1000, st5, 57110);
@@ -618,7 +797,149 @@ def test_heat_rebuild_policy_and_immediate_taps(gen, schema, example, tmp_path):
     text = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
-         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"), *core],
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/memory.cpp"), *core],
+        [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
+    )
+    assert "0 failures" in text, text
+
+
+POOL_TEST = r"""
+#include <cstdio>
+#include <vector>
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Pipeline = hearthmap_device::PanelPipeline;
+static int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+static int last_steps = 0;  // heat_step() calls the last drain() took
+static int drain(Pipeline& p, std::uint32_t mono) {
+  int guard = 0;
+  while (!p.heat_step(1, mono) && ++guard < 1000000) {}
+  last_steps = guard;
+  return p.take_published() ? 1 : 0;
+}
+
+int main() {
+  hearthmap_gen::GeneratedConfigSource source;
+  Pipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  Pipeline p(builder, Palette{});
+  while (p.stage() != Pipeline::Stage::Ready && p.stage() != Pipeline::Stage::Refused) p.boot_step(4);
+  if (p.stage() != Pipeline::Stage::Ready) return 2;
+  const std::size_t n = p.rasterizer().pixel_count();
+  std::vector<std::vector<Rgb565>> bufs(5, std::vector<Rgb565>(n));
+  std::vector<Rgb565*> ptrs;
+  for (auto& b : bufs) ptrs.push_back(b.data());
+  p.set_heat_buffers(ptrs);
+  p.set_heat_refresh_interval_ms(1000);
+  // The row hook: everything after `bake_from` is baked.
+  std::uint32_t bake_from = 1u << 30;
+  std::uint32_t hook_calls = 0;
+  std::uint32_t now_ms = 0;
+  p.set_row_hook([&](Rgb565*, std::int32_t, std::int32_t, std::int32_t) {
+    ++hook_calls;
+    return now_ms >= bake_from;
+  });
+
+  Readings rs;
+  for (std::size_t i = 0; i < hearthmap_gen::kSubscribedEntityCount; ++i) {
+    Reading r; r.state = ReadingState::Value; r.value = 20.0 + double(i % 5) * 0.4; r.last_updated = 1000;
+    rs.by_entity.emplace(hearthmap_gen::kSubscribedEntities[i].entity_id, r);
+  }
+  UiState st = initial_ui_state(p.config());
+  st.active_layer = Layer::Temperature;
+  const std::size_t layers = p.config().layers.size();
+  p.update(rs, 1000, st, now_ms);
+  const std::size_t tabs = p.view().tabs.size();
+  if (tabs + 1 > 5) { std::printf("TOO MANY LAYERS\n"); return 2; }
+
+  // The shown layer first, then every other layer in the background, one per interval.
+  CHECK(drain(p, now_ms) == 1);
+  CHECK(!p.front_baked());
+  CHECK(hook_calls > 0);
+  for (int k = 0; k < 10; ++k) {
+    now_ms += 1000;
+    p.update(rs, 1000, st, now_ms);
+    CHECK(drain(p, now_ms) == 0);  // background images are not shown
+  }
+  CHECK(p.cached_layers() == tabs);
+  const std::uint32_t built = p.heat_rebuilds();
+  CHECK(built == tabs);
+
+  // Every other tab is shown at once, as a layer switch, with no rebuild.
+  for (Layer l : p.view().tabs) {
+    UiState s2 = st;
+    s2.active_layer = l;
+    p.update(rs, 1000, s2, now_ms);
+    CHECK(!p.heat_behind());
+    if (l != Layer::Temperature) {
+      CHECK(p.take_published());
+      CHECK(p.published_switch());
+    }
+    CHECK(drain(p, now_ms) == 0);
+  }
+  CHECK(p.heat_rebuilds() == built);
+  p.update(rs, 1000, st, now_ms);
+  (void)p.take_published();
+
+  // The walls become available: every image is redrawn, the shown one at once.
+  bake_from = now_ms;
+  p.request_rebuild_all();
+  CHECK(drain(p, now_ms) == 1);
+  CHECK(p.front_baked());
+  CHECK(!p.published_switch());
+  for (int k = 0; k < 10; ++k) {
+    now_ms += 1000;
+    p.update(rs, 1000, st, now_ms);
+    drain(p, now_ms);
+  }
+  CHECK(p.cached_layers() == tabs);
+  for (Layer l : p.view().tabs) {
+    UiState s2 = st;
+    s2.active_layer = l;
+    p.update(rs, 1000, s2, now_ms);
+    CHECK(p.front_baked());  // the background copies were redrawn with the walls too
+    drain(p, now_ms);
+  }
+
+  // Views arriving faster than a background rebuild finishes (sensor updates every 500 ms, a
+  // third of a rebuild between them) must not restart it each time: every image still comes up.
+  p.request_rebuild_all();
+  CHECK(drain(p, now_ms) == 1);
+  const int per_rebuild = last_steps;
+  CHECK(per_rebuild > 3);
+  const std::uint32_t before = p.heat_rebuilds();
+  for (int k = 0; k < 40 * static_cast<int>(tabs); ++k) {
+    now_ms += 500;
+    p.update(rs, 1000, st, now_ms);
+    for (int i = 0; i < per_rebuild / 3; ++i) (void)p.heat_step(1, now_ms);
+  }
+  CHECK(p.cached_layers() == tabs);
+  std::printf("background rebuilds under frequent views: %u\n", p.heat_rebuilds() - before);
+  CHECK(p.heat_rebuilds() - before <= tabs);  // one each for the other layers, none restarted
+  (void)layers;
+  std::printf("pool checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_layer_images_are_kept_and_shown_at_once(gen, schema, example, tmp_path):
+    core = _core_sources()
+    out = gen.emit_config_source(example, schema, "example.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "t.cpp").write_text(POOL_TEST)
+    text = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+         str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+         str(REPO / "ui_lvgl/src/memory.cpp"), *core],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in text, text
@@ -740,7 +1061,7 @@ def test_generated_photos_init_once_keeps_descriptors_stable(gen, tmp_path):
     out = _build_and_run(
         tmp_path,
         [str(tmp_path / "t.cpp"), str(tmp_path / "hearthmap_gen/photos.cpp"),
-         str(COMPONENT / "generated_photos.cpp")],
+         str(COMPONENT / "generated_photos.cpp"), str(REPO / "ui_lvgl/src/memory.cpp")],
         [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"],
     )
     assert "0 failures" in out, out
@@ -776,3 +1097,335 @@ def test_names_with_an_embedded_nul_survive_generation(gen, schema, example, tmp
         [tmp_path, REPO / "core/include"],
     )
     assert "NAME size=5 first=0 rest=Room" in text, text
+
+
+BLITTER_SELECT_TEST = r"""
+#include <cstdio>
+#include <cstring>
+#include "blitter_select.h"
+using namespace esphome::hearthmap_panel;
+int main() {
+  int failures = 0;
+  const char* name = nullptr;
+  auto sw = make_blitter(BlitterKind::Software, &name);
+  if (!sw || std::strcmp(name, "software") != 0) { std::printf("FAIL software: %s\n", name); ++failures; }
+  auto ppa = make_blitter(BlitterKind::Ppa, &name);
+  // Off the P4 the PPA request must still give a working blitter, and say it fell back.
+  if (!ppa || std::strstr(name, "software") == nullptr) { std::printf("FAIL ppa fallback: %s\n", name); ++failures; }
+  std::uint16_t px[4] = {0, 0, 0, 0};
+  ppa->fill(hearthmap::ui::Surface565{px, 2, 2, 2}, 0, 0, 2, 2, 0x1234);
+  if (px[3] != 0x1234) { std::printf("FAIL fallback does not draw\n"); ++failures; }
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_blitter_select_falls_back_to_software_off_the_p4(tmp_path):
+    (tmp_path / "blitter_select_test.cpp").write_text(BLITTER_SELECT_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "blitter_select_test.cpp"), str(COMPONENT / "blitter_select.cpp"),
+         str(REPO / "ui_lvgl" / "src" / "blitter.cpp")],
+        [COMPONENT, REPO / "ui_lvgl" / "include"],
+    )
+    assert "0 failures" in out
+
+
+PANEL_ROTATION_TEST = r"""
+#include <cstdio>
+#include <cstdint>
+#include <vector>
+#include "panel_rotation.h"
+using namespace esphome::hearthmap_panel;
+
+// The lvgl component's software rotation (ESPHome 2026.11.0, lvgl_esphome.cpp, draw_buffer_),
+// copied as written, with draw_rounding 1. `width_`/`height_` are the native panel size.
+static NativeBlock esphome_way(std::vector<uint16_t>& dst, const uint16_t* ptr, int x1, int y1, int width,
+                               int height, int rotation, int width_, int height_) {
+  const int height_rounded = height;
+  const int ax1 = x1, ay1 = y1;
+  if (rotation == 90) {
+    for (int x = height; x-- != 0;)
+      for (int y = 0; y != width; y++) dst[y * height_rounded + x] = *ptr++;
+    y1 = ax1;
+    x1 = width_ - ay1 - height;
+    height = width;
+    width = height_rounded;
+  } else {  // 270
+    for (int x = 0; x != height; x++)
+      for (int y = width; y-- != 0;) dst[y * height_rounded + x] = *ptr++;
+    x1 = ay1;
+    y1 = height_ - ax1 - width;
+    height = width;
+    width = height_rounded;
+  }
+  return {x1, y1, width, height};
+}
+
+int main() {
+  int failures = 0;
+  const int nw = 800, nh = 1280, w = 13, h = 7, x = 101, y = 57;
+  std::vector<uint16_t> src(w * h);
+  for (int i = 0; i < w * h; ++i) src[i] = static_cast<uint16_t>(i * 37 + 5);
+  for (int rot : {90, 270}) {
+    std::vector<uint16_t> a(w * h), b(w * h);
+    NativeBlock ea = esphome_way(a, src.data(), x, y, w, h, rot, nw, nh);
+    NativeBlock eb = to_native(b.data(), src.data(), w, x, y, w, h, rot == 90 ? 1 : 3, nw, nh);
+    if (ea.x != eb.x || ea.y != eb.y || ea.w != eb.w || ea.h != eb.h) {
+      std::printf("FAIL rot %d block %d,%d %dx%d vs %d,%d %dx%d\n", rot, ea.x, ea.y, ea.w, ea.h, eb.x, eb.y, eb.w, eb.h);
+      ++failures;
+    }
+    if (a != b) { std::printf("FAIL rot %d pixels differ\n", rot); ++failures; }
+  }
+  // A source stride wider than the tile is honoured.
+  std::vector<uint16_t> wide(20 * h, 0xFFFF), out(w * h), ref(w * h);
+  for (int r = 0; r < h; ++r)
+    for (int c = 0; c < w; ++c) wide[r * 20 + c] = src[r * w + c];
+  to_native(out.data(), wide.data(), 20, x, y, w, h, 1, nw, nh);
+  to_native(ref.data(), src.data(), w, x, y, w, h, 1, nw, nh);
+  if (out != ref) { std::printf("FAIL stride\n"); ++failures; }
+  if (to_native(out.data(), src.data(), w, x, y, w, h, 2, nw, nh).w != 0) { std::printf("FAIL 180\n"); ++failures; }
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_panel_rotation_matches_the_lvgl_component(tmp_path):
+    (tmp_path / "rot_test.cpp").write_text(PANEL_ROTATION_TEST)
+    out = _build_and_run(tmp_path, [str(tmp_path / "rot_test.cpp")], [COMPONENT])
+    assert "0 failures" in out
+
+
+STALL_TEST = r"""
+#include <atomic>
+#include <cstdio>
+#include <thread>
+#include "loop_breadcrumb.h"
+using namespace esphome::hearthmap_panel;
+int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+int main() {
+  using V = StallJudge::Verdict;
+  StallJudge j(2000, 15500);
+  uint32_t s = 0;
+  CHECK(j.step(1000, 1000, &s) == V::None);
+  CHECK(j.step(2999, 1000, &s) == V::None);        // 1999 ms: not yet
+  CHECK(j.step(3000, 1000, &s) == V::Warn);         // 2000 ms: warn once
+  CHECK(s == 2000);
+  CHECK(j.step(9000, 1000, &s) == V::None);         // still stuck: no repeat
+  CHECK(j.step(16500, 1000, &s) == V::Error);       // just under the watchdog
+  CHECK(j.step(17000, 1000, &s) == V::None);        // error once
+  CHECK(j.step(17100, 17050, &s) == V::Recovered);  // the loop turned
+  CHECK(s == 16000);
+  CHECK(j.step(17200, 17150, &s) == V::None);       // a normal turn after recovery
+  CHECK(j.step(18000, 17900, &s) == V::None);       // short gaps never warn
+  // Wrap of the millisecond clock.
+  StallJudge w(2000, 15500);
+  CHECK(w.step(0xFFFFFF00u, 0xFFFFFF00u, &s) == V::None);
+  CHECK(w.step(0x00000800u, 0xFFFFFF00u, &s) == V::Warn);  // 2304 ms across the wrap
+  // A heartbeat sampled after the clock (ahead of it) is no stall.
+  StallJudge f(2000, 15500);
+  CHECK(f.step(1000, 1000, &s) == V::None);
+  CHECK(f.step(1000, 1001, &s) == V::None);
+  CHECK(s == 0);
+  // Crumbs nest and restore.
+  CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Elsewhere));
+  {
+    CrumbScope a(Crumb::Hearthmap, 10);
+    CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Hearthmap));
+    {
+      CrumbScope b(Crumb::PpaFill, 20);
+      CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::PpaFill));
+      CHECK(breadcrumb().since_ms.load() == 20);
+    }
+    CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Hearthmap));
+    CHECK(breadcrumb().since_ms.load() == 10);
+    CHECK(mark_crumb(Crumb::LvglFlush, 30) == Crumb::Hearthmap);
+  }
+  CHECK(breadcrumb().crumb.load() == static_cast<uint8_t>(Crumb::Elsewhere));
+  for (int c = 0; c <= static_cast<int>(Crumb::HmBoot); ++c)
+    CHECK(crumb_name(static_cast<Crumb>(c))[0] != 'u');  // every crumb has a name
+  // Ages: a stamp stored after the clock was read is no age at all, not 49 days.
+  CHECK(elapsed_ms(10002, 10000) == 2);
+  CHECK(elapsed_ms(10000, 10002) == 0);
+  CHECK(elapsed_ms(0x00000010u, 0xFFFFFFF0u) == 0x20u);  // across the wrap
+  // The monitor reads a crumb and its time from another task while the loop marks them: the
+  // pair must be one the loop wrote together. Here each time's low nibble names its crumb.
+  {
+    std::atomic<bool> stop{false};
+    std::thread loop([&stop]() {
+      for (uint32_t k = 1; !stop.load(std::memory_order_relaxed); ++k) {
+        const auto c = static_cast<Crumb>(k % 4U);
+        mark_crumb(c, (k << 4) | static_cast<uint32_t>(c));
+        CrumbScope inner(static_cast<Crumb>(4U + k % 4U), (k << 4) | (4U + k % 4U));
+      }
+    });
+    int torn = 0, paired = 0;
+    for (int i = 0; i < 2000000; ++i) {
+      const CrumbSample s = read_crumb();
+      if (!s.paired) continue;  // the loop out-wrote every try: reported as unpaired
+      ++paired;
+      if ((s.since_ms & 0xFU) != static_cast<uint32_t>(s.crumb) && s.since_ms != 0) ++torn;
+    }
+    stop.store(true);
+    loop.join();
+    if (torn != 0) std::printf("torn crumb/time pairs: %d\n", torn);
+    CHECK(torn == 0);
+    CHECK(paired > 0);  // the check above judged something
+    const CrumbSample quiet = read_crumb();  // nothing writing: always a pair
+    CHECK(quiet.paired);
+  }
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_stall_judge_and_breadcrumbs(tmp_path):
+    (tmp_path / "stall_test.cpp").write_text(STALL_TEST)
+    out = _build_and_run(tmp_path, [str(tmp_path / "stall_test.cpp"), str(COMPONENT / "loop_breadcrumb.cpp")],
+                         [COMPONENT])
+    assert "0 failures" in out
+
+
+DIAG_TEST = r"""
+#include <cstdio>
+#include <cstring>
+#include "diag_report.h"
+using namespace esphome::hearthmap_panel;
+int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+int main() {
+  // A counter's age: the first sample starts the clock, a change restarts it.
+  CounterAge a;
+  CHECK(a.update(1000, 5) == 0);
+  CHECK(a.update(11000, 5) == 10000);  // never seen to move: time since the first sample
+  CHECK(a.update(21000, 6) == 0);      // moved
+  CHECK(a.update(31000, 6) == 10000);
+  CHECK(a.update(41000, 6) == 20000);
+  CHECK(a.update(51000, 7) == 0);
+  // Across the millisecond clock's wrap.
+  CounterAge w;
+  CHECK(w.update(0xFFFFF000u, 1) == 0);
+  CHECK(w.update(0x00001000u, 1) == 0x2000u);
+  // A counter that wraps to the same value it held is the one blind spot: it reads as stalled.
+  // Shares of one core, in tenths of a percent.
+  CHECK(share_permille(0, 0) == 0);
+  CHECK(share_permille(50, 100) == 500);
+  CHECK(share_permille(1, 3) == 333);
+  CHECK(share_permille(200, 100) == 2000);  // not clamped: a counter jump shows as such
+  // The lines.
+  char line[384];
+  MemorySample m;
+  m.internal_free = 40 * 1024; m.internal_min = 12 * 1024; m.dma_largest = 1500;
+  m.failed_allocs = 3; m.failed_dma_allocs = 2; m.last_failed_size = 1536; m.last_failed_caps = 0x8;
+  const int n = format_memory_line(42, m, line, sizeof(line));
+  CHECK(n > 0 && n < static_cast<int>(sizeof(line)));
+  CHECK(std::strstr(line, "t=42s internal free 40K min 12K") != nullptr);
+  CHECK(std::strstr(line, "dma largest 1K") != nullptr);
+  CHECK(std::strstr(line, "failed allocs 3, dma 2 (last 1536 B caps 0x8)") != nullptr);
+  LinkSample l;
+  l.hosted_stats = true; l.rx_in = 100; l.rx_in_age_ms = 65000; l.rx_out = 99; l.tx_drop = 7;
+  l.rpc_err = 0x107; l.rpc_ms = 5003; l.ping_running = true; l.ping_lost = 6; l.ping_age_ms = 60000;
+  l.loop_age_ms = 33;
+  const int k = format_link_line(l, "ESP_ERR_TIMEOUT", line, sizeof(line));
+  CHECK(k > 0 && k < static_cast<int>(sizeof(line)));
+  CHECK(std::strstr(line, "rx in 100 (65s ago)") != nullptr);
+  CHECK(std::strstr(line, "drop 7") != nullptr);
+  CHECK(std::strstr(line, "rssi call ESP_ERR_TIMEOUT (5003 ms)") != nullptr);
+  CHECK(std::strstr(line, "lost 6 (reply 60s ago)") != nullptr);
+  CHECK(std::strstr(line, "api down | loop 33 ms ago") != nullptr);
+  l = LinkSample{};
+  l.rssi = -61; l.rpc_ms = 12;
+  format_link_line(l, "ESP_OK", line, sizeof(line));
+  CHECK(std::strstr(line, "sdio counters not built") != nullptr);
+  CHECK(std::strstr(line, "rssi -61 (12 ms)") != nullptr);
+  CHECK(std::strstr(line, "ping gw not started") != nullptr);
+  // The widest values still fit the device's buffer.
+  LinkSample big;
+  big.hosted_stats = true; big.ping_running = true;
+  big.tx_in = big.tx_out = big.tx_drop = big.credit_stalls = big.rx_in = big.rx_out = 0xFFFFFFFFu;
+  big.rx_in_age_ms = big.rx_out_age_ms = big.tx_out_age_ms = big.ping_age_ms = 0xFFFFFFFFu;
+  big.ping_ok = big.ping_lost = big.rpc_ms = big.loop_age_ms = 0xFFFFFFFFu; big.rpc_err = 0x7FFFFFFF;
+  const int wide = format_link_line(big, "ESP_ERR_WIFI_NOT_STARTED", line, sizeof(line));
+  CHECK(wide > 0 && wide < static_cast<int>(sizeof(line)));
+  std::printf("%d failures\n", failures);
+  return failures;
+}
+"""
+
+
+def test_hosted_diagnostics_report(tmp_path):
+    (tmp_path / "diag_test.cpp").write_text(DIAG_TEST)
+    out = _build_and_run(tmp_path, [str(tmp_path / "diag_test.cpp"), str(COMPONENT / "diag_report.cpp")],
+                         [COMPONENT])
+    assert "0 failures" in out
+
+
+GUARD_TEST = r"""
+#include <cstdio>
+#include "internal_ram_guard.h"
+using namespace esphome::hearthmap_panel;
+int failures = 0;
+#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+int main() {
+  constexpr std::size_t K = 1024;
+  InternalRamGuard g(64 * K, 60000);
+  CHECK(g.margin() == 16 * K);
+  // Above the floor: nothing to do.
+  auto v = g.update(1000, 200 * K);
+  CHECK(!v.pause && !v.warn && !v.recovered && !g.low());
+  v = g.update(2000, 120 * K);
+  CHECK(!v.pause && !v.warn);
+  // Below: pause and warn at once, naming what it fell from.
+  v = g.update(3000, 50 * K);
+  CHECK(v.pause && v.warn && !v.recovered && g.low());
+  CHECK(v.fell_from == 120 * K);
+  CHECK(g.spells() == 1);
+  // Still low: paused, warned again only after the interval.
+  v = g.update(4000, 10 * K);
+  CHECK(v.pause && !v.warn);
+  v = g.update(62999, 10 * K);
+  CHECK(v.pause && !v.warn);
+  v = g.update(63000, 10 * K);
+  CHECK(v.pause && v.warn);
+  // Back above the floor but inside the margin: still paused (no flapping at the line).
+  v = g.update(64000, 70 * K);
+  CHECK(v.pause && !v.recovered && g.low());
+  // Above floor + margin: resumed, said once.
+  v = g.update(65000, 80 * K);
+  CHECK(!v.pause && v.recovered && !g.low());
+  v = g.update(66000, 80 * K);
+  CHECK(!v.pause && !v.recovered);
+  // A second spell is counted, and warns at once whatever the interval.
+  v = g.update(67000, 30 * K);
+  CHECK(v.pause && v.warn && g.spells() == 2 && v.fell_from == 80 * K);
+  // The rate limit holds across the millisecond clock's wrap.
+  InternalRamGuard w(64 * K, 60000);
+  v = w.update(0xFFFFF000u, 1 * K);
+  CHECK(v.warn);
+  v = w.update(0x00001000u, 1 * K);  // 8 s later
+  CHECK(!v.warn && v.pause);
+  // Floor 0: off.
+  InternalRamGuard off(0);
+  v = off.update(1000, 0);
+  CHECK(!v.pause && !v.warn && !off.low());
+  // A small floor still needs a real margin.
+  InternalRamGuard small(16 * K);
+  CHECK(small.margin() == 8 * K);
+  std::printf("guard checks done, %d failures\n", failures);
+  return failures == 0 ? 0 : 1;
+}
+"""
+
+
+def test_internal_ram_guard(tmp_path):
+    (tmp_path / "guard_test.cpp").write_text(GUARD_TEST)
+    out = _build_and_run(
+        tmp_path,
+        [str(tmp_path / "guard_test.cpp"), str(COMPONENT / "internal_ram_guard.cpp")],
+        [COMPONENT],
+    )
+    assert "0 failures" in out

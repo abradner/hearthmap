@@ -2,8 +2,7 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
-
+#include "hearthmap/ui/memory.h"
 #include "lvgl.h"
 
 namespace hearthmap::ui::detail {
@@ -23,7 +22,7 @@ class LeafImage {
   const lv_image_dsc_t* dsc() const { return &dsc_; }
 
  private:
-  std::vector<std::uint8_t> pixels_;
+  BulkVector<std::uint8_t> pixels_;  // memory port (D-064)
   lv_image_dsc_t dsc_{};
 };
 

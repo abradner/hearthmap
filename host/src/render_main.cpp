@@ -68,6 +68,21 @@ bool parse_int(const std::string& s, long& out) {
 
 }  // namespace
 
+namespace {
+
+/// Takes every frame: the whole screen is rendered next, from the frames now in place.
+class FullRenderPresenter final : public hearthmap::ui::Presenter {
+ public:
+  bool present(int x, int y, const hearthmap::ui::View565& tile) override {
+    (void)x;
+    (void)y;
+    (void)tile;
+    return true;
+  }
+};
+
+}  // namespace
+
 int main(int argc, char** argv) {
   std::string config_path;
   std::string readings_path;
@@ -167,7 +182,7 @@ int main(int argc, char** argv) {
 
   const auto t0 = std::chrono::steady_clock::now();
   host::App app(display.screen(), config, readings.fixture->readings, readings.fixture->now,
-                static_cast<int>(utc_offset), photos.get());
+                static_cast<int>(utc_offset), photos.get(), host::kPanelPulseMemory);
   const auto t1 = std::chrono::steady_clock::now();
   if (layer) app.set_layer(*layer);
   display.run_timers();
@@ -177,8 +192,14 @@ int main(int argc, char** argv) {
       std::cerr << "hearthmap-render: tap at " << x << "," << y << " produced no event\n";
     }
   }
+  // Every pulse tile at the same instant: frames are taken as the panel takes them (deferred, then
+  // shown), and the whole-screen render below draws them all. Not deferred, at most 20 tiles a
+  // tick would move (LVGL's limit on invalidated areas) and a still frame could mix two instants.
+  app.screen().set_frames_deferred(true);
   display.set_time_ms(static_cast<std::uint32_t>(time_ms));
   display.run_timers();
+  FullRenderPresenter presenter;
+  app.screen().show_due_frames(presenter);
   const auto t2 = std::chrono::steady_clock::now();
   display.render();
   const auto t3 = std::chrono::steady_clock::now();

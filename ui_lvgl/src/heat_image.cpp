@@ -24,8 +24,8 @@ constexpr Rgb565 kNoDataB565 = hex565(theme::kNoDataB);
 // Bilinear table along one axis: pixel p of `pixels` samples cell coordinate
 // (p + 0.5) * cells / pixels - 0.5, i.e. cell centres sit at (c + 0.5) * pixels / cells.
 // Exact rational arithmetic in 64-bit integers, so the table is identical everywhere.
-void build_axis(std::int32_t pixels, std::int32_t cells, std::vector<std::int32_t>& c0,
-                std::vector<std::int32_t>& c1, std::vector<std::int32_t>& w) {
+void build_axis(std::int32_t pixels, std::int32_t cells, BulkVector<std::int32_t>& c0,
+                BulkVector<std::int32_t>& c1, BulkVector<std::int32_t>& w) {
   const auto n = static_cast<std::size_t>(pixels);
   c0.assign(n, 0);
   c1.assign(n, 0);
@@ -76,7 +76,7 @@ HeatRasterizer::HeatRasterizer(const Config& config, Deferred)
   if (cols_ < 0) cols_ = 0;
   if (rows_ < 0) rows_ = 0;
   room_outdoor_.reserve(config.rooms.size());
-  for (const auto& room : config.rooms) room_outdoor_.push_back(room.outdoor);
+  for (const auto& room : config.rooms) room_outdoor_.push_back(room.outdoor ? 1U : 0U);
   pixel_room_.assign(pixel_count(), kNoRoom);
   cell_room_.assign(static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_), kNoRoom);
   scan_row_.assign(static_cast<std::size_t>(std::max(width_, cols_)), RoomMask::kOutside);
@@ -94,7 +94,7 @@ bool HeatRasterizer::build_rows(const Config& config, std::int32_t max_rows) {
     const std::int32_t row = grid ? next_row_ : next_row_ - rows_;
     const std::int32_t across = grid ? cols_ : width_;
     const std::int32_t down = grid ? rows_ : height_;
-    std::vector<std::uint8_t>& dest = grid ? cell_room_ : pixel_room_;
+    BulkVector<std::uint8_t>& dest = grid ? cell_room_ : pixel_room_;
     scanner_.scan_row(across, down, row, scan_row_.data());
     const std::size_t base = static_cast<std::size_t>(row) * static_cast<std::size_t>(across);
     for (std::int32_t x = 0; x < across; ++x) {
@@ -112,13 +112,12 @@ std::size_t HeatRasterizer::working_bytes() const {
              (col0_.size() + col1_.size() + wx_.size() + row0_.size() + row1_.size() + wy_.size());
 }
 
-void HeatRasterizer::render(const HeatField& field, const std::vector<Rgb565>& cell_colours,
-                            Rgb565* out) const {
+void HeatRasterizer::render(const HeatField& field, CellColours cell_colours, Rgb565* out) const {
   render_rows(field, cell_colours, out, 0, height_);
 }
 
 HeatRasterizer::Prepared HeatRasterizer::prepare(const HeatField& field,
-                                                 const std::vector<Rgb565>& cell_colours) const {
+                                                 CellColours cell_colours) const {
   const std::size_t cell_count = static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_);
   Prepared p;
   p.field_ok = field.cols == cols_ && field.rows == rows_ && field.cells.size() == cell_count &&
@@ -139,8 +138,8 @@ HeatRasterizer::Prepared HeatRasterizer::prepare(const HeatField& field,
 }
 
 void HeatRasterizer::render_rows(const Prepared& prepared, const HeatField& field,
-                                 const std::vector<Rgb565>& cell_colours, Rgb565* out,
-                                 std::int32_t row_begin, std::int32_t row_end) const {
+                                 CellColours cell_colours, Rgb565* out, std::int32_t row_begin,
+                                 std::int32_t row_end) const {
   // The size checks again (cheap): a Prepared from another field must not let a bad field be
   // read out of bounds.
   const std::size_t cell_count = static_cast<std::size_t>(cols_) * static_cast<std::size_t>(rows_);
@@ -166,7 +165,7 @@ void HeatRasterizer::render_rows(const Prepared& prepared, const HeatField& fiel
         px = kBackground565;
         continue;
       }
-      if (room_outdoor_[room]) {
+      if (room_outdoor_[room] != 0U) {
         px = kOutdoor565;
         continue;
       }
@@ -236,12 +235,25 @@ void HeatRasterizer::render_rows(const Prepared& prepared, const HeatField& fiel
   }
 }
 
-void colour_cells(const HeatField& field, const ColourLut& lut, std::vector<Rgb565>& out) {
+namespace {
+
+template <class Out>
+void colour_cells_into(const HeatField& field, const ColourLut& lut, Out& out) {
   out.resize(field.cells.size());
   for (std::size_t i = 0; i < field.cells.size(); ++i) {
     const HeatCell& cell = field.cells[i];
     out[i] = cell.state == CellState::Value ? lut.lookup(cell.value) : Rgb565{0};
   }
+}
+
+}  // namespace
+
+void colour_cells(const HeatField& field, const ColourLut& lut, std::vector<Rgb565>& out) {
+  colour_cells_into(field, lut, out);
+}
+
+void colour_cells(const HeatField& field, const ColourLut& lut, BulkVector<Rgb565>& out) {
+  colour_cells_into(field, lut, out);
 }
 
 }  // namespace hearthmap::ui

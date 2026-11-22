@@ -79,6 +79,19 @@ void HeadlessDisplay::tap(std::int32_t x, std::int32_t y) {
   lv_indev_read(pointer_);
 }
 
+void HeadlessDisplay::press(std::int32_t x, std::int32_t y) {
+  lv_obj_update_layout(screen());
+  g_point.x = x;
+  g_point.y = y;
+  g_pressed = true;
+  lv_indev_read(pointer_);
+}
+
+void HeadlessDisplay::release() {
+  g_pressed = false;
+  lv_indev_read(pointer_);
+}
+
 void HeadlessDisplay::render() {
   lv_obj_update_layout(screen());
   lv_obj_invalidate(screen());

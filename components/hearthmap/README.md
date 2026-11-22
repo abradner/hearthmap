@@ -24,6 +24,13 @@ hearthmap:
   # refresh_interval: 30s   re-judge freshness and redraw even when nothing changed (1s..10min)
   # min_redraw_interval: 500ms  coalesce bursts of state updates (50ms..10s)
   # heat_refresh_interval: 15s  how often changed readings may rebuild the heat image (1s..10min)
+  # touchscreen_id: ...     the touchscreen, so the perf log can time touches (optional)
+  # blitter: software       or ppa: large fills, blends and copies on the ESP32-P4's PPA (D-057)
+  # present: false          true (with display_id): animated tiles skip LVGL's refresh (D-058)
+  # display_id: ...         the display LVGL draws to (needed by present)
+  # internal_ram_floor: 64kB  below it: a warning, and pulse sprite builds pause (0: off, D-064)
+  # diagnostics: false      true: a 10 s hosted Wi-Fi link report on the UART (D-063)
+  # pulse_sprites: animated still or off: bisecting aids for the Wi-Fi link fault (D-063)
 ```
 
 A full example device is `examples/flat/esphome/flat-panel.yaml`.
@@ -113,9 +120,9 @@ config is proven to be refused, and the example proven to load.
     starts at once for the first image and for a layer change (restarting one in flight for
     another layer); for changed readings on the same layer at most once per
     `heat_refresh_interval`, so chatty sensors cannot keep the pipeline busy; for unchanged
-    readings never. Until a layer change's image lands (about a second on the panel) the map is
-    **dimmed** to 40 %, so one layer's colours never show at full strength under another's tab;
-    undimming repaints the map whole. Otherwise a new image is repainted in 48-row bands, one per
+    readings never. Until a layer change's image lands (about a second on the panel) the map's
+    heat image is **hidden** (background under walls, labels and pins), so one layer's colours
+    never show under another's tab, and then revealed a strip at a time (D-052). Otherwise a new image is repainted in 48-row bands, one per
     `loop()` call at most every 25 ms, instead of one long LVGL refresh. The first image logs its
     time at INFO; later ones log at DEBUG with the running count of LVGL warnings and errors.
 - LVGL's image cache is off in ESPHome's build (`LV_CACHE_DEF_SIZE` 0), so pointing the heat
@@ -174,10 +181,14 @@ worded by ui_lvgl's `summary_text()`, the same path as the host (D-049).
 
 | Item | Size | Where |
 |---|---|---|
-| Heat image, map area 864 x 720 RGB565, two buffers (front and back) | 2 x 1,244,160 B | PSRAM (`RAMAllocator`) |
-| `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM via malloc (D-037) |
+| Heat image, map area 864 x 720 RGB565: one buffer per enabled layer plus one to draw into, while 6 MiB of PSRAM stays free (D-055); at least two | up to 5 x 1,244,160 B | PSRAM (memory port, D-064) |
+| Map bake (walls and labels, 3 B per map pixel, D-055) | about 1,870,000 B | PSRAM (memory port) |
+| Pulse sprites (D-053): every frame, capture and table of every pulse, within three quarters of the PSRAM left past a 6 MiB reserve and the bake, at least 256 KiB (logged as `boot: N KiB for pulse sprites`) | as used | PSRAM (memory port) |
+| `HeatRasterizer` working set (per-pixel room index + tables) | about 643,000 B | PSRAM (memory port) |
+| Presenter rotation buffer (`present: true` only, D-058) | 32,768 B | internal, DMA-capable, on purpose |
+| esp-hosted SDIO packet pool, with `esp32_hosted` over SDIO (D-065) | 47,616 B | internal, DMA-capable, reserved when the link starts |
 | Photos: 5 photos x (128, 52, 44 px) RGB565 | 210,240 B | flash (rodata) |
-| `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, cell colours, 4 colour tables | about 37,000 B | heap |
+| `HeatField` x 2 (48 x 40 x 8 B), `RoomMask`, 4 colour tables (core's own vectors) | about 37,000 B | heap (PSRAM above 16 KiB per block, D-037) |
 | LVGL draw buffer at the default `buffer_size: 100%` | 2,048,000 B | PSRAM (ESPHome's lvgl) |
 | Software rotation buffer (800 x 1280 panel shown landscape) | up to 2,048,000 B | ESPHome's lvgl / display driver |
 
@@ -221,3 +232,166 @@ slices), steady frames 15-21 ms. `LVGL warnings 0, errors 0` throughout. ESPHome
 once each at boot for the screen build (hearthmap, 249 ms) and two LVGL refreshes (224 ms and
 139 ms).
 
+
+## Accelerations (all optional, off by default)
+
+Measured on the panel with `tools/bench` (its README has every number):
+
+- **Not recommended with Wi-Fi: `lvgl: buffer_size: 12%`**, a 256,000 B draw buffer that ESPHome
+  tries in internal RAM first. On the bench (no network) partial repaints were 1.3-2x faster than
+  with the default 2 MB PSRAM buffer; on the panel with Wi-Fi it broke the hosted co-processor
+  link, which needs that internal RAM. The example leaves it unset (D-059).
+- **`blitter: ppa`**: `hm::ui::Blitter` on the PPA (`ppa_blitter.h`), used above per-operation
+  sizes where it wins: fills 6x and translucent blends 7x faster than the CPU on large areas,
+  large copies 2x; smaller calls, flash sources and unaligned buffers stay in software. Any other
+  target, or a refused driver, gets `SoftwareBlitter` (`blitter_select.h`, D-057).
+- **`present: true`** with `display_id`: `presenter()` returns a `DisplayPresenter`
+  (`display_presenter.h`): an animated tile shown with `hm::ui::show_tile_frame()` is rotated on
+  the CPU and handed to the display, 0.17 ms for 64 x 64 against about 1 ms for an LVGL refresh,
+  whenever `present_check()` allows; otherwise the tile is invalidated as before (D-058). Every
+  pulse frame goes this way when it is on: ring tiles and the outline grid's cells (D-053).
+- Not used, with reasons: LVGL's own PPA draw unit and ESP-IDF 6 (D-060), PIE SIMD (D-057).
+
+`dump_config` logs `hearthmap blitter: <kind>, present: <state>, stall monitor: <state>`.
+
+## Internal RAM and the Wi-Fi link
+
+On the ESP32-P4 the hosted Wi-Fi driver (`esp32_hosted`) takes a DMA-capable frame from internal
+RAM for every packet (ESP-IDF 5.5.6 registers the P4's PSRAM without `MALLOC_CAP_DMA`). When internal RAM ran out under the pulse sprites'
+many small buffers the link died with nothing in the log (D-063). So:
+
+- **The memory port** (D-064): everything ui_lvgl sizes by pixels, cells or pulses, and the
+  heat images, comes from PSRAM through `hearthmap/ui/memory.h`, installed first thing in
+  `setup()` (`psram_memory.h`). A request PSRAM cannot meet is refused, never moved to internal
+  RAM: a sprite then stops animating (counted), the bake leaves walls and labels as objects.
+- **The internal-RAM floor** (`internal_ram_floor`, default 64 kB, D-064): checked once a second.
+  Below it a warning goes to the log at once and then at most once a minute:
+
+  ```
+  internal RAM low: <K> KiB free, floor <K> KiB (was <K> KiB), lowest <K> KiB, largest DMA-capable block <K> KiB; failed allocations <n>, DMA <n> (last <B> B, caps 0x<caps>); hearthmap holds <K> KiB in PSRAM (<n> refused) and captured <n> sprites since; pulse sprite builds paused (D-064)
+  ```
+
+  and pulse sprite builds pause (pulses already built keep playing; animation degrades, the
+  network does not) until free RAM is back above the floor plus a quarter of it. `0` turns the
+  guard off. The boot log has the same figures, and every perf window adds a second line,
+  `perf mem: internal <K> KiB (lowest <K> KiB), largest DMA block <K> KiB|not probed | ui in
+  psram <K> KiB, refused <n> | sprite builds on|paused | heap probe max <us> us`.
+- **Counters, not walks** (`heap_probe`, D-067): the once-a-second check reads free and
+  lowest-free (per-heap counters, no lock). A largest-free-block figure means walking the heap
+  with interrupts off, which can make the panel's frame DMA miss its restart and flash the
+  screen blue, so the check and the warning say "not probed" for it. `heap_probe: walk` brings
+  the walks back (to reproduce the flash), `off` stops the check (the floor is then blind).
+  `heap probe max` is the longest heap read in the window.
+- **DSI underruns are not counted** (D-067): a frame the panel could not fetch in time shows
+  uniform blue, and ESP-IDF 5.5.6 reports it only with an `esp_rom_printf` line ("underrun
+  happens") on ESP-IDF's primary console, never in ESPHome's log. ESPHome makes that console
+  USB-Serial-JTAG when `logger: hardware_uart` is USB_SERIAL_JTAG (the ESP32-P4's default) and
+  otherwise leaves ESP-IDF's default, UART0. Watch that port to see them.
+- **Bisecting the blue flash** (D-067), one change per flash: `heap_probe: walk`,
+  `hosted_packet_pool: false` (leave esp-hosted's packet pool at its default, off), `ui_storage:
+  system` (no memory port: the UI's storage back on malloc as before D-064).
+- **esp-hosted's packet pool** (D-065): with `esp32_hosted` over SDIO the component sets
+  `CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL` (as a default: an `sdkconfig_options` value of your
+  own wins), which reserves 31 frames (47,616 B) for the link when it starts instead of
+  allocating each frame. `dump_config` says whether the build has it.
+- **ESP-IDF's warnings** (D-066): ESPHome compiles ESP-IDF's log at ERROR, which removes
+  esp-hosted's out-of-memory warnings. The example sets this, and the component warns at
+  config time when a hosted device compiles below it:
+
+  ```yaml
+  esp32:
+    framework:
+      log_level: WARN
+  ```
+
+## Stalls and the task watchdog
+
+- **Stall monitor** (always on, D-062): if the main loop has not turned for 2 s, a line like
+  `[W][hearthmap.stall]: main loop has not turned for 2000 ms; in: <where> (for N ms)` goes straight
+  to the UART console, an `[E]` line follows 0.5 s before the task watchdog is due, and a `[W]`
+  line when the loop turns again. `<where>` is hearthmap's loop, LVGL rendering, LVGL's flush, a
+  present, a PPA call, or elsewhere (another component, such as Wi-Fi).
+- **Watchdog versus Wi-Fi** (D-061): with `esp32_hosted`, every Wi-Fi call from the main loop can
+  wait up to the co-processor's RPC timeout (5 s by default), so the component refuses an
+  `esp32: watchdog_timeout` below 16 s (three such waits and a second). This stops a dead link
+  resetting the panel; it does not keep the link alive, and a panel that no longer resets may
+  still have lost its network (the section above is what protects the link). Set it in the device
+  YAML:
+
+  ```yaml
+  esp32:
+    watchdog_timeout: 16s
+  ```
+
+- **Hosted link diagnostics** (`diagnostics: true`, off by default, D-063): a task prints two
+  lines every 10 s straight to the UART (`[I][hm.diag]:`), and every 60 s one line per task:
+
+  ```
+  t=<s>s internal free <K> min <K> largest <K> | dma largest <K> (internal <K>) | psram free <K> largest <K> | failed allocs <n>, dma <n> (last <B> B caps 0x<caps>)
+  sdio tx in <n> out <n> drop <n> stall <n> (out <s>s ago) rx in <n> (<s>s ago) out <n> (<s>s ago) | rssi <dBm> (<ms> ms) | ping gw ok <n> lost <n> (reply <s>s ago) | api up | loop <ms> ms ago
+  task <name> prio <p> cpu <x.y>% stack free <B> B
+  ```
+
+  The heap figures come from `heap_caps`; failed allocations from ESP-IDF's failed-allocation
+  hook (every `NULL` return, with its size and capability bits; `0x8` is `MALLOC_CAP_DMA`). The
+  `sdio` counters are esp-hosted's own (`CONFIG_ESP_HOSTED_HOST_PKT_STATS`, which the option
+  turns on), with how long each has stood still. `rssi` is one Wi-Fi call to the co-processor,
+  made from the report task and timed (an `ESP_ERR_TIMEOUT` near 5000 ms is a co-processor that
+  does not answer). `ping gw` is an ICMP echo to the gateway through lwIP every 10 s. The option
+  also raises ESP-IDF's compiled log ceiling to INFO and its runtime level to WARN, so esp-hosted's
+  warnings (`mempool OOM start`, `dma_alloc ... failed`, `rx_get_buffer ... failed`) appear; ESPHome
+  builds ESP-IDF's log at ERROR by default, which hides them. The task, the ping session and the
+  hook cost about 10 KiB of internal RAM, and the ping and the call add a little traffic, so the
+  option changes what it measures slightly: compare like with like.
+- **Bisecting aids** (`pulse_sprites`, default `animated`, D-063): `still` builds and keeps every
+  pulse sprite but never animates one (each shows one frame); `off` never captures or composes
+  them (the map bake still runs). With `present: false` these separate the sprites' memory from
+  their per-frame work. `examples/flat/esphome/flat-panel-diag.yaml` is the example with
+  `diagnostics: true`.
+- ESPHome's own flush waits for the display copy with no timeout; the draft upstream report is
+  `docs/upstream/mipi-dsi-unbounded-wait.md`. hearthmap's own display and PPA calls check their
+  preconditions so they cannot be refused once started.
+
+## Measuring
+
+Every 5 s the component logs one line at DEBUG (tag `hearthmap`, `perf_stats.h`), always on:
+
+```
+perf 5000 ms: loop 41/s, gap max 380 ms | lvgl 12 refr, 2900 ms (58%), max 402 ms, flush 140 ms in 30, 6100 kpx/s flushed, 9800 kpx/s invalidated | hm view 18 ms, heat 410 ms, max 21 ms | touch 2 read, 2 press, 1 click, read>press max 350 ms, click>drawn max 900 ms (1)
+```
+
+- `loop N/s, gap max`: passes of ESPHome's main loop, counted as calls of this component's
+  `loop()`, and the longest time between two of them. Everything on the main loop, touch reads
+  included, waits at least that long.
+- `lvgl`: LVGL refreshes that drew something (from the display's `LV_EVENT_REFR_START` to
+  `LV_EVENT_REFR_READY`: layout, software rendering and the flushes), their total time and share
+  of the window, and the longest one. `flush` is the time inside the lvgl component's flush
+  callback (on the panel: PPA rotation and the copy into the DSI frame buffer) over that many
+  calls; the rest of a refresh is rendering. `kpx/s flushed` is pixels handed to the panel,
+  `kpx/s invalidated` pixels asked for by invalidations before LVGL joins them.
+- `hm`: this component's own time: view model and screen updates, heat-rebuild steps (boot steps
+  count as heat), and its longest single `loop()`.
+- `refresh max by cause`: the longest refresh after a tap's screen update, after a heat image's
+  band repaint, and otherwise (animation: pulse sprites).
+- `sprites`: pulse frames shown per second (a ring's frame, or a room outline's step), `rate /N`
+  when memory holds only 1/N of the frames per cycle (1 is full rate: rings 30 frames/s, outlines
+  15 steps/s; N is 1, 2, 4 or 8), frames skipped because the loop was late, `not ready` frames
+  held back because their set was incomplete or the clock asked for one outside it (always 0
+  unless something is wrong), `canary` frame sets found written outside their bounds since boot
+  (checked once a second, with an ERROR log the first time; always 0 unless something is wrong), the memory the sprites hold, time
+  choosing frames (`frames`) and capturing and composing them (`prepare`) (D-053).
+- `present`: pulse tiles put on the panel directly by the presenter, tiles invalidated instead,
+  and the most common reason a present was refused (the `PresentBlock`, by a short name;
+  `covered` is a ring's tile crossing an outline cell). All fall back while `present` is off
+  (D-058).
+- `touch`: `read` is a new contact reported by the touchscreen (only when `touchscreen_id` is
+  set), `press` and `click` are LVGL's own input events on this display; `read>press` is the
+  worst time from a read to LVGL seeing the press; `click>drawn` the worst time from a click to
+  the end of the first refresh after the component applied it, with the number of clicks timed.
+
+First reading (c182d6b, real config of the panel-sized shape, temperature layer, nobody
+touching): `loop 13/s, gap max 86 ms | lvgl 64 refr, 3902 ms (76%), max 67 ms, flush 989 ms in
+64, 2642 kpx/s flushed`. That is about 4.5 Mpx/s of software rendering and about 13 Mpx/s through
+the flush path, the rates the host budget in `host/tests/perf_proxy_test.cpp` is set from
+(D-051). Before time was valid the loop ran 61 times a second with gaps of 100 to 141 ms and no
+LVGL refreshes, so about 100 ms of the worst gap comes from other components.

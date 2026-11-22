@@ -13,8 +13,8 @@ namespace hearthmap::host {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"  // lv_image_header_t bit-fields
 #endif
-static void describe_rgb565(lv_image_dsc_t& dsc, const std::vector<Rgb565>& pixels, std::int32_t w,
-                            std::int32_t h) {
+static void describe_rgb565(lv_image_dsc_t& dsc, const ui::BulkVector<Rgb565>& pixels,
+                            std::int32_t w, std::int32_t h) {
   dsc = lv_image_dsc_t{};
   dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
   dsc.header.cf = LV_COLOR_FORMAT_RGB565;
@@ -29,7 +29,7 @@ static void describe_rgb565(lv_image_dsc_t& dsc, const std::vector<Rgb565>& pixe
 #endif
 
 App::App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int utc_offset_minutes,
-         const ui::ImageProvider* photos)
+         const ui::ImageProvider* photos, std::size_t pulse_memory_bytes)
     : config_(std::move(config)),
       readings_(std::move(readings)),
       now_(now),
@@ -47,7 +47,11 @@ App::App(lv_obj_t* parent, Config config, Readings readings, Timestamp now, int 
   deps.fonts = ui::builtin_fonts();
   deps.sink = this;
   deps.photos = photos;
+  deps.pulse_memory_bytes = pulse_memory_bytes;
   screen_ = std::make_unique<ui::Screen>(parent, config_, &heat_dsc_, deps);
+  // The map bake (walls and labels) before the first image, so that image carries it.
+  while (screen_->prepare_step()) {
+  }
   refresh();
 }
 
@@ -56,6 +60,7 @@ void App::render_heat(Layer layer) {
   compute_heat_field(config_, mask_, samples_, field_);
   ui::colour_cells(field_, luts_[index_of(layer)], cell_colours_);
   raster_.render(field_, cell_colours_, heat_pixels_.data());
+  heat_baked_ = screen_->bake_rows(heat_pixels_.data(), raster_.width(), 0, raster_.height());
   screen_->invalidate_heat();
   heat_layer_ = layer;
 }
@@ -64,7 +69,12 @@ void App::refresh() {
   build_view_model(config_, readings_, now_, state_, vm_);
   if (heat_layer_ != vm_.active_layer) render_heat(vm_.active_layer);
   ui::HeaderText header{clock_text(now_, utc_offset_minutes_), ui::summary_text(vm_.summary)};
-  screen_->update(vm_, header, now_);
+  ui::SourceStatus status;
+  status.heat_baked = heat_baked_;
+  screen_->update(vm_, header, now_, status);
+  // The host has no frame budget: prepare every pulse sprite now (the device slices this).
+  while (screen_->prepare_step()) {
+  }
 }
 
 std::size_t App::process_events() {
@@ -77,6 +87,13 @@ std::size_t App::process_events() {
 
 void App::set_layer(Layer layer) {
   state_ = apply(config_, state_, UiEvent::select_layer(layer));
+  refresh();
+}
+
+void App::set_readings(Readings readings, Timestamp now) {
+  readings_ = std::move(readings);
+  now_ = now;
+  heat_layer_.reset();  // the image is drawn from the readings: rebuild it
   refresh();
 }
 

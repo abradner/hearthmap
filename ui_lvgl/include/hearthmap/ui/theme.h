@@ -42,6 +42,8 @@ inline constexpr std::uint32_t kLeaf = 0x3FA56B;
 inline constexpr std::uint32_t kLeafStale = 0x4B5563;
 
 // Overlay
+/// The spec's scrim behind the detail card. Not drawn on the panel since D-052 (a full-screen
+/// blend cost a long refresh each way); kept as the spec's value.
 inline constexpr std::uint32_t kScrim = 0x050709;
 inline constexpr std::uint8_t kScrimOpa = 184;      ///< 0.72 * 255, rounded.
 inline constexpr std::uint8_t kHappyRangeOpa = 89;  ///< 0.35 * 255, rounded.
@@ -49,6 +51,26 @@ inline constexpr std::uint8_t kHappyRangeOpa = 89;  ///< 0.35 * 255, rounded.
 /// The heat field's comfort-quiet diverging palette (ui spec, "Heatmap").
 inline constexpr Palette kHeatPalette{Rgb888{30, 35, 41}, Rgb888{42, 120, 214},
                                       Rgb888{227, 73, 72}};
+
+// Pulses (UI spec, "Pins" and "Rooms"; D-053): drawn as sprites by ui_lvgl's pulse layer.
+inline constexpr int kPulseRingFrom = 26;  ///< danger ring radius at the start of a cycle, px
+inline constexpr int kPulseRingTo = 52;    ///< and at the end, where it has faded out
+inline constexpr int kPulseRingWidth = 4;
+/// The spec's 1.6 s, shortened to 1584 ms so whole frames of 33 ms (48 a cycle, 30 a second) and
+/// every coarser rate the sprites may fall back to divide it (D-053).
+inline constexpr std::uint32_t kPulseRingCycleMs = 1584;
+inline constexpr int kRoomPulseWidth = 5;                 ///< room outline width, px
+inline constexpr std::uint32_t kRoomPulseCycleMs = 2800;  ///< opacity 0.35 -> 1 -> 0.35
+inline constexpr std::uint8_t kRoomPulseMinOpa = 89;      ///< 0.35 * 255
+/// Pulses carry a dark keyline (kBackground) under their colour, so a red ring still reads on a
+/// red room: this many px wider than the stroke in all, at this share of the stroke's opacity.
+inline constexpr int kPulseHaloExtra = 4;
+inline constexpr std::uint8_t kPulseHaloOpa = 200;
+
+/// Sprite tiles and their repaints are aligned to this many pixels, a multiple of any display
+/// driver's draw rounding (ESPHome rounds invalidated areas out to its draw_rounding, 2 on the
+/// panel): a rounded repaint must stay inside its opaque tile, or LVGL draws everything under it.
+inline constexpr int kTileAlign = 8;
 
 // Geometry (device pixels, landscape 1280 x 800)
 inline constexpr int kScreenWidth = 1280;
