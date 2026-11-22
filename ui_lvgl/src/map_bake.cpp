@@ -29,13 +29,25 @@ void MapBake::start() {
   const std::size_t px = static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_);
   started_ = true;
   if (!premul_.assign(px, 0) || !through_.assign(px, 255) ||
-      !scratch_.assign(static_cast<std::size_t>(w_) * kBandRows, 0)) {
+      !scratch_.assign(static_cast<std::size_t>(w_) * kBandRows, 0) ||
+      !hidden_.resize(hide_.size()) || !shown_.resize(draw_.size())) {
     // The objects stay as they are, exactly as after a bake that gave up.
-    failed_ = true;
-    premul_.release();
-    through_.release();
-    scratch_.release();
+    give_up();
   }
+}
+
+void MapBake::hide_too(lv_obj_t* o) {
+  hide_.push_back(o);
+  if (started_ && !failed_ && !ready_ && !hidden_.resize(hide_.size())) give_up();
+}
+
+void MapBake::give_up() {
+  failed_ = true;
+  premul_.release();
+  through_.release();
+  scratch_.release();
+  hidden_.release();
+  shown_.release();
 }
 
 bool MapBake::prepare_step() {
@@ -44,20 +56,26 @@ bool MapBake::prepare_step() {
   const std::int32_t y1 = std::min(h_, y0 + kBandRows);
   const lv_area_t band{area_.x1, area_.y1 + y0, area_.x2, area_.y1 + y1 - 1};
 
+  // hide_too() may have added objects since start(): the list grows here, or the bake gives up.
+  if ((hidden_.size() < hide_.size() && !hidden_.resize(hide_.size())) ||
+      (shown_.size() < draw_.size() && !shown_.resize(draw_.size()))) {
+    give_up();
+    return false;
+  }
   lv_display_t* disp = lv_obj_get_display(map_);
   lv_display_enable_invalidation(disp, false);  // a counter in LVGL 9.6: paired below
-  BulkVector<lv_obj_t*>& hidden = hidden_;
-  hidden.clear();
+  std::size_t n_hidden = 0;
   for (lv_obj_t* o : hide_) {
-    if (!lv_obj_is_hidden(o)) hidden.push_back(o);
+    if (!lv_obj_is_hidden(o)) hidden_[n_hidden++] = o;
   }
-  BulkVector<lv_obj_t*>& shown = shown_;  // baked objects already hidden are drawn for the bake
-  shown.clear();
+  std::size_t n_shown = 0;  // baked objects already hidden are drawn for the bake
   for (lv_obj_t* o : draw_) {
-    if (lv_obj_is_hidden(o)) shown.push_back(o);
+    if (lv_obj_is_hidden(o)) shown_[n_shown++] = o;
   }
-  for (lv_obj_t* o : hidden) lv_obj_set_hidden(o, true);
-  for (lv_obj_t* o : shown) lv_obj_set_hidden(o, false);
+  lv_obj_t* const* const hidden = hidden_.data();
+  lv_obj_t* const* const shown = shown_.data();
+  for (std::size_t i = 0; i < n_hidden; ++i) lv_obj_set_hidden(hidden[i], true);
+  for (std::size_t i = 0; i < n_shown; ++i) lv_obj_set_hidden(shown[i], false);
 
   // Over black: the map has no background, and render_area() leaves uncovered pixels at zero.
   std::uint16_t* black =
@@ -72,18 +90,15 @@ bool MapBake::prepare_step() {
   lv_obj_set_style_bg_color(map_, bg, 0);
   lv_obj_set_style_bg_opa(map_, bg_opa, 0);
 
-  for (lv_obj_t* o : shown) lv_obj_set_hidden(o, true);
-  for (lv_obj_t* o : hidden) lv_obj_set_hidden(o, false);
+  for (std::size_t i = 0; i < n_shown; ++i) lv_obj_set_hidden(shown[i], true);
+  for (std::size_t i = 0; i < n_hidden; ++i) lv_obj_set_hidden(hidden[i], false);
   lv_display_enable_invalidation(disp, true);
 
   if (!ok) {
     // Never publish a band that did not render: try it again, and after kMaxBandFailures in a
     // row give the bake up (the objects stay; nothing half-baked reaches a heat image).
     if (++band_failures_ >= kMaxBandFailures) {
-      failed_ = true;
-      premul_.release();
-      through_.release();
-      scratch_.release();
+      give_up();
       return false;
     }
     return true;
@@ -104,8 +119,8 @@ bool MapBake::prepare_step() {
   if (next_row_ >= h_) {
     ready_ = true;
     scratch_.release();
-    BulkVector<lv_obj_t*>().swap(hidden_);
-    BulkVector<lv_obj_t*>().swap(shown_);
+    hidden_.release();
+    shown_.release();
   }
   return !ready_;
 }

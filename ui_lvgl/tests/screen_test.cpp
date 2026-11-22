@@ -1790,6 +1790,71 @@ TEST_CASE("sprite buffers the memory port refuses stop the animation, never brea
   REQUIRE(set_bulk_memory(nullptr));
 }
 
+namespace {
+
+/// The system heap; while `refuse_small` is set it refuses every block under 512 bytes, the
+/// size of the small containers a vector grows into, and passes pixel-sized ones.
+struct SmallRefusingMemory final : BulkMemory {
+  bool refuse_small = false;
+  std::size_t refused = 0;
+  void* allocate(std::size_t bytes, std::size_t align) override {
+    if (refuse_small && bytes < 512) {
+      ++refused;
+      return nullptr;
+    }
+    return system_bulk_memory().allocate(bytes, align);
+  }
+  void deallocate(void* p, std::size_t bytes) override {
+    system_bulk_memory().deallocate(p, bytes);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("building pulse sprites never grows a container the port could refuse") {
+  // A refused BulkVector growth aborts (memory.h), so the pulse layer's per-tile lists are
+  // sized when it is built; building sprites afterwards allocates only pixel-sized buffers,
+  // which fail softly.
+  SmallRefusingMemory mem;
+  REQUIRE(set_bulk_memory(&mem));
+  {
+    Config c = test::small_config();
+    c.pins[1].position = MapPoint{0.25, 0.33};  // the fern's ring overlaps the west pin's
+    Rig rig(c, 64U * 1024U * 1024U, 1);
+    mem.refuse_small = true;
+    ViewModel vm = test::temperature_vm(rig.config);
+    for (std::size_t i : {0U, 1U, 3U}) {
+      vm.pins[i].on_active_layer = true;
+      vm.pins[i].active_value = 33.0;
+      vm.pins[i].active_severity = Severity::Danger;
+    }
+    vm.rooms[0].pulse = Severity::Danger;
+    vm.rooms[1].pulse = Severity::Warn;
+    rig.show(vm);  // aborted in a ring's or a cell's list before they were sized up front
+    const PulseCounters pc = rig.screen->pulse_counters();
+    CHECK(pc.rings_shown == 3);
+    CHECK(pc.rooms_animated == 2);
+    CHECK(pc.alloc_failures == 0);
+    CHECK(rig.screen->bake_ready());  // the bake's lists were taken before the port refused
+    const char* why = "";
+    CHECK(rig.screen->verify_pulse_frames(&why));
+    INFO(why);
+    // A ring and a room stop and start again: their lists keep what they were given.
+    vm.pins[1].active_severity = Severity::Ok;
+    vm.rooms[0].pulse = Severity::Ok;
+    rig.show(vm);
+    vm.pins[1].active_severity = Severity::Danger;
+    vm.rooms[0].pulse = Severity::Danger;
+    rig.show(vm);
+    CHECK(rig.screen->pulse_counters().rings_shown == 3);
+    CHECK(rig.screen->pulse_counters().rooms_animated == 2);
+    CHECK(mem.refused == 0);
+    mem.refuse_small = false;
+  }
+  CHECK(bulk_stats().in_use == 0);
+  REQUIRE(set_bulk_memory(nullptr));
+}
+
 TEST_CASE("paused sprite builds start nothing; the sets already built keep playing") {
   Rig rig(test::small_config(), 64U * 1024U * 1024U, 1);
   ViewModel vm = test::temperature_vm(rig.config);

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "headless.h"
+#include "hearthmap/ui/memory.h"
 #include "lvgl.h"
 #include "map_bake.h"
 #include "sprites.h"
@@ -73,6 +74,9 @@ TEST_CASE("a bake band that fails is rendered again, never published empty") {
   const std::vector<std::uint16_t> got = s.baked(bake);
   CHECK(bake.ready());
   CHECK_FALSE(bake.failed());
+  CHECK(g_failures_left == 0);  // both injected failures happened
+  // The reference drew the wall (not just blue everywhere), so the comparison means something.
+  CHECK(want[20U * 64U + 32U] != 0x001F);
   CHECK(got == want);  // the wall is in every band, the failed one included
 }
 
@@ -84,4 +88,42 @@ TEST_CASE("a bake whose bands keep failing gives up and publishes nothing") {
   CHECK(bake.failed());
   CHECK_FALSE(bake.ready());
   CHECK(got.empty());  // apply() refuses: the walls stay LVGL objects
+}
+
+namespace {
+
+/// The system heap, refusing every block smaller than `below` bytes: the bake's pixel buffers
+/// fit, its small pointer lists do not.
+struct RefusingSmall final : hearthmap::ui::BulkMemory {
+  std::size_t below = 512;
+  void* allocate(std::size_t bytes, std::size_t align) override {
+    if (bytes < below) return nullptr;
+    return hearthmap::ui::system_bulk_memory().allocate(bytes, align);
+  }
+  void deallocate(void* p, std::size_t bytes) override {
+    hearthmap::ui::system_bulk_memory().deallocate(p, bytes);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("a bake whose working lists the port refuses fails softly, objects left as they are") {
+  RefusingSmall mem;
+  REQUIRE(hearthmap::ui::set_bulk_memory(&mem));
+  {
+    // A rebake: the wall is hidden (the shown image carries it), and something over the map
+    // must be hidden for each band. Both go on the bake's working lists.
+    Scene s;
+    lv_obj_t* over = lv_obj_create(s.map);
+    lv_obj_set_hidden(s.wall, true);
+    MapBake bake(s.map, s.area, {s.wall}, {over});
+    const std::vector<std::uint16_t> got = s.baked(bake);  // aborted here before the fix
+    CHECK(bake.failed());
+    CHECK_FALSE(bake.ready());
+    CHECK(got.empty());
+    CHECK(lv_obj_is_hidden(s.wall));  // left as it was
+    CHECK_FALSE(lv_obj_is_hidden(over));
+  }
+  CHECK(hearthmap::ui::bulk_stats().in_use == 0);
+  REQUIRE(hearthmap::ui::set_bulk_memory(nullptr));
 }

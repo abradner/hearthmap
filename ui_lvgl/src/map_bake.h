@@ -29,8 +29,9 @@ class MapBake {
 
   /// Bytes the bake needs (3 per map pixel); the embedder decides whether it can afford them.
   std::size_t bytes_needed() const;
-  /// Start (allocating the bake from the memory port, D-064). Without it, or when the port
-  /// refuses (failed() is then true), prepare_step() does nothing and ready() stays false.
+  /// Start (allocating the bake, and its working lists, from the memory port, D-064). Without
+  /// it, or when the port refuses (failed() is then true), prepare_step() does nothing and
+  /// ready() stays false.
   void start();
   /// One band. Returns true while bands remain. A band whose render fails is tried again; after
   /// kMaxBandFailures failures in a row the bake gives up: ready() stays false, the memory is
@@ -51,20 +52,25 @@ class MapBake {
 
   /// Show or hide the baked objects (hidden while the shown image carries them).
   void set_objects_hidden(bool hidden);
-  /// `o` is hidden while bands are rendered, like the objects given at construction.
-  void hide_too(lv_obj_t* o) { hide_.push_back(o); }
+  /// `o` is hidden while bands are rendered, like the objects given at construction. After
+  /// start() its slot in the working list is taken now; if the port refuses it, the bake gives up.
+  void hide_too(lv_obj_t* o);
   void forget_objects();
 
  private:
+  /// Frees everything and stays failed; the objects are left as they are.
+  void give_up();
   lv_obj_t* map_;
   lv_area_t area_;
   std::int32_t w_, h_;
   std::vector<lv_obj_t*> draw_;  // a pointer per wall and label, given once
   std::vector<lv_obj_t*> hide_;
-  BulkVector<lv_obj_t*> hidden_, shown_;  // prepare_step()'s lists, kept between bands
-  BulkBuffer<std::uint16_t> premul_;      // the drawing over black
-  BulkBuffer<std::uint8_t> through_;      // 0..255: how much of the image beneath shows
-  BulkBuffer<std::uint16_t> scratch_;     // one band over white
+  // prepare_step()'s lists, one slot per object it may touch, taken in start() so a refusal
+  // fails the bake softly instead of aborting in a vector's growth (D-064).
+  BulkBuffer<lv_obj_t*> hidden_, shown_;
+  BulkBuffer<std::uint16_t> premul_;   // the drawing over black
+  BulkBuffer<std::uint8_t> through_;   // 0..255: how much of the image beneath shows
+  BulkBuffer<std::uint16_t> scratch_;  // one band over white
   std::int32_t next_row_ = 0;
   bool started_ = false;
   bool ready_ = false;

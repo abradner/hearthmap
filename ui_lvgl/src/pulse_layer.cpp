@@ -283,6 +283,24 @@ PulseLayer::PulseLayer(lv_obj_t* map, lv_point_t map_origin, lv_point_t map_size
     make_tile(ring.t, map_, origin_);
     ring_img_.push_back(ring.t.img);
   }
+  // Each tile's lists of what reaches it, sized now to everything that ever could (pins, rooms
+  // and ring tiles never move; a cell's rooms are fixed above): a vector's growth cannot fail
+  // softly (memory.h), so preparing a tile must never grow one (D-064).
+  for (Ring& r : rings_) {
+    std::size_t n_rings = 0;
+    for (const Ring& o : rings_) {
+      const lv_area_t reach{static_cast<std::int32_t>(o.cx) - kRingReach,
+                            static_cast<std::int32_t>(o.cy) - kRingReach,
+                            static_cast<std::int32_t>(o.cx) + kRingReach,
+                            static_cast<std::int32_t>(o.cy) + kRingReach};
+      if (intersects(reach, r.t.area)) ++n_rings;
+    }
+    std::size_t n_rooms = 0;
+    for (const Room& room : rooms_) n_rooms += intersects(room.extent, r.t.area) ? 1U : 0U;
+    r.rings.reserve(n_rings);
+    r.rooms.reserve(n_rooms);
+  }
+  for (Cell& c : cells_) c.refs.reserve(c.rooms.size());
   // Sized once, so the frame clock and captures never grow them: a due frame per tile at most
   // (requeue() can add one more), and everything capture() may hide.
   due_.reserve(2 * (rings_.size() + cells_.size()));
@@ -475,8 +493,9 @@ void PulseLayer::set_ring(std::size_t pin, bool on) {
   } else if (r.allocated) {
     release(r.t);
     r.allocated = false;
-    BulkVector<RingRef>().swap(r.rings);
-    BulkVector<RoomRef>().swap(r.rooms);
+    // Their tables go back; the lists keep the capacity they were given at construction.
+    r.rings.clear();
+    r.rooms.clear();
     fit_cells_under(r.t.area);  // the cells it covered draw their strokes again
     admit_waiting();
   }
@@ -789,8 +808,8 @@ void PulseLayer::fit_cell(Cell& c) {
   const bool same = want.x1 == c.t.area.x1 && want.y1 == c.t.area.y1 && want.x2 == c.t.area.x2 &&
                     want.y2 == c.t.area.y2;
   if (gone == c.gone && (gone || same)) return;
-  release(c.t);  // frames of the old size are no use
-  BulkVector<RoomRef>().swap(c.refs);
+  release(c.t);    // frames of the old size are no use
+  c.refs.clear();  // tables back, capacity kept
   c.gone = gone;
   if (gone) return;
   c.t.area = want;
@@ -815,7 +834,7 @@ void PulseLayer::drop_room(std::size_t room) {
     Cell& c = cells_[i];
     if (cell_active(c)) continue;  // another room still pulses through it
     release(c.t);
-    BulkVector<RoomRef>().swap(c.refs);
+    c.refs.clear();  // tables back, capacity kept
   }
   fit_cells(r);  // the cells it shared shrink to the rooms left
   mark_dirty(r.extent);
