@@ -52,6 +52,27 @@ def test_omitted_map_area_is_the_whole_canvas(gen, schema, minimal):  # R14, D-0
     assert "c.canvas.map_area = CanvasRect{0, 0, 1024, 600};" in src
 
 
+def test_map_rotation_is_emitted_for_core_to_check_and_apply(gen, schema, minimal):  # D-080
+    # Absent: the schema's default, 0. Present: the written value, untouched; validate() checks
+    # it and apply_map_rotation() turns the rooms and pins at boot, so the tables stay in the
+    # plan's frame (the polygon below is emitted exactly as written).
+    src = gen.emit_config_source(minimal, schema, "m.json").source
+    assert "c.canvas.map_rotation = 0;" in src
+    minimal["canvas"]["map_rotation"] = 270
+    src = gen.emit_config_source(minimal, schema, "m.json").source
+    assert "c.canvas.map_rotation = 270;" in src
+    assert "MapPoint{1.0, 0.0}, MapPoint{1.0, 1.0}" in src
+
+
+def test_map_rotation_default_is_read_from_the_schema(gen, schema, minimal):
+    import copy
+
+    s = copy.deepcopy(schema)
+    s["$defs"]["canvas"]["properties"]["map_rotation"]["default"] = 180
+    src = gen.emit_config_source(minimal, s, "m.json").source
+    assert "c.canvas.map_rotation = 180;" in src
+
+
 def test_explicit_values_win_over_defaults(gen, schema, example):
     src = gen.emit_config_source(example, schema, "e.json").source
     assert "c.canvas.map_area = CanvasRect{40, 76, 864, 720};" in src
@@ -138,8 +159,13 @@ def test_optional_pin_fields(gen, schema, example):
 
 def test_validate_is_the_gate(gen, schema, minimal):
     src = gen.emit_config_source(minimal, schema, "m.json").source
-    assert "result.issues = validate(c);" in src
-    assert "if (usable(result.issues)) result.config = std::move(c);" in src
+    # validate(), then refuse on an Error, then turn the accepted config (D-080), then hand it
+    # over: in that order, so no Config leaves load() unvalidated or unturned.
+    steps = ["result.issues = validate(c);", "if (!usable(result.issues)) return result;",
+             "apply_map_rotation(c);", "result.config = std::move(c);"]
+    at = [src.find(s) for s in steps]
+    assert -1 not in at, at
+    assert at == sorted(at), at
 
 
 # ---- literals --------------------------------------------------------------------------------

@@ -304,6 +304,17 @@ bool band_ordered(const Band& b) {
 
 // --- sections ------------------------------------------------------------------------------
 
+// Quarter turns for a map_rotation in degrees, or -1 when it is not 0, 90, 180 or 270.
+int quarter_turns_of(std::int32_t degrees) {
+  switch (degrees) {
+    case 0: return 0;
+    case 90: return 1;
+    case 180: return 2;
+    case 270: return 3;
+    default: return -1;
+  }
+}
+
 void check_canvas(const Canvas& canvas, Issues& out) {
   if (canvas.width < 1 || canvas.width > kMaxCanvasSide) {
     out.error("/canvas/width", "canvas width must be 1..4096");
@@ -323,6 +334,9 @@ void check_canvas(const Canvas& canvas, Issues& out) {
   if (m.x < 0 || m.y < 0 || m.width < 1 || m.height < 1 || right > canvas.width ||
       bottom > canvas.height) {
     out.error("/canvas/map_area", "map area must be non-empty and lie inside the canvas");
+  }
+  if (quarter_turns_of(canvas.map_rotation) < 0) {
+    out.error("/canvas/map_rotation", "map_rotation must be 0, 90, 180 or 270");
   }
 }
 
@@ -560,6 +574,16 @@ bool ConfigValidator::step() {
 
 std::vector<ConfigIssue> ConfigValidator::take_issues() {
   return state_->out.take();
+}
+
+void apply_map_rotation(Config& config) {
+  const int turns = quarter_turns_of(config.canvas.map_rotation);
+  if (turns <= 0) return;  // 0, or not a valid rotation: nothing to turn (config.h)
+  for (Room& room : config.rooms) {
+    for (MapPoint& v : room.polygon) v = rotate_map_point(v, turns);
+  }
+  for (Pin& pin : config.pins) pin.position = rotate_map_point(pin.position, turns);
+  config.canvas.map_rotation = 0;
 }
 
 // The whole pass, written out on its own rather than by stepping ConfigValidator, so the

@@ -29,6 +29,27 @@ set_tests_properties(host.memory PROPERTIES FAIL_REGULAR_EXPRESSION "test cases:
 set(_flat "${PROJECT_SOURCE_DIR}/examples/flat")
 set(_golden_dir "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 set(_out_dir "${PROJECT_BINARY_DIR}/golden-out")
+
+# The example turned by canvas.map_rotation (D-080), written at configure time from the example
+# itself so the two cannot drift: only map_rotation and map_area change. At 90 and 270 the map
+# area takes the plan's proportions swapped (864 x 720 becomes 600 x 720, same corner); at 180
+# it keeps the example's. Basil (0.625, 0.06) at 90 lands at (1 - 0.06, 0.625) of 600 x 720:
+# canvas 604, 526.
+file(READ "${_flat}/config.json" _flat_json)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_flat}/config.json")
+set(_rotated_dir "${CMAKE_CURRENT_BINARY_DIR}/rotated")
+foreach(_deg 90 180 270)
+  if(_deg EQUAL 180)
+    set(_area [=[{"x": 40, "y": 76, "width": 864, "height": 720}]=])
+  else()
+    set(_area [=[{"x": 40, "y": 76, "width": 600, "height": 720}]=])
+  endif()
+  string(JSON _rot SET "${_flat_json}" canvas map_area "${_area}")
+  string(JSON _rot SET "${_rot}" canvas map_rotation "${_deg}")
+  file(WRITE "${_rotated_dir}/flat-${_deg}.json" "${_rot}\n")
+endforeach()
+
+# Each case: name|fixture|extra arguments[|config]; config defaults to the example's.
 set(HEARTHMAP_GOLDEN_CASES
   "all-ok|all-ok|"
   "thirsty-many|thirsty-many|--layer soil"
@@ -41,6 +62,10 @@ set(HEARTHMAP_GOLDEN_CASES
   "layer-soil|all-ok|--layer soil"
   "layer-air|thirsty-many|--layer air"
   "pulse-ring-on-red|thirsty-many|--layer soil --time-ms 700"
+  "rotated-90|thirsty-many|--layer soil|${_rotated_dir}/flat-90.json"
+  "rotated-180|thirsty-many|--layer soil|${_rotated_dir}/flat-180.json"
+  "rotated-270|thirsty-many|--layer soil|${_rotated_dir}/flat-270.json"
+  "rotated-90-overlay-plant|thirsty-many|--layer soil --tap 604,526|${_rotated_dir}/flat-90.json"
 )
 
 set(_update_commands)
@@ -49,7 +74,11 @@ foreach(case IN LISTS HEARTHMAP_GOLDEN_CASES)
   list(GET _parts 0 _name)
   list(GET _parts 1 _fixture)
   list(LENGTH _parts _n)
-  set(_args --config "${_flat}/config.json" --readings "${_flat}/readings/${_fixture}.json"
+  set(_config "${_flat}/config.json")
+  if(_n GREATER 3)
+    list(GET _parts 3 _config)
+  endif()
+  set(_args --config "${_config}" --readings "${_flat}/readings/${_fixture}.json"
             --time-ms 400)
   if(_n GREATER 2)
     list(GET _parts 2 _extra)

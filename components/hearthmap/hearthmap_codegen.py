@@ -290,6 +290,7 @@ def schema_defaults(schema: dict) -> dict[str, Any]:
         "heat.grid_cols": default(defs["heat"]["properties"]["grid_cols"]),
         "heat.grid_rows": default(defs["heat"]["properties"]["grid_rows"]),
         "heat.idw_power": default(defs["heat"]["properties"]["idw_power"]),
+        "canvas.map_rotation": default(defs["canvas"]["properties"]["map_rotation"]),
     }
 
 
@@ -373,7 +374,8 @@ class GeneratedConfigSource final : public ::hearthmap::ConfigSource {
   /// head (canvas, reserves), one per room, one per pin, a tail (layers and scalars).
   std::size_t build_steps() const;
   void build_step(::hearthmap::Config &c, std::size_t k) const;
-  /// build(), then validate(); no Config when it reports an Error.
+  /// build(), then validate(); no Config when it reports an Error. A Config it returns has been
+  /// through apply_map_rotation() (core's ConfigSource contract, D-080).
   ::hearthmap::ConfigLoadResult load() const override;
 };
 
@@ -462,6 +464,10 @@ def emit_config_source(document: dict, schema: dict, source_name: str) -> Genera
     ma = canvas.get("map_area", {"x": 0, "y": 0, "width": width, "height": height})
     rect = ", ".join(cpp_int(ma[k], f"/canvas/map_area/{k}") for k in ("x", "y", "width", "height"))
     w(f"  c.canvas.map_area = CanvasRect{{{rect}}};")
+    # Emitted as written, rooms and pins left in the plan's frame: validate() checks the value
+    # and apply_map_rotation() turns the map at boot (D-080), so neither rule lives here.
+    rotation = canvas.get("map_rotation", d["canvas.map_rotation"])
+    w(f"  c.canvas.map_rotation = {cpp_int(rotation, '/canvas/map_rotation')};")
     unit = document.get("temperature_unit", d["temperature_unit"])
     w(f"  c.temperature_unit = TemperatureUnit::{'Fahrenheit' if unit == 'F' else 'Celsius'};")
 
@@ -593,7 +599,9 @@ def emit_config_source(document: dict, schema: dict, source_name: str) -> Genera
     w("  Config c = build();")
     w("  ConfigLoadResult result;")
     w("  result.issues = validate(c);")
-    w("  if (usable(result.issues)) result.config = std::move(c);")
+    w("  if (!usable(result.issues)) return result;")
+    w("  apply_map_rotation(c);  // the panel's frame (core's ConfigSource contract, D-080)")
+    w("  result.config = std::move(c);")
     w("  return result;")
     w("}")
     w("")

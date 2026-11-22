@@ -5,6 +5,7 @@
 // (AGENTS.md principle 2). Rulings followed: R2 (HUD dry side), R10 (outdoor rooms get no
 // heat colour), D-004/D-006/D-008/D-009/D-012.
 
+import { inViewFrame } from "../lib/rotation";
 import { DEFAULT_HEAT, DEFAULT_HUD_MAX_ITEMS, DEFAULT_STALE_AFTER_S, PRIMARY_ROLE, defaultMapArea } from "../lib/defaults";
 import { pointInPolygon } from "../lib/geometry";
 import { effectiveBand, fedLayer, layerEnabled } from "../lib/validate";
@@ -149,7 +150,10 @@ function roleForLayer(layer: LayerName): Role {
   return ({ temperature: "temperature", humidity: "humidity", soil: "moisture", air: "co2" } as const)[layer];
 }
 
-export function buildScene(config: Config, rs: ReadingSet, requested: LayerName): Scene {
+export function buildScene(planConfig: Config, rs: ReadingSet, requested: LayerName): Scene {
+  // The panel's frame, as core hands it over (apply_map_rotation(), D-080): everything below
+  // draws the turned rooms and pins into map_area and needs no rotation of its own.
+  const config = inViewFrame(planConfig);
   const mapArea = config.canvas.map_area ?? defaultMapArea(config.canvas);
   const toPx = (p: MapPoint) => ({ x: mapArea.x + p[0] * mapArea.width, y: mapArea.y + p[1] * mapArea.height });
   const enabledLayers = (["temperature", "humidity", "soil", "air"] as const).filter((l) => layerEnabled(config, l));

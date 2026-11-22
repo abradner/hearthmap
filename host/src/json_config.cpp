@@ -127,7 +127,7 @@ class Parser {
   void canvas(const json& j, Canvas& c) {
     const std::string path = "/canvas";
     if (!object_at(j, path)) return;
-    only(j, path, {"width", "height", "orientation", "map_area"});
+    only(j, path, {"width", "height", "orientation", "map_area", "map_rotation"});
     if (auto* w = required(j, "width", path)) {
       if (auto v = integer(*w, path + "/width")) c.width = narrow<std::int32_t>(*v);
     }
@@ -160,6 +160,11 @@ class Parser {
           }
         }
       }
+    }
+    // Schema default 0 (Canvas's own). Any integer is taken here; validate() decides which
+    // ones are rotations (D-017).
+    if (auto* r = member(j, "map_rotation")) {
+      if (auto v = integer(*r, path + "/map_rotation")) c.map_rotation = narrow<std::int32_t>(*v);
     }
   }
 
@@ -429,7 +434,9 @@ ConfigLoadResult JsonConfigSource::load() const {
   if (!usable(result.issues)) return result;
   std::vector<ConfigIssue> semantic = validate(c);
   result.issues.insert(result.issues.end(), semantic.begin(), semantic.end());
-  if (usable(result.issues)) result.config = std::move(c);
+  if (!usable(result.issues)) return result;
+  apply_map_rotation(c);  // hand over the panel's frame (config.h, ConfigSource; D-080)
+  result.config = std::move(c);
   return result;
 }
 

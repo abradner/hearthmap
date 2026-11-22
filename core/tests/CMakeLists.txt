@@ -10,6 +10,7 @@ add_executable(hearthmap_core_tests
   config_validator_test.cpp
   geometry_test.cpp
   heat_field_test.cpp
+  map_rotation_test.cpp
   pipeline_test.cpp
   room_scanner_test.cpp
   semantic_cases_test.cpp

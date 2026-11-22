@@ -351,6 +351,65 @@ def test_fahrenheit_with_defaulted_band_is_refused_by_core(gen, schema, minimal,
     assert "ERROR /layers/temperature:" in out, out
 
 
+ROTATION_DRIVER = r"""
+#include <cstdio>
+#include "hearthmap_gen/generated_config.h"
+#include "panel_pipeline.h"
+using namespace hearthmap;
+using Stage = hearthmap_device::PanelPipeline::Stage;
+static void print(const char* tag, const Config& c) {
+  std::printf("%s rotation=%d pin=%.17g,%.17g vertex1=%.17g,%.17g\n", tag, c.canvas.map_rotation,
+              c.pins[0].position.x, c.pins[0].position.y, c.rooms[0].polygon[1].x,
+              c.rooms[0].polygon[1].y);
+}
+int main() {
+  hearthmap_gen::GeneratedConfigSource source;
+  ConfigLoadResult r = source.load();
+  if (!r.config) { std::printf("REFUSED\n"); return 1; }
+  print("LOAD", *r.config);
+  hearthmap_device::PanelPipeline::Builder builder;
+  builder.steps = source.build_steps();
+  builder.step = [&](Config& c, std::size_t k) { source.build_step(c, k); };
+  hearthmap_device::PanelPipeline p(builder, Palette{});
+  while (p.stage() != Stage::Ready && p.stage() != Stage::Refused) p.boot_step(4);
+  if (p.stage() != Stage::Ready) { std::printf("PIPELINE REFUSED\n"); return 1; }
+  print("PIPELINE", p.config());
+  return 0;
+}
+"""
+
+
+@pytest.mark.parametrize("rotation, pin, vertex", [
+    (0, "0.25,0.125", "1,0"),
+    (90, "0.875,0.25", "1,1"),
+    (180, "0.75,0.875", "0,1"),
+    (270, "0.125,0.75", "0,0"),
+])
+def test_both_device_paths_hand_over_the_turned_config(gen, schema, minimal, tmp_path, rotation, pin,
+                                                       vertex):
+    """The generated load() and the stepped boot (PanelPipeline, which validates with
+    ConfigValidator and never calls load()) both end with the rooms and pins in the panel's
+    frame and map_rotation 0 (config.h, apply_map_rotation; D-080)."""
+    core = _core_sources()
+    minimal["canvas"]["map_rotation"] = rotation
+    minimal["rooms"][0]["polygon"] = [[0, 0], [1, 0], [1, 1], [0, 1]]
+    minimal["pins"] = [{"id": "t", "kind": "temperature", "name": "T", "position": [0.25, 0.125],
+                        "room": "room", "entities": {"temperature": "sensor.example_t"}}]
+    assert gen.check_schema(schema, minimal) == []
+    out = gen.emit_config_source(minimal, schema, "rot.json")
+    (tmp_path / "hearthmap_gen").mkdir()
+    (tmp_path / "hearthmap_gen/generated_config.h").write_text(out.header)
+    (tmp_path / "hearthmap_gen/generated_config.cpp").write_text(out.source)
+    (tmp_path / "driver.cpp").write_text(ROTATION_DRIVER)
+    sources = [str(tmp_path / "driver.cpp"), str(tmp_path / "hearthmap_gen/generated_config.cpp"),
+               str(COMPONENT / "panel_pipeline.cpp"), str(REPO / "ui_lvgl/src/heat_image.cpp"),
+               str(REPO / "ui_lvgl/src/memory.cpp"), *core]
+    stdout = _build_and_run(tmp_path, sources,
+                            [tmp_path, COMPONENT, REPO / "core/include", REPO / "ui_lvgl/include"])
+    for tag in ("LOAD", "PIPELINE"):
+        assert f"{tag} rotation=0 pin={pin} vertex1={vertex}" in stdout, stdout
+
+
 # ---------------------------------------------------------------------------------------------
 # The boot and frame pipeline at the schema's maximums (docs/decisions.md D-038).
 #

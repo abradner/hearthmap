@@ -123,8 +123,13 @@
           "enum": ["landscape", "portrait"]
         },
         "map_area": {
-          "description": "The canvas rectangle map space is drawn into. Default when omitted: the whole canvas (x 0, y 0, the canvas width and height). Must lie inside the canvas.",
+          "description": "The canvas rectangle map space is drawn into. Default when omitted: the whole canvas (x 0, y 0, the canvas width and height). Must lie inside the canvas. Canvas space: the on-screen rectangle, after map_rotation.",
           "$ref": "#/$defs/canvas_rect"
+        },
+        "map_rotation": {
+          "description": "How far the floor plan is turned on the panel, in degrees clockwise. Rooms and pins stay in the plan's own frame; the whole map (rooms, pins, heat field, hit-testing) is turned into map_area, whose proportions should be the plan's turned ones. Text is never turned.",
+          "enum": [0, 90, 180, 270],
+          "default": 0
         }
       }
     },

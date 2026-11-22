@@ -85,6 +85,11 @@ def _mutations(example):
     yield m(lambda d: d.update(layers={"temperature": {"warn_below": None}}))  # nullable threshold
     yield m(lambda d: d.update(layers={"temperature": {"comfort_min": None}}))  # not nullable
     yield m(lambda d: d.update(temperature_unit="F"))  # top-level if/then (Fahrenheit)
+    yield m(lambda d: d["canvas"].update(map_rotation=90))  # integer enum
+    yield m(lambda d: d["canvas"].update(map_rotation=90.0))  # 90.0 equals 90 in an enum
+    yield m(lambda d: d["canvas"].update(map_rotation=45))
+    yield m(lambda d: d["canvas"].update(map_rotation="90"))
+    yield m(lambda d: d["canvas"].update(map_rotation=True))  # bool is not 1, nor 90
 
 
 def test_verdicts_match_reference_validator(gen, schema, example):

@@ -175,6 +175,20 @@ class ConfigSchema(unittest.TestCase):
         doc["layers"].pop("temperature", None)
         self.assert_valid(doc)
 
+    def test_map_rotation_quarter_turns_are_allowed(self):  # positive control
+        for degrees in (0, 90, 180, 270):
+            doc = copy.deepcopy(EXAMPLE)
+            doc["canvas"]["map_rotation"] = degrees
+            self.assert_valid(doc)
+
+    def test_map_rotation_45(self):
+        self.assert_invalid(lambda d: d["canvas"].update(map_rotation=45))
+
+    def test_map_rotation_other_values(self):
+        for bad in (-90, 360, 1, 90.5, "90", None):
+            with self.subTest(bad=bad):
+                self.assert_invalid(lambda d, b=bad: d["canvas"].update(map_rotation=b))
+
     def test_threshold_null_is_allowed(self):
         doc = copy.deepcopy(EXAMPLE)
         doc["layers"]["temperature"] = {"warn_below": None, "danger_below": None}
