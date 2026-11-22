@@ -46,6 +46,7 @@ SCHEMA_DEFAULTS = {
     "/$defs/heat/properties/grid_cols": "grid_cols",
     "/$defs/heat/properties/grid_rows": "grid_rows",
     "/$defs/heat/properties/idw_power": "idw_power",
+    "/$defs/canvas/properties/map_rotation": "map_rotation",
 }
 
 
@@ -136,6 +137,7 @@ def parse_readme_scalars(readme: str) -> dict[str, object]:
     # map_area defaults to the whole canvas (docs/decisions.md D-023): documented symbolically.
     area_cells = _cells(_row(readme, "map_area"))
     out["map_area_whole_canvas"] = _default_in(area_cells[2]) == "{0, 0, width, height}"
+    out["map_rotation"] = int(_default_in(_cells(_row(readme, "map_rotation"))[2]))
     m = re.search(r"`default` \([^)]*default `([a-z]+)`\)", readme)
     if not m:
         raise ValueError("README does not state the default layer")
@@ -261,6 +263,9 @@ def self_test(dump: dict, readme: str, schema: dict) -> int:
         "schema map_area": (dump, readme, schema_with(
             ["$defs", "canvas", "properties", "map_area", "description"], "Default: x 0, y 0")),
         "core map_area": (dump_with(["map_area"], [0, 0, 960, 800]), readme, schema),
+        "core map_rotation": (dump_with(["map_rotation"], 90), readme, schema),
+        "schema map_rotation": (dump, readme, schema_with(
+            ["$defs", "canvas", "properties", "map_rotation", "default"], 270)),
         "schema stale_after_s": (dump, readme, schema_with(["properties", "stale_after_s", "default"], 10801)),
         "schema idw_power": (dump, readme, schema_with(["$defs", "heat", "properties", "idw_power", "default"], 3)),
         "schema new unchecked default": (

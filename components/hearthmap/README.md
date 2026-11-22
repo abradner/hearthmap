@@ -56,7 +56,11 @@ A full example device is `examples/flat/esphome/flat-panel.yaml`.
    omitted `map_area` is the whole canvas (D-023); band defaults are left to core's
    `default_band()`, so neither set of numbers is copied here (D-007). `LayerConfig::present`
    gets a bit for exactly the band fields the JSON wrote, `null` included (D-011). Bindings are
-   emitted in `Role` order whatever the JSON key order (D-019).
+   emitted in `Role` order whatever the JSON key order (D-019). `canvas.map_rotation` is
+   emitted as written (default `0` from the schema) and rooms and pins stay in the plan's frame:
+   core's `validate()` checks the value at boot and `apply_map_rotation()` turns the map once,
+   at the end of the boot's validate stage (D-080). Nothing here turns a coordinate, so moving
+   the panel is a one-field change and a rebuild.
 4. **Library copy** (below).
 
 **Before every flash, run the check** (D-048). The build checks the schema only, so a config

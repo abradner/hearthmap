@@ -137,6 +137,46 @@ TEST_CASE("semantic rules are core's: validate() runs and its errors refuse the 
   CHECK_FALSE(r2.config.has_value());
 }
 
+TEST_CASE("canvas.map_rotation: absent is 0, and a loaded config is already turned") {
+  // tiny()'s pin sits at (0.5, 0.5), which no turn moves; move it off-centre so a turn shows.
+  auto with_pin_at = [](std::string t) {
+    t.replace(t.find("[0.5, 0.5]"), 10, "[0.25, 0.125]");
+    return t;
+  };
+  SUBCASE("absent") {
+    const ConfigLoadResult r = JsonConfigSource(with_pin_at(tiny())).load();
+    REQUIRE(r.config.has_value());
+    CHECK(r.config->canvas.map_rotation == 0);
+    CHECK(r.config->pins[0].position.x == 0.25);
+    CHECK(r.config->pins[0].position.y == 0.125);
+  }
+  SUBCASE("90: the source hands over the panel's frame (config.h, ConfigSource)") {
+    const ConfigLoadResult r =
+        JsonConfigSource(with_pin_at(tiny("", R"(, "map_rotation": 90)"))).load();
+    REQUIRE(r.config.has_value());
+    CHECK(r.config->canvas.map_rotation == 0);
+    CHECK(r.config->pins[0].position.x == 0.875);  // (1 - y, x)
+    CHECK(r.config->pins[0].position.y == 0.25);
+  }
+  SUBCASE("270") {
+    const ConfigLoadResult r =
+        JsonConfigSource(with_pin_at(tiny("", R"(, "map_rotation": 270)"))).load();
+    REQUIRE(r.config.has_value());
+    CHECK(r.config->pins[0].position.x == 0.125);  // (y, 1 - x)
+    CHECK(r.config->pins[0].position.y == 0.75);
+  }
+  SUBCASE("45 is validate()'s error") {
+    const ConfigLoadResult r = JsonConfigSource(tiny("", R"(, "map_rotation": 45)")).load();
+    CHECK_FALSE(r.config.has_value());
+    CHECK(has_issue(r, "/canvas/map_rotation", IssueSeverity::Error));
+  }
+  SUBCASE("a string is the parser's error") {
+    const ConfigLoadResult r = JsonConfigSource(tiny("", R"(, "map_rotation": "90")")).load();
+    CHECK_FALSE(r.config.has_value());
+    CHECK(has_issue(r, "/canvas/map_rotation", IssueSeverity::Error));
+  }
+}
+
 TEST_CASE("RFC 3339 timestamps") {
   CHECK(parse_rfc3339("1970-01-01T00:00:00Z").value_or(-1) == 0);
   CHECK(parse_rfc3339("2026-01-15T09:00:00Z").value_or(-1) == 1768467600);

@@ -33,6 +33,15 @@ Two spaces (`core/include/hearthmap/geometry.h`):
   plan's own proportions, so set `canvas.map_area` to the same aspect ratio as the floor plan
   or the plan will look squashed.
 - **Canvas space**: panel pixels after rotation, origin top-left. Only `canvas` uses it.
+- **The plan's frame and the panel's.** Rooms and pins are always stored in the floor plan's
+  own frame: "up" is the top of the plan as drawn. `canvas.map_rotation` turns the whole map
+  clockwise by 90, 180 or 270 degrees for a panel that hangs turned relative to the house, so
+  moving the panel later is one field, not every coordinate (D-080). Core turns rooms and pins
+  once, as the config is loaded, and draws them, the heat field and hit-testing in the turned
+  frame; labels and pin icons stay upright. `map_area` is canvas space, the on-screen rectangle
+  after the turn: at 90 or 270 the plan's proportions are swapped inside it, so a plan 1.2
+  times as wide as it is tall wants a map area 1.2 times as tall as it is wide. The editor's
+  "Match plan shape" does this for you.
 
 ## Top level
 
@@ -55,7 +64,8 @@ Two spaces (`core/include/hearthmap/geometry.h`):
 |---|---|---|---|
 | `width`, `height` | integer | required | Pixels after rotation. The target panel is 1280 x 800. |
 | `orientation` | `"landscape"` \| `"portrait"` | required | Landscape needs `width > height`, portrait `height > width` (core `validate()`). |
-| `map_area` | `{x, y, width, height}` | the whole canvas: `{0, 0, width, height}` | Canvas rectangle that map space is drawn into; must lie inside the canvas. The rest of the canvas is the HUD and layer tabs, so a real config sets it (the example uses `{0, 0, 960, 800}`). |
+| `map_area` | `{x, y, width, height}` | the whole canvas: `{0, 0, width, height}` | Canvas rectangle that map space is drawn into; must lie inside the canvas. The rest of the canvas is the HUD and layer tabs, so a real config sets it (the example uses `{40, 76, 864, 720}`). On screen, after `map_rotation`: at 90 or 270 give it the plan's proportions swapped (Coordinates, above). |
+| `map_rotation` | `0` \| `90` \| `180` \| `270` | `0` | How far the floor plan is turned on the panel, degrees clockwise as you face it. Rooms, pins, heat field and taps all turn; text does not. Any other value is refused (schema, and core `validate()`). |
 
 ## `rooms[]`
 
