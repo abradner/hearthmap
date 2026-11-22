@@ -2227,3 +2227,41 @@ TEST_CASE(
   CHECK(again.y2 == a0.y2);
   CHECK(lv_area_get_size(&again) == lv_area_get_size(&a0));
 }
+
+TEST_CASE("a piece low in its tile claims no memory past its frame set, in the last frame") {
+  // Pin 1's ring covers the lower left of pin 0's tile, so pin 0 keeps a piece on its right that
+  // reaches the tile's bottom row at an offset: its descriptor's stride * h span, from the last
+  // frame, runs past the frames by that offset. verify_pulse_frames() checks it fits the set.
+  Config c = test::small_config();
+  c.pins[1].position = MapPoint{0.20, 0.33};
+  Rig rig(c, 64U * 1024U * 1024U, 1);
+  ViewModel vm = test::temperature_vm(rig.config);
+  auto danger = [&](std::size_t i) {
+    vm.pins[i].on_active_layer = true;
+    vm.pins[i].active_value = 33.0;
+    vm.pins[i].active_severity = Severity::Danger;
+  };
+  vm.hud = Hud{};
+  danger(0);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_area_t a0, a1;
+  lv_obj_get_coords(rig.w().pin_pulse[0], &a0);  // pin 0's whole tile, nothing over it yet
+  danger(1);
+  rig.show(vm);
+  lv_obj_update_layout(rig.w().root);
+  lv_obj_get_coords(rig.w().pin_pulse[1], &a1);
+  // The case under test: a shown piece of pin 0's tile on its bottom row, more than the 16 guard
+  // words in from its left edge (so the old allocation was too short for its claim).
+  bool low_right_piece = false;
+  for (const auto& sp : shown_pulse_images(rig.w())) {
+    const lv_area_t& p = sp.second;
+    low_right_piece = low_right_piece || (p.y2 == a0.y2 && p.x1 > a0.x1 + 16 && p.x1 > a1.x2 &&
+                                          p.x2 <= a0.x2 && p.y1 >= a0.y1);
+  }
+  CHECK(low_right_piece);
+  const char* why = "";
+  const bool ok = rig.screen->verify_pulse_frames(&why);
+  INFO(std::string(why));
+  CHECK(ok);
+}

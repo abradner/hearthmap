@@ -557,7 +557,9 @@ std::size_t PulseLayer::need_at(std::uint32_t div, bool with_rooms) const {
   std::size_t n = 0, largest = 0;
   auto add = [&](const Tile& t, bool ring, std::size_t tables) {
     const std::size_t px = static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h);
-    const std::size_t frames = px * 2U * ((ring ? kRingFrames : kRoomSteps) / div);
+    // The frames, their guard words and the row of padding after them (FrameSet::pad).
+    const std::size_t frames = px * 2U * ((ring ? kRingFrames : kRoomSteps) / div) +
+                               (2U * kGuardWords + static_cast<std::size_t>(t.w)) * 2U;
     n += px * 4U + px * 2U * tables + frames;
     largest = std::max(largest, frames);
   };
@@ -733,6 +735,7 @@ void PulseLayer::reset_job() {
   job_.stage = Job::Stage::CaptureFull;
   job_.out = false;
   job_.next.px.release();
+  job_.next.pad = 0;
   job_.next.count = 0;
   job_.next.complete = false;
   job_.table = 0;
@@ -1070,13 +1073,15 @@ bool PulseLayer::submit_job() {
   job_.next.complete = false;
   const std::size_t words =
       static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * job_.next.count;
-  ok = ok && job_.next.px.resize(words + 2 * kGuardWords);
+  job_.next.pad = static_cast<std::size_t>(t.w);  // see FrameSet::pad
+  ok = ok && job_.next.px.resize(words + 2 * kGuardWords + job_.next.pad);
   if (!ok) {
     collect_job(false);  // gives everything back; the caller starves the tile
     return false;
   }
   std::fill_n(job_.next.px.begin(), kGuardWords, kCanary);
-  std::fill_n(job_.next.px.end() - static_cast<std::ptrdiff_t>(kGuardWords), kGuardWords, kCanary);
+  std::fill_n(job_.next.frames() + words, kGuardWords, kCanary);
+  std::fill_n(job_.next.frames() + words + kGuardWords, job_.next.pad, std::uint16_t{0});
   job_.x0 = t.area.x1;
   job_.y0 = t.area.y1;
   job_.w = t.w;
@@ -1647,6 +1652,13 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
                                static_cast<std::size_t>(pc.ox);
     const auto* q = reinterpret_cast<const std::uint16_t*>(pc.dsc.data);
     if (!whole(q, offset)) return fail("a tile points outside its set, or between frames");
+    // What the descriptor claims (data_size bytes from its start) lies inside the set's
+    // allocation for the set's last frame too, the worst case for a piece low in the tile.
+    const std::uint16_t* last_start =
+        b + static_cast<std::size_t>(t.shown.count - 1U) * px + offset;
+    if (last_start + pc.dsc.data_size / 2U > t.shown.px.data() + t.shown.px.size()) {
+      return fail("a piece's descriptor claims memory past its set's allocation");
+    }
     if (shown_frame == nullptr) shown_frame = q - offset;
     for (const Due& d : due_) {
       if (d.dsc == &pc.dsc && !whole(d.frame, offset)) {
@@ -1671,9 +1683,10 @@ bool PulseLayer::verify_tile(Tile& t, const char** why) {
 std::uint32_t PulseLayer::check_canaries() const {
   std::uint32_t bad = 0;
   auto check = [&bad](const FrameSet& f) {
-    if (f.px.size() < 2 * kGuardWords) return;
+    if (f.px.size() < 2 * kGuardWords + f.pad) return;
+    const std::size_t tail = f.px.size() - f.pad;  // the trailing guard ends here
     for (std::size_t i = 0; i < kGuardWords; ++i) {
-      if (f.px[i] != kCanary || f.px[f.px.size() - 1 - i] != kCanary) {
+      if (f.px[i] != kCanary || f.px[tail - 1 - i] != kCanary) {
         ++bad;
         return;
       }

@@ -134,6 +134,9 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
 
   Phase phase_ = Phase::Booting;
   hearthmap_gen::GeneratedConfigSource source_;  ///< build() feeds the pipeline
+  /// Declared before pipeline_ and screen_, so destroyed after them: their destructors poll it
+  /// for a job still out (D-069). null: jobs run inline.
+  std::unique_ptr<TaskWorker> worker_;
   std::unique_ptr<hearthmap_device::PanelPipeline> pipeline_;
   uint32_t boot_started_ms_ = 0;
   uint32_t stage_started_ms_ = 0;
@@ -184,7 +187,6 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   hearthmap_device::PerfStats perf_;  ///< Where the time goes; one DEBUG line per window.
 
   bool worker_enabled_ = true;
-  std::unique_ptr<TaskWorker> worker_;  ///< null: jobs run inline (D-069)
   const char* worker_name_ = "inline";
   hm::ui::Worker::Stats last_worker_{};
   uint32_t last_sets_built_ = 0;

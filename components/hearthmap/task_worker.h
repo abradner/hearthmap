@@ -8,10 +8,16 @@
 // watches on that core still runs. Nothing it does disables interrupts: a task notification is
 // its only blocking call.
 //
-// Its stack (kStackBytes, internal RAM, the one internal allocation the worker makes) holds a
-// step's locals: at most a frame's layer lists (two arrays of 32 small structs, about 2 KiB) or a
-// heat unit's (core's field rows, the rasterizer's rows, the bake's blend). The perf line reports
-// how much of it was never touched (`stack free`), so the size can be checked on the panel.
+// Its stack (kStackBytes, internal RAM, the one internal allocation the worker makes; never PSRAM,
+// since flash and OTA writes disable the cache) holds a step's locals: a frame's layer lists
+// (`Overlay[32]` and `RingLayer[32]`, about 2 KiB), or a heat unit's (core's field rows, the
+// rasterizer's rows, the bake's blend, and the rasterizer's `Prepared`, about 1 KiB, returned by
+// value and so a temporary on this stack for that unit), plus the task's saved FPU and PIE
+// context. 16 KiB is about four
+// times the largest of those as read from the code; it has not been measured, so the perf line
+// reports how much was never touched (`stack free`), to be checked on the panel. An overflow
+// would panic on every boot. The component creates the task only if free internal RAM stays
+// above the internal-RAM floor plus its margin afterwards (InternalRamGuard::affords()).
 #pragma once
 
 #include <cstdint>
@@ -22,7 +28,7 @@ namespace esphome::hearthmap_panel {
 
 class TaskWorker final : public ::hearthmap::ui::Worker {
  public:
-  static constexpr std::uint32_t kStackBytes = 8192;
+  static constexpr std::uint32_t kStackBytes = 16384;
   static constexpr std::uint32_t kRestAfterUs = 10000;
 
   TaskWorker();

@@ -171,14 +171,30 @@ void HearthmapComponent::setup() {
   }
   // Heat rebuilds and sprite frames on the core this loop does not use (D-069); inline on a
   // single-core chip, with `worker: false`, or when the task cannot be made.
+  // Its stack is internal RAM (never PSRAM: flash and OTA writes disable the cache), taken only
+  // if free internal RAM stays above the floor plus its margin afterwards (a counter read, no
+  // heap walk, D-067).
   if (this->worker_enabled_ && portNUM_PROCESSORS > 1) {
-    auto worker = std::make_unique<TaskWorker>();
-    const int other = xPortGetCoreID() == 0 ? 1 : 0;
-    if (worker->start(other)) {
-      this->worker_ = std::move(worker);
-      this->worker_name_ = other == 0 ? "core 0" : "core 1";
+    const std::size_t internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!this->ram_guard_.affords(internal, TaskWorker::kStackBytes)) {
+      this->worker_name_ = "inline (internal RAM too low for its stack)";
+      ESP_LOGW(TAG,
+               "worker: inline: %u KiB internal free, its %u KiB stack would leave less than the "
+               "floor %u KiB plus margin %u KiB (D-069)",
+               static_cast<unsigned>(internal / 1024U),
+               static_cast<unsigned>(TaskWorker::kStackBytes / 1024U),
+               static_cast<unsigned>(this->ram_guard_.floor() / 1024U),
+               static_cast<unsigned>(this->ram_guard_.margin() / 1024U));
     } else {
-      this->worker_name_ = "inline (task not created)";
+      auto worker = std::make_unique<TaskWorker>();
+      const int other = xPortGetCoreID() == 0 ? 1 : 0;
+      if (worker->start(other)) {
+        this->worker_ = std::move(worker);
+        this->worker_name_ = other == 0 ? "core 0" : "core 1";
+      } else {
+        this->worker_name_ = "inline (task not created)";
+        ESP_LOGW(TAG, "worker: inline: FreeRTOS could not create its task (D-069)");
+      }
     }
   }
   hearthmap_device::PanelPipeline::Builder builder;

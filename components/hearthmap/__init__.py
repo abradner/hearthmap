@@ -15,8 +15,9 @@ YAML:
       #           diagnostics (false), pulse_sprites (animated | still | off; default animated)
       # bisecting aids for the blue flash (D-067), default as shipped:
       #           heap_probe: walk, hosted_packet_pool (true), ui_storage (psram | system)
-      # heat rebuilds and sprite frames on the other core (D-069), default true; false runs them
-      # inline in loop() slices, as before (a bisecting aid):
+      # heat rebuilds and sprite frames on the other core (D-069), default true; false runs the
+      # same jobs inline in loop() slices, a bisecting aid for the threading only (the jobs
+      # themselves, kept sets, tile pieces and the step structure are the same either way):
       #           worker (true)
 
 Build-time work lives in hearthmap_codegen.py (pure Python, unit-tested); this file is only the
@@ -183,7 +184,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_HOSTED_PACKET_POOL, default=True): cv.boolean,
             cv.Optional(CONF_UI_STORAGE, default="psram"): cv.one_of(*UI_STORAGES, lower=True),
             # Heat rebuilds and sprite frames on a task on the other core (D-069); `false` runs
-            # them inline in loop() slices, as before, for bisecting.
+            # the same jobs inline in loop() slices. It bisects the threading only: what the
+            # jobs do (kept sets D-071, tile pieces D-070, their steps) is the same either way.
             cv.Optional(CONF_WORKER, default=True): cv.boolean,
         }
     ).extend(cv.COMPONENT_SCHEMA),

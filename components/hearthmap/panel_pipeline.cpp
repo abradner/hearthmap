@@ -206,7 +206,6 @@ void PanelPipeline::start_rebuild(hm::Layer layer, std::uint32_t mono_ms) {
   field_ok_ = hm::begin_heat_field(mask_, field_);
   // Sized here, on the main loop, so nothing in the job allocates (D-069).
   cell_colours_.resize(field_.cells.size());
-  ++heat_gen_;
   field_row_ = 0;
   image_row_ = -1;
   job_active_ = true;
@@ -336,7 +335,6 @@ bool PanelPipeline::run_rebuild(std::int32_t rows) {
     heat_job_.lut = &luts_[hm::index_of(job_layer_)];
     // Asked here, on the main loop: from now on the hook reads only what `ready` vouched for.
     heat_job_.use_hook = row_hook_ && (!hook_ready_ || hook_ready_());
-    job_gen_ = heat_gen_;
     job_out_ = worker_->submit(hearthmap::ui::WorkLane::Heat, heat_job_);
     if (!job_out_) return true;  // the lane is someone else's: nothing to run (a wiring error)
   }
@@ -350,7 +348,11 @@ bool PanelPipeline::settle_rebuild(hearthmap::ui::Worker::Poll poll, bool comple
   // loop has nothing to wait for.
   if (poll == hearthmap::ui::Worker::Poll::Busy) return worker_->threaded();
   job_out_ = false;
-  if (completed && job_active_ && job_gen_ == heat_gen_) {
+  // No other rebuild can have started while this one was out (start_rebuild() waits for it to
+  // come back), so the rebuild that comes back is the one in flight: it is adopted when it ran
+  // to its end and is still wanted (job_active_), and discarded when it was cancelled or given
+  // up meanwhile. No generation counter is needed for that.
+  if (completed && job_active_) {
     finish_rebuild();
     return true;
   }

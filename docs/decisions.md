@@ -1317,7 +1317,11 @@ and still comes back through `poll()` before anything lent is freed or reused, a
 whose inputs changed meanwhile discards the result by its own generation counter. A job never
 touches LVGL (not thread-safe) and never allocates through the memory port (D-064's port
 allocates from one task): its caller sizes and allocates every buffer before submitting. No lock
-is held while a step runs, and no interrupts are disabled: lane states are atomics, and the
+is held while a step runs, and no interrupts are disabled: lane states are atomics (and there is
+no atomic read-modify-write in the worker at all: every counter has one writer, the worker
+thread when threaded and the main loop when inline, so it advances by a relaxed load and store;
+an inline worker living in PSRAM inside a PulseLayer raises no question about atomic RMW on
+external memory), and the
 thread's wake-up is its only blocking primitive. **Guard:** `ui_lvgl/tests/worker_test.cpp` on
 a real `std::thread` (`worker_thread.h`, header-only, never in the library): every write
 visible after 200 hand-offs, a job cancelled while building returned before its buffer is
@@ -1351,8 +1355,11 @@ returns at once, so the main loop never runs or waits on a heat unit. While the 
 working state (the samples it draws, the field, the cell colours, the row counters and the
 target buffer, which is never the one shown) is the worker's, and the main loop starts no other
 rebuild: a layer change restarts by cancelling the one in flight and starting the new one once
-it is back; giving way cancels; a rebuild that comes back cancelled, or of an older generation,
-is discarded. The cell colours are sized when a rebuild starts, on the main loop, so nothing in
+it is back; giving way cancels; a rebuild that comes back cancelled, or no longer wanted, is
+discarded. No generation counter is needed on this side (one was written and removed in review):
+since no rebuild can start while another is out, the one that comes back is always the one in
+flight, and whether it is still wanted decides. The sprite side keeps its per-tile generation,
+because there a tile's inputs change while its set is out. The cell colours are sized when a rebuild starts, on the main loop, so nothing in
 the job allocates. The row hook (the map bake, D-055) runs on the worker: `set_row_hook()` takes
 a `ready` check asked on the main loop at hand-over, and the hook is used for that rebuild only
 if it said yes; the bake's buffers never change once it is ready, so the hook reads nothing
@@ -1365,13 +1372,24 @@ and publishes soil's image. Built with `HEARTHMAP_TSAN=1` it runs under ThreadSa
 `tsan` job): clean; with the restart not waiting for the cancelled job it reports a race in
 `begin_heat_field`.
 **On the panel** (`components/hearthmap/task_worker.cpp`, YAML `worker`, default `true`): a
-FreeRTOS task, priority 1, pinned to the core `setup()` is not running on, with an 8 KiB
-internal-RAM stack (the one internal allocation the worker makes; the 64 kB internal-RAM floor
-of D-064 is unchanged and still has about 280 KiB of headroom at the last soak's figures). It
+FreeRTOS task, priority 1, pinned to the core `setup()` is not running on, with a 16 KiB
+internal-RAM stack (the one internal allocation the worker makes; never PSRAM, since flash and
+OTA writes disable the cache). Sized at about four times the largest step frame read from the
+code (a frame's two layer arrays, about 2 KiB; a heat unit's `Prepared` temporary, about 1 KiB;
+the saved FPU and PIE context), not measured: `stack free` on the perf line is the measurement.
+It was 8 KiB until review asked for more margin, since an overflow panics on every boot. The
+task is created only if free internal RAM stays at or above the internal-RAM floor plus its
+margin afterwards (`InternalRamGuard::affords()`, a counter read); otherwise the worker runs
+inline and the boot log says why. At the last soak's figures (350-357 KiB internal free, floor
+64 KiB plus 16 KiB margin) it has about 260 KiB to spare. It
 waits on its task notification, runs queued lanes a step at a time, and gives its core away for
 a tick after every 10 ms of continuous work so that core's idle task still runs. `worker:
-false`, a single-core chip, or a failed task creation run everything inline as before; nothing
-requires a second core (the ESP32-S3 port, D-054). A third perf line, `perf work:`, says where
+false`, a single-core chip, a stack the floor cannot afford, or a failed task creation run the
+same jobs inline; nothing requires a second core (the ESP32-S3 port, D-054). `worker: false`
+bisects the threading only: inline is not the pre-D-069 code. Kept sets (D-071), tile pieces
+(D-070), the jobs' step structure (the uncomposed fill and each table are steps of their own)
+and the heat row hook decided at hand-over are the same with or without it; to compare against
+the code before them, flash 3bcd667. A third perf line, `perf work:`, says where
 jobs run, the worker's busy time, jobs completed and cancelled, its stack never touched, and the
 window's sprite sets built, kept (D-071) and discarded. **Not verified on the panel:** all of
 it; the task code has not been compiled here (the firmware build is the owner's). What would
@@ -1401,13 +1419,18 @@ less the areas of the shown tiles drawn after it (later rings for a ring, any ri
 no two shown pieces overlap, so none is ever covered by another, and nothing is lost, because
 the later tile composes the earlier one's pulse where they overlap (D-053). Cutting moves
 objects and descriptors only: frames are composed for the whole tile as before, so a cut costs
-no recompose and no memory. A cut that would need more than four pieces keeps the tile whole (it
-may then be covered, as before); only tiles a later tile can overlap get the extra images, made
+no recompose and no memory. A cut that would need more than four pieces keeps the tile whole, and
+it then falls back as `Covered`, as before: correct pixels (LVGL repaints it), the old perf cost.
+Only tiles a later tile can overlap get the extra images, made
 at construction. `present_check()` now accepts a stride of at least w * 2, and
 `show_tile_frame()` passes it to the presenter (whose `View565` always had a stride). **Trades:**
 more, smaller presents where tiles meet (four in the worst case instead of one plus a fallback);
-a piece's descriptor claims `stride * h` bytes, as LVGL requires, of which its last row's tail
-past the piece is never read. **Found while building it:** an lv_image reads its source's size
+a piece's descriptor claims `stride * h` bytes, as LVGL requires, which for a piece on the
+bottom row of the last frame runs up to its x offset past the frames. That claim is kept true
+(review): every frame set is allocated one tile row longer, after its trailing guard words
+(`FrameSet::pad`, counted in the memory estimate), and `verify_pulse_frames()` checks each shown
+piece's claimed span, from the set's last frame, against the allocation (screen test "a piece
+low in its tile claims no memory past its frame set" failed before the padding). **Found while building it:** an lv_image reads its source's size
 when the source is set, not when it draws, so a piece re-cut while showing drew its old size,
 centred (three goldens showed it); the source is set again after every re-cut, and
 `verify_pulse_frames()` checks each shown piece's image size against its descriptor. **Guard:**

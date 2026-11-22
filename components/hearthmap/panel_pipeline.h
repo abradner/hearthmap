@@ -34,7 +34,7 @@
 // field_, cell_colours_, prepared_, the row counters, job_baked_ and the target buffer
 // slots_[job_slot_].px) belongs to the worker; the main loop touches none of it, and starts no
 // other rebuild until the job is back. A rebuild that must stop (a layer change, giving way) is
-// cancelled and, once back, discarded by its generation; a restart waits for it.
+// cancelled and, once back, discarded (it is no longer wanted); a restart waits for it.
 #pragma once
 
 #include <array>
@@ -204,8 +204,6 @@ class PanelPipeline {
   hearthmap::ui::InlineWorker inline_worker_;
   hearthmap::ui::Worker* worker_ = &inline_worker_;
   bool job_out_ = false;          ///< the worker holds the rebuild's state
-  std::uint32_t heat_gen_ = 0;    ///< bumped per rebuild started
-  std::uint32_t job_gen_ = 0;     ///< the generation handed over
   bool restart_pending_ = false;  ///< a rebuild waits for the cancelled one to come back
   hearthmap::Layer restart_layer_ = hearthmap::Layer::Temperature;
   /// start_rebuild() now, or once the job on the worker is back (it is cancelled).

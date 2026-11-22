@@ -1583,6 +1583,14 @@ int main() {
   // A small floor still needs a real margin.
   InternalRamGuard small(16 * K);
   CHECK(small.margin() == 8 * K);
+  // A fixed internal allocation at boot (the worker's 16 KiB stack) is taken only if free RAM
+  // stays above floor + margin after it, so the guard is not low from the first sample.
+  CHECK(g.affords(200 * K, 16 * K));               // 184 K left >= 64 + 16
+  CHECK(g.affords(96 * K, 16 * K));                // 80 K left: exactly floor + margin
+  CHECK(!g.affords(95 * K, 16 * K));               // one K short
+  CHECK(!g.affords(8 * K, 16 * K));                // more than there is (no wrap)
+  CHECK(off.affords(17 * K, 16 * K));              // floor off: only that it exists
+  CHECK(!off.affords(15 * K, 16 * K));
   std::printf("guard checks done, %d failures\n", failures);
   return failures == 0 ? 0 : 1;
 }

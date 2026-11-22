@@ -31,8 +31,9 @@
 //   - Every call except the worker's own run_pending() is made from the main loop (one task).
 //
 // No lock is held while a step runs, and nothing here disables interrupts: the lane states are
-// atomics, and the platform's wake-up (a task notification on the panel, a condition variable on
-// the host) is its only blocking primitive, used by the worker thread alone.
+// atomics read and written with plain loads and stores (no read-modify-write anywhere: every
+// counter has a single writer), and the platform's wake-up (a task notification on the panel, a
+// condition variable on the host) is its only blocking primitive, used by the worker thread alone.
 #pragma once
 
 #include <array>

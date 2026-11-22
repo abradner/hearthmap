@@ -161,12 +161,15 @@ class PulseLayer {
   static constexpr std::size_t kGuardWords = 16;
   static constexpr std::uint16_t kCanary = 0xA5C3;
   struct FrameSet {
-    /// kGuardWords canaries, `count` frames of w x h back to back, kGuardWords canaries.
+    /// kGuardWords canaries, `count` frames of w x h back to back, kGuardWords canaries, then
+    /// `pad` words (one tile row, D-070): a piece's descriptor claims stride * h bytes, which for
+    /// a piece on the bottom row of the last frame runs up to its x offset (< w) past the frames.
     BulkBuffer<std::uint16_t> px;
+    std::size_t pad = 0;
     std::uint16_t* frames() { return px.data() + kGuardWords; }
     const std::uint16_t* frames() const { return px.data() + kGuardWords; }
     std::size_t frame_words() const {
-      return px.size() < 2 * kGuardWords ? 0 : px.size() - 2 * kGuardWords;
+      return px.size() < 2 * kGuardWords + pad ? 0 : px.size() - 2 * kGuardWords - pad;
     }
     std::uint32_t count = 0;
     std::uint32_t frame_ms = 0;  ///< count * frame_ms == kCycleMs
