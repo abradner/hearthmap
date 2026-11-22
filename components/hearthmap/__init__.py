@@ -10,8 +10,7 @@ YAML:
       #           heat_refresh_interval (15s), touchscreen_id (touch latency in the perf log),
       #           blitter (software | ppa; default software), present (false) with display_id
       #           internal_ram_floor (64kB; below it, warn and pause sprite builds; 0: off, D-064)
-      #           heap_probe (counters | walk | off; default counters, D-067),
-      #           dsi_underrun_counter (true; panel FIFO underruns in the perf log, D-067)
+      #           heap_probe (counters | walk | off; default counters, D-067)
       # bisecting aids for the hosted Wi-Fi link (D-063), off by default:
       #           diagnostics (false), pulse_sprites (animated | still | off; default animated)
       # bisecting aids for the blue flash (D-067), default as shipped:
@@ -61,7 +60,6 @@ CONF_INTERNAL_RAM_FLOOR = "internal_ram_floor"
 CONF_HEAP_PROBE = "heap_probe"
 CONF_HOSTED_PACKET_POOL = "hosted_packet_pool"
 CONF_UI_STORAGE = "ui_storage"
-CONF_DSI_UNDERRUN_COUNTER = "dsi_underrun_counter"
 
 # The component lives at <repo>/components/hearthmap; core/, ui_lvgl/ and schema/ are siblings
 # of components/ in the same checkout. ESPHome clones the whole repo (depth 1) for a github://
@@ -171,9 +169,6 @@ CONFIG_SCHEMA = cv.All(
                 cv.validate_bytes, cv.int_range(min=0, max=400_000)
             ),
             cv.Optional(CONF_HEAP_PROBE, default="counters"): cv.enum(HEAP_PROBES, lower=True),
-            # Counts the DSI bridge's FIFO underruns (a frame shown blue) from the panel driver's
-            # console line (dsi_underrun_tap.h, D-067).
-            cv.Optional(CONF_DSI_UNDERRUN_COUNTER, default=True): cv.boolean,
             # Bisecting aids for the blue flash (D-067): `false` leaves esp-hosted's SDIO packet
             # pool at its own default (off); `system` keeps the UI's bulk storage on malloc.
             cv.Optional(CONF_HOSTED_PACKET_POOL, default=True): cv.boolean,
@@ -306,7 +301,6 @@ async def to_code(config: dict) -> None:
     cg.add(var.set_pulse_mode(config[CONF_PULSE_SPRITES]))
     cg.add(var.set_internal_ram_floor(config[CONF_INTERNAL_RAM_FLOOR]))
     cg.add(var.set_heap_probe(config[CONF_HEAP_PROBE]))
-    cg.add(var.set_count_dsi_underruns(config[CONF_DSI_UNDERRUN_COUNTER]))
     if config[CONF_UI_STORAGE] != "psram":
         cg.add(var.set_ui_storage_psram(False))
     if config[CONF_DIAGNOSTICS]:

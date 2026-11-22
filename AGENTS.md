@@ -284,7 +284,9 @@ add rather than rewrite.
   blanking, the DSI bridge's FIFO runs dry and it sends its reserved pixel (a blue) for the frame.
   The driver reports it only with `esp_rom_printf` ("underrun happens"), never in ESPHome's log.
   Read free bytes with `heap_caps_get_free_size` / `heap_caps_get_minimum_free_size` (counters,
-  no lock); keep walks out of anything periodic (D-067). The perf mem line counts underruns.
+  no lock); keep walks out of anything periodic (D-067). Nothing counts underruns: a console
+  tap was tried and never installed on the panel (D-068); the line shows on ESP-IDF's primary
+  console only.
 
 ## 7. CI & Deployment
 

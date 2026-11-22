@@ -75,8 +75,6 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   void set_heap_probe(HeapProbe probe) { heap_probe_ = probe; }
   /// `ui_storage: system`: leave the UI's bulk storage on malloc, as before D-064 (bisecting).
   void set_ui_storage_psram(bool psram) { ui_storage_psram_ = psram; }
-  /// `dsi_underrun_counter`: count the panel's FIFO underruns in the perf log (D-067).
-  void set_count_dsi_underruns(bool on) { count_dsi_underruns_ = on; }
 
   /// Every large pixel move goes through this (docs/decisions.md D-054, D-057). Valid after
   /// setup().
@@ -165,9 +163,6 @@ class HearthmapComponent : public Component, public hm::ui::EventSink {
   InternalRamGuard ram_guard_{64U * 1024U};
   HeapProbe heap_probe_ = HeapProbe::Counters;
   bool ui_storage_psram_ = true;
-  bool count_dsi_underruns_ = true;
-  bool dsi_tap_ = false;  ///< the underrun tap is live
-  uint32_t last_dsi_underruns_ = 0;
   MemorySample last_memory_;  ///< the latest sample, for the perf mem line
   uint32_t last_memory_check_ms_ = 0;
   uint32_t captures_at_ok_ = 0;  ///< sprite captures at the last sample above the floor

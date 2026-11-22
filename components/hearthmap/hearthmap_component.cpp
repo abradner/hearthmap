@@ -7,7 +7,6 @@
 #include <cstring>
 #include <string>
 
-#include "dsi_underrun_tap.h"
 #include "esp_heap_caps.h"
 #include "esphome/components/api/api_server.h"
 #include "esphome/core/hal.h"
@@ -136,7 +135,6 @@ void HearthmapComponent::setup() {
     ESP_LOGE(TAG, "memory port: UI storage was allocated before setup; it stays where it is");
   }
   hm::ui::set_bulk_failure_handler(report_bulk_exhausted);
-  if (this->count_dsi_underruns_) this->dsi_tap_ = start_dsi_underrun_tap();
   {
     // One heap walk, at boot, before the panel shows anything that matters (heap_watch.h).
     const MemorySample m = sample_memory();
@@ -730,12 +728,6 @@ void HearthmapComponent::log_perf_() {
   w.bulk_refused = b.failures;
   w.sprites_paused = this->sprites_paused_;
   w.heap_probe_max_us = take_heap_probe_max_us();
-  w.dsi_underruns_counted = this->dsi_tap_;
-  if (this->dsi_tap_) {
-    const uint32_t u = dsi_underruns();
-    w.dsi_underruns = u - this->last_dsi_underruns_;
-    this->last_dsi_underruns_ = u;
-  }
   char line[640];
   hearthmap_device::PerfStats::format(w, line, sizeof(line));
   ESP_LOGD(TAG, "%s", line);
@@ -779,11 +771,10 @@ void HearthmapComponent::dump_config() {
                 this->ui_storage_psram_ ? "PSRAM through the memory port"
                                         : "malloc, as before D-064 (bisecting aid)",
                 static_cast<unsigned>(this->ram_guard_.floor() / 1024U));
-  ESP_LOGCONFIG(TAG, "  Heap probe: %s; DSI underrun counter: %s (D-067)",
+  ESP_LOGCONFIG(TAG, "  Heap probe: %s (D-067)",
                 this->heap_probe_ == HeapProbe::Counters ? "counters"
                 : this->heap_probe_ == HeapProbe::Walk   ? "walk, once a second (bisecting aid)"
-                                                         : "off (internal RAM floor blind)",
-                this->dsi_tap_ ? "on" : (this->count_dsi_underruns_ ? "unavailable" : "off"));
+                                                         : "off (internal RAM floor blind)");
 #ifdef CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO
 #ifdef CONFIG_ESP_HOSTED_HOST_SDIO_USE_MEMPOOL
   ESP_LOGCONFIG(TAG, "  Hosted SDIO packet pool: on (reserved when the link starts, D-064)");

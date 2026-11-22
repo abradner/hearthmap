@@ -1262,4 +1262,35 @@ the walks at a lower rate (still a dice roll per sample); a second interrupt on 
 to count underruns (the driver's is not shared). **Would change if:** the panel shows underruns
 with `heap_probe: counters` (then the cause is elsewhere: PSRAM bandwidth, another
 interrupts-off section), or `heap_probe: walk` does not bring them back.
+**Correction (2026-11-22, D-068):** the underrun count described above never worked on the
+panel (boot said "DSI underrun counter: unavailable", every perf line "not counted") and has
+been removed. The perf mem line keeps `heap probe max`; underruns are not counted.
+
+### D-068 DSI underruns are not counted; the console tap is removed (provisional)
+
+**Question:** the D-067 tap (a putc hook on the ROM console's second channel, matching the DPI
+driver's "underrun happens") did not install on the panel. Make it work, or remove it?
+**Found** (ESP-IDF 5.5.6 and ESPHome 2026.11.0 source): the driver's line is
+`ESP_DRAM_LOGE`, which under log v1 (the example's `CONFIG_LOG_VERSION_1`) is `esp_rom_printf`,
+gated at run time by `esp_log_get_default_level()`. On the ESP32-P4 `esp_rom_printf` is the ROM's
+`ets_printf` (`esp32p4.rom.api.ld`); `ESP_ROM_HAS_OUTPUT_TO_CHANNELS_FUNC` is not set, so the
+characters go through the ROM's own channel pointers, and whether the ROM's `ets_printf` calls
+channel 2 is stated only in a header comment (`rom/ets_sys.h`), with no source to check. Which
+port channel 1 writes to follows the primary console: ESPHome sets
+`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` when `logger: hardware_uart` is USB_SERIAL_JTAG (the P4's
+default), and otherwise leaves ESP-IDF's UART0 and turns on the USB-Serial-JTAG *secondary*
+console (`require_usb_serial_jtag_secondary()`), which compiled the tap out altogether
+(`CONFIG_ESP_CONSOLE_SECONDARY_NONE` unset). The example's build has the USB-Serial-JTAG primary
+console and no secondary, so its tap would at least have tried; on the panel the install-time
+self-check saw no characters pass, and nothing in the source says why. **Default:** removed,
+with its option (`dsi_underrun_counter`, never released), the phrase matcher and their tests.
+The perf mem line no longer has an underrun field; `heap probe max` stays. To see underruns,
+watch ESP-IDF's primary console, where the driver's own line appears (components/hearthmap
+README). **Why:** making it work rests on undocumented ROM behaviour and on the owner's logger
+port, and would add an interrupt-context hook on every console character; a field that says
+"not counted" on every panel it has run on is a claim with nothing behind it (AGENTS.md
+principle 1). The flash itself is answered by D-067's counters-only probing (gone on the panel,
+2026-11-22, by eye). **Rejected:** a second interrupt on the DSI bridge (the driver's is not
+shared, D-067); polling the bridge's raw interrupt status from a task (the driver's ISR clears
+it first). **Would change if:** ESP-IDF's DPI driver gains an underrun callback or counter.
 

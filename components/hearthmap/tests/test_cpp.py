@@ -242,8 +242,6 @@ int main() {
   f.bulk_refused = 2;
   f.sprites_paused = true;
   f.heap_probe_max_us = 1840;
-  f.dsi_underruns = 3;
-  f.dsi_underruns_counted = true;
   char line[640];
   const std::size_t n = PerfStats::format(f, line, sizeof(line));
   std::printf("%s\n", line);
@@ -259,16 +257,15 @@ int main() {
   CHECK(m == std::strlen(line));
   CHECK(std::strstr(line, "perf mem: internal 180 KiB (lowest 150 KiB), largest DMA block 31 KiB "
                           "| ui in psram 9000 KiB, refused 2 | sprite builds paused "
-                          "| heap probe max 1840 us | dsi underruns 3") != nullptr);
+                          "| heap probe max 1840 us") != nullptr);
   CHECK(m < 512);
-  // Counters only, and a build that cannot count underruns: the line says so, never a 0.
+  // Counters only: the line says the block was not probed, never a 0.
   f.dma_largest_probed = false;
-  f.dsi_underruns_counted = false;
   f.heap_probe_max_us = 4;
   PerfStats::format_memory(f, line, sizeof(line));
   std::printf("%s\n", line);
   CHECK(std::strstr(line, "largest DMA block not probed |") != nullptr);
-  CHECK(std::strstr(line, "heap probe max 4 us | dsi underruns not counted") != nullptr);
+  CHECK(std::strstr(line, "heap probe max 4 us") != nullptr);
   char tiny[8];
   CHECK(PerfStats::format(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
   CHECK(PerfStats::format_memory(f, tiny, sizeof(tiny)) == 7 && tiny[7] == '\0');
@@ -1390,55 +1387,6 @@ int main() {
   return failures == 0 ? 0 : 1;
 }
 """
-
-
-PHRASE_TEST = r"""
-#include <cstdio>
-#include <cstring>
-#include "phrase_matcher.h"
-using namespace esphome::hearthmap_panel;
-int failures = 0;
-#define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
-template <std::size_t N>
-static int count(PhraseMatcher<N>& m, const char* s) {
-  int n = 0;
-  for (; *s != '\0'; ++s) n += m.feed(*s) ? 1 : 0;
-  return n;
-}
-int main() {
-  // The DPI driver's line (ESP-IDF 5.5.6), as esp_rom_printf writes it, counted once.
-  PhraseMatcher<16> u("underrun happens");
-  CHECK(count(u, "E (123456) lcd.dsi.dpi: can't fetch data from external memory fast enough, "
-                 "underrun happens\n") == 1);
-  // Two lines, and the phrase split across separate feeds, as characters arrive.
-  CHECK(count(u, "underrun happens\nunderrun ") == 1);
-  CHECK(count(u, "happens") == 1);
-  // A false start whose tail restarts the phrase: "underru" then "underrun happens".
-  CHECK(count(u, "underruunderrun happens") == 1);
-  // A mismatch that must fall back to a longer prefix: "underr|un" ends in "un", which starts
-  // the phrase again (a matcher that resets to zero misses this one).
-  CHECK(count(u, "underrunderrun happens") == 1);
-  PhraseMatcher<3> aab("aab");
-  CHECK(count(aab, "aaab") == 1);
-  // Near misses never count.
-  CHECK(count(u, "underrun happen\nunderrun_happens underrunhappens") == 0);
-  // Overlapping occurrences each count (the failure table, not a reset to zero).
-  PhraseMatcher<3> aa("aaa");
-  CHECK(count(aa, "aaaaa") == 3);
-  PhraseMatcher<4> ab("abab");
-  CHECK(count(ab, "abababab") == 3);
-  PhraseMatcher<4> fresh("abab");  // state carries across feeds, so a new matcher here
-  CHECK(count(fresh, "abaabab") == 1);
-  std::printf("phrase checks done, %d failures\n", failures);
-  return failures == 0 ? 0 : 1;
-}
-"""
-
-
-def test_phrase_matcher(tmp_path):
-    (tmp_path / "phrase_test.cpp").write_text(PHRASE_TEST)
-    out = _build_and_run(tmp_path, [str(tmp_path / "phrase_test.cpp")], [COMPONENT])
-    assert "0 failures" in out
 
 
 def test_internal_ram_guard(tmp_path):

@@ -147,16 +147,13 @@ std::size_t PerfStats::format_memory(const PerfWindow& w, char* out, std::size_t
   if (out == nullptr || size == 0) return 0;
   char dma[24] = "not probed";
   if (w.dma_largest_probed) std::snprintf(dma, sizeof(dma), "%" PRIu32 " KiB", w.dma_largest_kib);
-  char underruns[16] = "not counted";
-  if (w.dsi_underruns_counted)
-    std::snprintf(underruns, sizeof(underruns), "%" PRIu32, w.dsi_underruns);
   const int n =
       std::snprintf(out, size,
                     "perf mem: internal %" PRIu32 " KiB (lowest %" PRIu32
                     " KiB), largest DMA block %s | ui in psram %" PRIu32 " KiB, refused %" PRIu32
-                    " | sprite builds %s | heap probe max %" PRIu32 " us | dsi underruns %s",
+                    " | sprite builds %s | heap probe max %" PRIu32 " us",
                     w.internal_free_kib, w.internal_min_kib, dma, w.bulk_kib, w.bulk_refused,
-                    w.sprites_paused ? "paused" : "on", w.heap_probe_max_us, underruns);
+                    w.sprites_paused ? "paused" : "on", w.heap_probe_max_us);
   if (n < 0) {
     out[0] = '\0';
     return 0;
